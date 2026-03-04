@@ -229,24 +229,15 @@ async def feishu_event_webhook(
             history_msgs = history_result.scalars().all()
             history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
 
-            # Determine a stable user_id for this Feishu sender
-            # Use uuid5 to generate a deterministic UUID from sender_open_id
-            # This ensures each Feishu user has a unique, stable user_id
+            # --- Resolve Feishu sender identity & find/create platform user ---
             import uuid as _uuid
-            feishu_user_uuid = _uuid.uuid5(_uuid.NAMESPACE_URL, f"feishu:{sender_open_id}")
+            import httpx as _httpx
 
-            # Save user message using agent creator's ID (FK constraint requires valid users.id)
-            # The Feishu sender is tracked via conversation_id (feishu_p2p_{open_id})
-            db.add(ChatMessage(agent_id=agent_id, user_id=creator_id, role="user", content=user_text, conversation_id=conv_id))
-            await db.commit()
-
-            # Resolve sender identity via Feishu API (using the bot's own credentials)
-            # Note: sender_open_id is specific to THIS bot app, so we can't look it up
-            # in org_members (which was synced from a different app with different open_ids)
             sender_name = ""
-            sender_user_id = ""
+            sender_user_id_feishu = ""  # tenant-level user_id (consistent across apps)
+            platform_user_id = creator_id  # fallback
+
             try:
-                import httpx as _httpx
                 async with _httpx.AsyncClient() as _client:
                     _tok_resp = await _client.post(
                         "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal",
@@ -264,18 +255,59 @@ async def feishu_event_webhook(
                         if _user_data.get("code") == 0:
                             _user_info = _user_data.get("data", {}).get("user", {})
                             sender_name = _user_info.get("name", "")
-                            sender_user_id = _user_info.get("user_id", "")
-                            print(f"[Feishu] Resolved sender: {sender_name} (user_id={sender_user_id})")
-                        else:
-                            print(f"[Feishu] Sender resolve failed: {_user_data.get('msg', '')}")
+                            sender_user_id_feishu = _user_info.get("user_id", "")
+                            print(f"[Feishu] Resolved sender: {sender_name} (user_id={sender_user_id_feishu})")
             except Exception as e:
-                print(f"[Feishu] Failed to resolve sender name: {e}")
+                print(f"[Feishu] Failed to resolve sender: {e}")
+
+            # Look up platform user by feishu_user_id or feishu_open_id
+            if sender_user_id_feishu:
+                u_result = await db.execute(
+                    select(User).where(User.feishu_user_id == sender_user_id_feishu)
+                )
+                found_user = u_result.scalar_one_or_none()
+                if found_user:
+                    platform_user_id = found_user.id
+                    print(f"[Feishu] Matched user by feishu_user_id: {found_user.username}")
+
+            if platform_user_id == creator_id and sender_open_id:
+                # Try by feishu_open_id (if same app ID was used for SSO)
+                u_result2 = await db.execute(
+                    select(User).where(User.feishu_open_id == sender_open_id)
+                )
+                found_user2 = u_result2.scalar_one_or_none()
+                if found_user2:
+                    platform_user_id = found_user2.id
+                    print(f"[Feishu] Matched user by feishu_open_id: {found_user2.username}")
+
+            # Auto-create user if not found and we have sender info
+            if platform_user_id == creator_id and sender_name:
+                from app.core.security import hash_password
+                new_username = f"feishu_{sender_user_id_feishu or sender_open_id[:16]}"
+                new_user = User(
+                    username=new_username,
+                    email=f"{new_username}@feishu.local",
+                    password_hash=hash_password(_uuid.uuid4().hex),  # random password
+                    display_name=sender_name,
+                    role="member",
+                    feishu_open_id=sender_open_id,
+                    feishu_user_id=sender_user_id_feishu or None,
+                    tenant_id=agent_obj.tenant_id if agent_obj else None,
+                )
+                db.add(new_user)
+                await db.flush()
+                platform_user_id = new_user.id
+                print(f"[Feishu] Auto-created user: {sender_name} -> {new_username}")
+
+            # Save user message with resolved platform user ID
+            db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user", content=user_text, conversation_id=conv_id))
+            await db.commit()
+
 
             # Prepend sender identity so the agent knows who is talking
-            # Include user_id for disambiguation in case of duplicate names
             llm_user_text = user_text
             if sender_name:
-                id_part = f" (ID: {sender_user_id})" if sender_user_id else ""
+                id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
                 llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
 
             # Call LLM with history
