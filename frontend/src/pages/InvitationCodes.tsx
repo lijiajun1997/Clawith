@@ -74,6 +74,22 @@ export default function InvitationCodes() {
         await loadCodes();
     };
 
+    const exportCsv = () => {
+        const token = localStorage.getItem('token');
+        const a = document.createElement('a');
+        // Use fetch to include auth header, then trigger download
+        fetch('/api/enterprise/invitation-codes/export', {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+            .then(r => r.blob())
+            .then(blob => {
+                a.href = URL.createObjectURL(blob);
+                a.download = 'invitation_codes.csv';
+                a.click();
+                URL.revokeObjectURL(a.href);
+            });
+    };
+
     return (
         <div className="content-area" style={{ maxWidth: '900px', margin: '0 auto', padding: '32px 24px' }}>
             {toast && (
@@ -160,13 +176,19 @@ export default function InvitationCodes() {
                     <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>
                         {t('enterprise.invites.listTitle', 'All Invitation Codes')} ({total})
                     </div>
-                    <input
-                        className="form-input"
-                        placeholder={t('common.search', 'Search') + '...'}
-                        value={search}
-                        onChange={e => handleSearch(e.target.value)}
-                        style={{ width: '200px', height: '30px', fontSize: '12px' }}
-                    />
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <input
+                            className="form-input"
+                            placeholder={t('common.search', 'Search') + '...'}
+                            value={search}
+                            onChange={e => handleSearch(e.target.value)}
+                            style={{ width: '200px', height: '30px', fontSize: '12px' }}
+                        />
+                        <button className="btn btn-secondary" onClick={exportCsv}
+                            style={{ height: '30px', padding: '0 12px', fontSize: '11px', whiteSpace: 'nowrap' }}>
+                            Export CSV
+                        </button>
+                    </div>
                 </div>
 
                 {/* Table header */}

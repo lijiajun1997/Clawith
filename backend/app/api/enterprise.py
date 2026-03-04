@@ -475,6 +475,42 @@ async def list_invitation_codes(
     }
 
 
+
+@router.get("/invitation-codes/export")
+async def export_invitation_codes_csv(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export all invitation codes as CSV, ordered by created_at."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    result = await db.execute(
+        select(InvitationCode).order_by(InvitationCode.created_at.asc())
+    )
+    codes = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Code", "Max Uses", "Used Count", "Active", "Created At"])
+    for c in codes:
+        writer.writerow([
+            c.code,
+            c.max_uses,
+            c.used_count,
+            "Yes" if c.is_active else "No",
+            c.created_at.strftime("%Y-%m-%d %H:%M:%S") if c.created_at else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=invitation_codes.csv"},
+    )
+
+
 @router.delete("/invitation-codes/{code_id}")
 async def deactivate_invitation_code(
     code_id: str,
@@ -490,4 +526,3 @@ async def deactivate_invitation_code(
     code.is_active = False
     await db.commit()
     return {"status": "deactivated"}
-
