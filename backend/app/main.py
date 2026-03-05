@@ -18,18 +18,17 @@ async def _start_ss_local() -> None:
     if not shutil.which("ss-local"):
         print("[Proxy] ss-local not found — Discord proxy disabled", flush=True)
         return
-    # Load nodes from environment variables (SS_NODES is a JSON array, or fallback to SS_SERVER/SS_PORT/etc.)
-    _pw = os.environ.get("SS_PASSWORD", "")
-    _method = os.environ.get("SS_METHOD", "chacha20-ietf-poly1305")
-    nodes_json = os.environ.get("SS_NODES", "")
-    if nodes_json:
-        import json as _json
-        nodes = _json.loads(nodes_json)
-    elif os.environ.get("SS_SERVER") and _pw:
+    # Load proxy nodes from config file (gitignored, mounted as Docker volume)
+    import json as _json
+    cfg_file = os.environ.get("SS_CONFIG_FILE", "/data/ss-nodes.json")
+    if os.path.exists(cfg_file):
+        nodes = _json.load(open(cfg_file))
+        print(f"[Proxy] Loaded {len(nodes)} node(s) from {cfg_file}", flush=True)
+    elif os.environ.get("SS_SERVER") and os.environ.get("SS_PASSWORD"):
         nodes = [{"server": os.environ["SS_SERVER"], "port": int(os.environ.get("SS_PORT", "1080")),
-                  "password": _pw, "method": _method, "label": "primary"}]
+                  "password": os.environ["SS_PASSWORD"], "method": os.environ.get("SS_METHOD", "chacha20-ietf-poly1305"), "label": "env"}]
     else:
-        print("[Proxy] SS_NODES or SS_SERVER env var not set — skipping proxy setup", flush=True)
+        print(f"[Proxy] {cfg_file} not found and SS_SERVER not set — skipping proxy", flush=True)
         return
     for node in nodes:
         cfg = {"server": node["server"], "server_port": node["port"], "local_address": "127.0.0.1",

@@ -41,12 +41,14 @@ services:
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       DOCKER_NETWORK: clawith_network
+      SS_CONFIG_FILE: /data/ss-nodes.json
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
       - agent_data:/data/agents
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./ss-nodes.json:/data/ss-nodes.json:ro
     depends_on:
       postgres:
         condition: service_healthy

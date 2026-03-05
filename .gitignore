@@ -16,3 +16,4 @@ venv/
 # Runtime agent data
 backend/data/
 backend/agent_data/
+ss-nodes.json
