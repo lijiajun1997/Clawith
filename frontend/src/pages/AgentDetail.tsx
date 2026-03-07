@@ -510,6 +510,7 @@ export default function AgentDetail() {
     const [allUserFilter, setAllUserFilter] = useState<string>('');  // filter by username in All Users
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
     const [sessionsLoading, setSessionsLoading] = useState(false);
+    const [agentExpired, setAgentExpired] = useState(false);
 
     const fetchMySessions = async (silent = false) => {
         if (!id) return;
@@ -672,6 +673,7 @@ export default function AgentDetail() {
         setChatMessages([]);
         setHistoryMsgs([]);
         setChatScope('mine');
+        setAgentExpired(false);
     }, [id]);
 
     useEffect(() => {
@@ -695,7 +697,15 @@ export default function AgentDetail() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${id}?token=${token}${sessionParam}`);
             ws.onopen = () => { if (cancelled) { ws.close(); return; } setWsConnected(true); wsRef.current = ws; };
-            ws.onclose = () => { if (!cancelled) { setWsConnected(false); setTimeout(connect, 2000); } };
+            ws.onclose = (e) => {
+                if (e.code === 4003) {
+                    // Agent expired — stop reconnecting
+                    setAgentExpired(true);
+                    setWsConnected(false);
+                    return;
+                }
+                if (!cancelled) { setWsConnected(false); setTimeout(connect, 2000); }
+            };
             ws.onerror = () => { if (!cancelled) setWsConnected(false); };
             ws.onmessage = (e) => {
                 const d = JSON.parse(e.data);
@@ -846,8 +856,15 @@ export default function AgentDetail() {
     });
 
     const triggerScheduleMut = useMutation({
-        mutationFn: (sid: string) => scheduleApi.trigger(id!, sid),
+        mutationFn: async (sid: string) => {
+            const res = await scheduleApi.trigger(id!, sid);
+            return res;
+        },
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules', id] }),
+        onError: (err: any) => {
+            const msg = err?.response?.data?.detail || err?.message || 'Failed to trigger schedule';
+            showToast(msg, 'error');
+        },
     });
 
     const { data: metrics } = useQuery({
@@ -1906,13 +1923,17 @@ export default function AgentDetail() {
                                     {showScrollBtn && (
                                         <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: '70px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.3)', zIndex: 10 }} title="Scroll to bottom">↓</button>
                                     )}
-                                    {/* Connecting indicator — shown only while WS is establishing */}
-                                    {!wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) && (
+                                    {agentExpired ? (
+                                        <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
+                                            <span>u23f8</span>
+                                            <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
+                                        </div>
+                                    ) : !wsConnected && (!activeSession?.user_id || !currentUser || activeSession.user_id === String(currentUser?.id)) ? (
                                         <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
                                             <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
                                             Connecting...
                                         </div>
-                                    )}
+                                    ) : null}
                                     {attachedFile && (
                                         <div style={{ padding: '4px 16px', background: 'var(--bg-elevated)', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '11px' }}>
                                             <span>⦹ {attachedFile.name}</span>
