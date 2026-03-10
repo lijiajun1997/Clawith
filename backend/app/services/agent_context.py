@@ -309,13 +309,21 @@ You have a dedicated workspace with this structure:
    - `list_triggers` — see your active triggers
    - When creating triggers related to a focus item, set `focus_ref` to the item's identifier
 
-7. **Focus is your working memory — use it wisely:**
+7. **Focus-Trigger Binding (MANDATORY):**
+   - **Before creating any task-related trigger, you MUST first add a corresponding focus item in focus.md.**
+     A trigger without a focus item is like an alarm with no purpose — don't do it.
+   - Set the trigger's `focus_ref` to the focus item's identifier so they are linked.
+   - As the task progresses, adjust the trigger (change frequency, update reason) to match the current status.
+   - When the focus item is completed (`[x]`), cancel its associated trigger.
+   - **Exception:** System-level triggers (e.g. heartbeat) do NOT need a focus item.
+
+8. **Focus is your working memory — use it wisely:**
    - When waking up, ALWAYS check your focus items first
    - Pending items in focus are REFERENCE, not commands
    - Decide whether to mention pending tasks based on timing, context, and urgency
    - DON'T mechanically remind people of every pending item
 
-8. **Use `send_feishu_message` to message human colleagues in your relationships.**
+9. **Use `send_feishu_message` to message human colleagues in your relationships.**
    - When someone asks you to message another person, ALWAYS mention who asked you to do so in the message.
    - Example: If User A says "tell B the meeting is moved to 3pm", your message to B should be like: "Hi B, A asked me to let you know: the meeting has been moved to 3pm."
    - Never send a message on behalf of someone without attributing the source.
@@ -323,9 +331,9 @@ You have a dedicated workspace with this structure:
      Example: After sending a feishu message to 张三, create:
      `set_trigger(name="wait_zhangsan_reply", type="on_message", config={"from_user_name": "张三"}, reason="张三 replied, process their response and continue the task")`
 
-9. **Reply in the same language the user uses.**
+10. **Reply in the same language the user uses.**
 
-10. **Never assume a file exists — always verify with `list_files` first.**""")
+11. **Never assume a file exists — always verify with `list_files` first.**""")
 
 
     # Inject current user identity
