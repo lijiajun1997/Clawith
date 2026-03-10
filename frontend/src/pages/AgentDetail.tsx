@@ -1438,8 +1438,12 @@ function AgentDetailInner() {
                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px' }}>Pending</div>
                                             <div style={{ fontSize: '22px', fontWeight: 600, color: metrics.approvals?.pending > 0 ? 'var(--warning)' : 'inherit' }}>{metrics.approvals?.pending || 0}</div>
                                         </div>
-                                        <div className="card" title={i18n.language?.startsWith('zh') ? '过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等' : 'Total recorded operations by this agent in the past 24 hours, including chats, tool calls, task executions, etc.'}>
-                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help' }}>{i18n.language?.startsWith('zh') ? '24h 活动' : '24h Actions'}</div>
+                                        <div className="card" style={{ position: 'relative' }}>
+                                            <div className="metric-tooltip-trigger" style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', cursor: 'help', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                                {i18n.language?.startsWith('zh') ? '24h 活动' : '24h Actions'}
+                                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6.5" /><path d="M8 7v4M8 5.5v0" /></svg>
+                                                <span className="metric-tooltip">{i18n.language?.startsWith('zh') ? '过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等' : 'Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.'}</span>
+                                            </div>
                                             <div style={{ fontSize: '22px', fontWeight: 600 }}>{metrics.activity?.actions_last_24h || 0}</div>
                                         </div>
                                     </>

@@ -567,6 +567,32 @@ select:focus {
   box-shadow: var(--shadow-md);
 }
 
+/* Metric tooltip */
+.metric-tooltip-trigger {
+  position: relative;
+}
+.metric-tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  white-space: normal;
+  width: 260px;
+  z-index: 100;
+  pointer-events: none;
+}
+.metric-tooltip-trigger:hover .metric-tooltip {
+  display: block;
+}
+
 /* Status dot */
 .status-dot {
   width: 8px;
