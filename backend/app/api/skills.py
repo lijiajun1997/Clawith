@@ -105,14 +105,19 @@ async def _fetch_github_directory(
     """
     files: list[dict] = []
     total_size = 0
+    max_depth = 3  # Prevent runaway recursion
 
-    async def _recurse(dir_path: str, rel_prefix: str):
+    async def _recurse(dir_path: str, rel_prefix: str, depth: int = 0):
         nonlocal total_size
+        if depth > max_depth:
+            return
         api_url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{dir_path}?ref={branch}"
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(api_url)
             if resp.status_code == 404:
                 raise HTTPException(404, f"GitHub path not found: {dir_path}")
+            if resp.status_code == 403:
+                raise HTTPException(429, "GitHub API rate limit exceeded. Try again later.")
             if resp.status_code != 200:
                 raise HTTPException(502, f"GitHub API error: {resp.status_code}")
             items = resp.json()
@@ -121,12 +126,27 @@ async def _fetch_github_directory(
             # Single file (not a directory)
             items = [items]
 
+        # Early guard: if at top level, check that SKILL.md exists
+        if depth == 0:
+            has_skill_md = any(
+                i["name"].upper() == "SKILL.MD" and i["type"] == "file"
+                for i in items
+            )
+            dir_count = sum(1 for i in items if i["type"] == "dir")
+            if not has_skill_md:
+                if dir_count > 5:
+                    raise HTTPException(
+                        400, f"This directory contains {dir_count} subdirectories but no SKILL.md. "
+                             "Please provide the URL to a specific skill directory."
+                    )
+                raise HTTPException(400, "No SKILL.md found at the root of this directory — not a valid skill package.")
+
         for item in items:
             name = item["name"]
             rel = f"{rel_prefix}{name}" if rel_prefix else name
 
             if item["type"] == "dir":
-                await _recurse(item["path"], f"{rel}/")
+                await _recurse(item["path"], f"{rel}/", depth + 1)
             elif item["type"] == "file":
                 size = item.get("size", 0)
                 total_size += size
@@ -140,7 +160,12 @@ async def _fetch_github_directory(
                         content = base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
                         files.append({"path": rel, "content": content})
 
-    await _recurse(path, "")
+    try:
+        await _recurse(path, "")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Failed to fetch files from GitHub: {e}")
     return files
 
 

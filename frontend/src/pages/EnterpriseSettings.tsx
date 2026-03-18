@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi } from '../services/api';
@@ -363,6 +363,7 @@ function SkillsTab() {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [searching, setSearching] = useState(false);
+    const [hasSearched, setHasSearched] = useState(false);
     const [installing, setInstalling] = useState<string | null>(null);
     const [urlInput, setUrlInput] = useState('');
     const [urlPreview, setUrlPreview] = useState<any | null>(null);
@@ -375,17 +376,18 @@ function SkillsTab() {
         setTimeout(() => setToast(null), 4000);
     };
 
-    const adapter: FileBrowserApi = {
-        list: (path) => skillApi.browse.list(path),
-        read: (path) => skillApi.browse.read(path),
-        write: (path, content) => skillApi.browse.write(path, content),
-        delete: (path) => skillApi.browse.delete(path),
-    };
+    const adapter: FileBrowserApi = useMemo(() => ({
+        list: (path: string) => skillApi.browse.list(path),
+        read: (path: string) => skillApi.browse.read(path),
+        write: (path: string, content: string) => skillApi.browse.write(path, content),
+        delete: (path: string) => skillApi.browse.delete(path),
+    }), []);
 
     const handleSearch = async () => {
         if (!searchQuery.trim()) return;
         setSearching(true);
         setSearchResults([]);
+        setHasSearched(true);
         try {
             const results = await skillApi.clawhub.search(searchQuery);
             setSearchResults(results);
@@ -473,7 +475,7 @@ function SkillsTab() {
                     <button
                         className="btn btn-primary"
                         style={{ fontSize: '13px' }}
-                        onClick={() => { setShowClawhubModal(true); setSearchQuery(''); setSearchResults([]); }}
+                        onClick={() => { setShowClawhubModal(true); setSearchQuery(''); setSearchResults([]); setHasSearched(false); }}
                     >
                         Browse ClawHub
                     </button>
@@ -537,7 +539,7 @@ function SkillsTab() {
                         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 24px' }}>
                             {searchResults.length === 0 && !searching && (
                                 <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                    {searchQuery ? 'No results found' : 'Search for skills on ClawHub marketplace'}
+                                    {hasSearched ? 'No results found' : 'Search for skills on ClawHub marketplace'}
                                 </div>
                             )}
                             {searching && (
