@@ -146,9 +146,11 @@ async def lifespan(app: FastAPI):
         print(f"[startup] ⚠️ enterprise_info migration failed: {e}", flush=True)
 
     try:
+        from app.services.tool_seeder import seed_builtin_tools, clean_orphaned_mcp_tools
         await seed_builtin_tools()
+        await clean_orphaned_mcp_tools()
     except Exception as e:
-        logger.warning(f"[startup] Builtin tools seed failed: {e}")
+        logger.warning(f"[startup] Builtin tools seed or cleanup failed: {e}")
 
     try:
         from app.services.tool_seeder import seed_atlassian_rovo_config, get_atlassian_api_key

@@ -1156,7 +1156,6 @@ async def seed_builtin_tools():
                         db.add(AgentTool(agent_id=agent_id, tool_id=tool_id, enabled=True))
             logger.info(f"[ToolSeeder] Auto-assigned {len(new_tool_ids)} new tools to {len(agent_ids)} agents")
 
-        # Remove obsolete tools that have been replaced
         OBSOLETE_TOOLS = ["bing_search", "read_webpage", "manage_tasks"]
         for obsolete_name in OBSOLETE_TOOLS:
             result = await db.execute(select(Tool).where(Tool.name == obsolete_name))
@@ -1169,6 +1168,36 @@ async def seed_builtin_tools():
         logger.info("[ToolSeeder] Builtin tools seeded")
 
 
+async def clean_orphaned_mcp_tools():
+    """Clean up orphan MCP tools that lost all their AgentTool assignments.
+    
+    This happens when an Agent is deleted (cascade deletes AgentTool) but the
+    shared Tool record remains. We run this periodically/on-startup to prevent
+    the database from filling up with abandoned tool records.
+    """
+    from app.models.tool import AgentTool
+    from sqlalchemy import and_, delete
+    
+    async with async_session() as db:
+        # 1. Get all currently assigned tool IDs
+        all_assigned_r = await db.execute(select(AgentTool.tool_id).distinct())
+        assigned_ids = [row[0] for row in all_assigned_r.fetchall()]
+        
+        # 2. Delete MCP tools that have NO tenant_id AND are NOT in the assigned list
+        # tenant_id == None ensures we don't delete Global Tools manually added by company admins
+        stmt = delete(Tool).where(
+            and_(
+                Tool.type == "mcp",
+                Tool.tenant_id == None,
+                ~Tool.id.in_(assigned_ids) if assigned_ids else True
+            )
+        )
+        result = await db.execute(stmt)
+        deleted_count = result.rowcount
+        await db.commit()
+        
+        if deleted_count > 0:
+            logger.info(f"[ToolSeeder] Cleaned up {deleted_count} orphaned MCP tools")
 
 # ── Atlassian Rovo MCP Server Integration ──────────────────────────────────
 
