@@ -751,11 +751,15 @@ async def websocket_chat(
                             try:
                                 from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
                                 tool_name = data.get("name", "")
+                                logger.info(f"[WS][LivePreview] Checking tool: {tool_name}")
                                 env = detect_agentbay_env(tool_name)
+                                logger.info(f"[WS][LivePreview] Detected env: {env}")
                                 if env:
                                     if env == "desktop":
                                         # Send desktop screenshot after each computer action
+                                        logger.info(f"[WS][LivePreview] Getting desktop screenshot for agent {agent_id}")
                                         snapshot = await get_desktop_screenshot(agent_id)
+                                        logger.info(f"[WS][LivePreview] Desktop snapshot result: {'got data (' + str(len(snapshot)) + ' chars)' if snapshot else 'None'}")
                                         if snapshot:
                                             await websocket.send_json({
                                                 "type": "agentbay_live",
@@ -763,10 +767,13 @@ async def websocket_chat(
                                                 "screenshot": snapshot,
                                             })
                                             _sent_live_envs.add("desktop")
+                                            logger.info("[WS][LivePreview] Desktop screenshot sent!")
 
                                     elif env == "browser":
                                         # Send browser screenshot after each browser action
+                                        logger.info(f"[WS][LivePreview] Getting browser snapshot for agent {agent_id}")
                                         snapshot = await get_browser_snapshot(agent_id)
+                                        logger.info(f"[WS][LivePreview] Browser snapshot result: {'got data' if snapshot else 'None'}")
                                         if snapshot:
                                             await websocket.send_json({
                                                 "type": "agentbay_live",
@@ -786,7 +793,7 @@ async def websocket_chat(
                                             })
                                             _sent_live_envs.add("code")
                             except Exception as _live_err:
-                                logger.warning(f"[WS] Live preview push failed: {_live_err}")
+                                logger.warning(f"[WS][LivePreview] Push FAILED: {_live_err}", exc_info=True)
                     
                     # Track thinking content for storage
                     thinking_content = []
