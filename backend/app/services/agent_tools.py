@@ -6550,10 +6550,18 @@ async def _agentbay_computer_start_app(agent_id: Optional[uuid.UUID], ws: Path, 
         client = await get_agentbay_client_for_agent(agent_id, "computer")
         result = await client.computer_start_app(cmd, work_dir=work_dir)
         if result.get("success"):
-            import json
+            # result.data may contain non-serializable objects (e.g. Process),
+            # so convert to string safely instead of json.dumps()
             data = result.get("data")
-            data_str = json.dumps(data, ensure_ascii=False, indent=2) if isinstance(data, (dict, list)) else str(data or "")
-            return f"Application started: {cmd}\n\n{data_str[:1000]}" if data_str else f"Application started: {cmd}"
+            if data is not None:
+                try:
+                    import json
+                    data_str = json.dumps(data, ensure_ascii=False, indent=2) if isinstance(data, (dict, list, str, int, float, bool)) else str(data)
+                except (TypeError, ValueError):
+                    data_str = str(data)
+            else:
+                data_str = ""
+            return f"Application started: {cmd}" + (f"\n\n{data_str[:1000]}" if data_str else "")
         return f"Failed to start application: {result.get('error_message', 'Unknown error')}"
     except RuntimeError as e:
         return f"{str(e)}"
