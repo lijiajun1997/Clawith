@@ -36,9 +36,6 @@ class User(Base):
     primary_mobile: Mapped[str | None] = mapped_column(String(50), index=True)
     registration_source: Mapped[str | None] = mapped_column(String(50), default="web")
 
-    # Legacy Feishu specific fields (Maintained for compatibility)
-    feishu_user_id: Mapped[str | None] = mapped_column(String(255))
-
     # Email verification (default True for backward compatibility)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=True)
 

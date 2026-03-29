@@ -21,16 +21,6 @@ def upgrade() -> None:
     # Add email_verified column with default False
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE")
 
-    # Create index for faster queries
-    op.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_email_verified') THEN
-                CREATE INDEX ix_users_email_verified ON users(email_verified);
-            END IF;
-        END $$;
-    """)
-
 
 def downgrade() -> None:
     # Drop index first
