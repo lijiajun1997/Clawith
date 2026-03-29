@@ -650,86 +650,75 @@ class FeishuOrgSyncAdapter(BaseOrgSyncAdapter):
     async def fetch_users(self, department_external_id: str) -> list[ExternalUser]:
         """Fetch users in a department.
         
-        Tries user_id_type=user_id first (requires contact:user.employee_id:readonly).
-        If the Feishu API returns an error (e.g., missing permission), falls back to
-        user_id_type=open_id which only requires contact:user.base:readonly.
+        Uses user_id_type=user_id which requires the contact:user.employee_id:readonly
+        permission. If the Feishu API returns an error due to missing permission, raises
+        a clear error instructing the user to add the required scope.
         """
         token = await self.get_access_token()
         users: list[ExternalUser] = []
+        page_token = ""
 
-        # Try user_id first, fall back to open_id if permission is missing
-        for id_type in ["user_id", "open_id"]:
-            users = []
-            page_token = ""
-            fetch_ok = True
+        async with httpx.AsyncClient() as client:
+            while True:
+                params = {
+                    "department_id": department_external_id,
+                    "department_id_type": "open_department_id",
+                    "user_id_type": "user_id",  # Requires contact:user.employee_id:readonly
+                    "page_size": "50",
+                }
+                if page_token:
+                    params["page_token"] = page_token
 
-            async with httpx.AsyncClient() as client:
-                while True:
-                    params = {
-                        "department_id": department_external_id,
-                        "department_id_type": "open_department_id",
-                        "user_id_type": id_type,
-                        "page_size": "50",
-                    }
-                    if page_token:
-                        params["page_token"] = page_token
+                resp = await client.get(
+                    self.FEISHU_USERS_URL,
+                    params=params,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                data = resp.json()
 
-                    resp = await client.get(
-                        self.FEISHU_USERS_URL,
-                        params=params,
-                        headers={"Authorization": f"Bearer {token}"},
+                if data.get("code") != 0:
+                    error_code = data.get("code")
+                    error_msg = data.get("msg", "")
+                    logger.error(
+                        f"Feishu fetch users error for dept {department_external_id}: "
+                        f"code={error_code}, msg={error_msg}"
                     )
-                    data = resp.json()
+                    # Raise a user-friendly error for permission issues
+                    raise RuntimeError(
+                        f"Feishu API error (code {error_code}): {error_msg}. "
+                        f"Please ensure the Feishu app has the 'contact:user.employee_id:readonly' "
+                        f"permission enabled. Go to Feishu Open Platform -> App -> Permissions -> "
+                        f"search 'employee_id' -> enable and publish a new version."
+                    )
 
-                    if data.get("code") != 0:
-                        # If using user_id failed, try open_id fallback
-                        if id_type == "user_id":
-                            logger.warning(
-                                f"Feishu fetch users with user_id_type=user_id failed for dept {department_external_id}: "
-                                f"{data}. Falling back to open_id."
-                            )
-                            fetch_ok = False
-                            break
-                        else:
-                            logger.error(f"Feishu fetch users error for dept {department_external_id}: {data}")
-                            fetch_ok = False
-                            break
+                res_data = data.get("data", {})
+                items = res_data.get("items", []) or []
+                for item in items:
+                    # Collect all departments the user belongs to
+                    raw_dept_ids = item.get("department_ids", [])
+                    department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else [department_external_id]
+                    
+                    external_id = item.get("user_id", "") or item.get("open_id", "")
+                    
+                    user = ExternalUser(
+                        external_id=external_id,
+                        open_id=item.get("open_id", ""),
+                        unionid=item.get("union_id", ""),
+                        name=item.get("name", ""),
+                        email=item.get("email", ""),
+                        avatar_url=item.get("avatar_url", ""),
+                        title=item.get("title", ""),
+                        department_external_id=department_external_id,
+                        department_ids=department_ids,
+                        mobile=item.get("mobile", ""),
+                        status="active" if item.get("status", {}).get("is_activated") else "inactive",
+                        raw_data=item,
+                    )
+                    users.append(user)
 
-                    res_data = data.get("data", {})
-                    items = res_data.get("items", []) or []
-                    for item in items:
-                        # Collect all departments the user belongs to for better mapping resolution
-                        raw_dept_ids = item.get("department_ids", [])
-                        department_ids = [str(did) for did in raw_dept_ids] if raw_dept_ids else [department_external_id]
-                        
-                        # external_id: prefer user_id (stable), fallback to open_id
-                        external_id = item.get("user_id", "") or item.get("open_id", "")
-                        
-                        user = ExternalUser(
-                            external_id=external_id,
-                            open_id=item.get("open_id", ""),
-                            unionid=item.get("union_id", ""),
-                            name=item.get("name", ""),
-                            email=item.get("email", ""),
-                            avatar_url=item.get("avatar_url", ""),
-                            title=item.get("title", ""),
-                            department_external_id=department_external_id,
-                            department_ids=department_ids,
-                            mobile=item.get("mobile", ""),
-                            status="active" if item.get("status", {}).get("is_activated") else "inactive",
-                            raw_data=item,
-                        )
-                        users.append(user)
-
-                    page_token = res_data.get("page_token", "")
-                    if not page_token:
-                        break
-
-            # If fetch succeeded (even with 0 users for this dept), use these results
-            if fetch_ok:
-                if id_type == "open_id" and users:
-                    logger.info(f"Feishu: successfully fetched {len(users)} users using open_id fallback for dept {department_external_id}")
-                break
+                page_token = res_data.get("page_token", "")
+                if not page_token:
+                    break
 
         return users
 
