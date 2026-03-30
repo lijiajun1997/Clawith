@@ -38,7 +38,7 @@ const getCategoryLabels = (t: any): Record<string, string> => ({
     feishu: t('agent.toolCategories.feishu', 'Feishu / Lark'),
     custom: t('agent.toolCategories.custom'),
     general: t('agent.toolCategories.general'),
-    agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
+    // agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
 });
 
 function ToolsManager({ agentId, canManage = false }: { agentId: string; canManage?: boolean }) {
@@ -54,20 +54,22 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
     const [configCategory, setConfigCategory] = useState<string | null>(null);
 
     const CATEGORY_CONFIG_SCHEMAS: Record<string, any> = {
-        agentbay: {
-            title: 'AgentBay Settings',
-            fields: [
-                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
-                { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
-            ]
-        },
-        atlassian: {
-            title: 'Atlassian Connectivity Settings',
-            fields: [
-                { key: 'api_key', label: 'API Key (Atlassian API Token)', type: 'password', placeholder: 'Enter your Atlassian API key' },
-                { key: 'cloud_id', label: 'Cloud ID (Optional)', type: 'text', placeholder: 'e.g. bcc01-abc-123' }
-            ]
-        }
+        // agentbay hidden
+        // agentbay: {
+        //     title: 'AgentBay Settings',
+        //     fields: [
+        //         { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
+        //         { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
+        //     ]
+        // },
+        // atlassian hidden
+        // atlassian: {
+        //     title: 'Atlassian Connectivity Settings',
+        //     fields: [
+        //         { key: 'api_key', label: 'API Key (Atlassian API Token)', type: 'password', placeholder: 'Enter your Atlassian API key' },
+        //         { key: 'cloud_id', label: 'Cloud ID (Optional)', type: 'text', placeholder: 'e.g. bcc01-abc-123' }
+        //     ]
+        // }
     };
 
     const loadTools = async () => {

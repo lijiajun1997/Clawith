@@ -194,35 +194,37 @@ const CHANNEL_REGISTRY: ChannelDef[] = [
         guide: { prefix: 'channelGuide.dingtalk', steps: 6 },
         webhookLabel: 'Webhook URL',
     },
-    {
-        id: 'atlassian',
-        icon: AtlassianIcon,
-        nameKey: 'common.channels.atlassian',
-        nameFallback: 'Atlassian',
-        desc: 'Jira / Confluence / Compass (Rovo MCP)',
-        apiSlug: 'atlassian-channel',
-        hasTestConnection: true,
-        fields: [
-            { key: 'api_key', label: 'API Key', type: 'password', required: true },
-            { key: 'cloud_id', label: 'Cloud ID', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' },
-        ],
-        guide: { prefix: 'channelGuide.atlassian', steps: 5 },
-    },
-    {
-        id: 'agentbay',
-        icon: AgentBayIcon,
-        nameKey: 'common.channels.agentbay',
-        nameFallback: 'AgentBay',
-        desc: 'Browser & Code Execution (阿里云)',
-        apiSlug: 'agentbay-channel',
-        hasTestConnection: true,
-        editOnly: true,
-        fields: [
-            { key: 'api_key', label: 'API Key', type: 'password', required: true },
-            { key: 'base_url', label: 'Base URL', placeholder: 'https://agentbay.aliyuncs.com/api/v1' },
-        ],
-        guide: { prefix: 'channelGuide.agentbay', steps: 3 },
-    },
+    // Atlassian channel hidden
+    // {
+    //     id: 'atlassian',
+    //     icon: AtlassianIcon,
+    //     nameKey: 'common.channels.atlassian',
+    //     nameFallback: 'Atlassian',
+    //     desc: 'Jira / Confluence / Compass (Rovo MCP)',
+    //     apiSlug: 'atlassian-channel',
+    //     hasTestConnection: true,
+    //     fields: [
+    //         { key: 'api_key', label: 'API Key', type: 'password', required: true },
+    //         { key: 'cloud_id', label: 'Cloud ID', placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' },
+    //     ],
+    //     guide: { prefix: 'channelGuide.atlassian', steps: 5 },
+    // },
+    // AgentBay channel hidden
+    // {
+    //     id: 'agentbay',
+    //     icon: AgentBayIcon,
+    //     nameKey: 'common.channels.agentbay',
+    //     nameFallback: 'AgentBay',
+    //     desc: 'Browser & Code Execution (阿里云)',
+    //     apiSlug: 'agentbay-channel',
+    //     hasTestConnection: true,
+    //     editOnly: true,
+    //     fields: [
+    //         { key: 'api_key', label: 'API Key', type: 'password', required: true },
+    //         { key: 'base_url', label: 'Base URL', placeholder: 'https://agentbay.aliyuncs.com/api/v1' },
+    //     ],
+    //     guide: { prefix: 'channelGuide.agentbay', steps: 3 },
+    // },
 ];
 
 // ─── Feishu Permission JSON ─────────────────────────────

@@ -1704,13 +1704,14 @@ export default function EnterpriseSettings() {
 
     // Category-level config schemas: tools sharing the same key have config on category header
     const GLOBAL_CATEGORY_CONFIG_SCHEMAS: Record<string, { title: string; fields: any[] }> = {
-        agentbay: {
-            title: 'AgentBay Settings',
-            fields: [
-                { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
-                { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
-            ],
-        },
+        // agentbay hidden
+        // agentbay: {
+        //     title: 'AgentBay Settings',
+        //     fields: [
+        //         { key: 'api_key', label: 'API Key (from AgentBay)', type: 'password', placeholder: 'Enter your AgentBay API key' },
+        //         { key: 'os_type', label: 'Cloud Computer OS', type: 'select', default: 'windows', options: [{ value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' }] },
+        //     ],
+        // },
     };
 
     // Labels for tool categories (mirrors AgentDetail getCategoryLabels)
@@ -1727,7 +1728,7 @@ export default function EnterpriseSettings() {
         feishu: t('agent.toolCategories.feishu', 'Feishu / Lark'),
         custom: t('agent.toolCategories.custom'),
         general: t('agent.toolCategories.general'),
-        agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
+        // agentbay: t('agent.toolCategories.agentbay', 'AgentBay'),
     };
     const [toolsView, setToolsView] = useState<'global' | 'agent-installed'>('global');
     const [agentInstalledTools, setAgentInstalledTools] = useState<any[]>([]);
