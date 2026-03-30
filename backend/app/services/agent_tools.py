@@ -2779,7 +2779,9 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     logger.info(f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})")
                     return f"❌ 发送失败：{resp.get('msg')} (code {resp.get('code')})"
 
-            # Find the relationship member by name
+            # Find the target member:
+            # 1. First check relationships (AgentRelationship)
+            # 2. If not found, search in org_members table (organization directory)
             result = await db.execute(
                 select(AgentRelationship)
                 .where(AgentRelationship.agent_id == agent_id)
@@ -2793,9 +2795,31 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                     target_member = r.member
                     break
 
+            # If not in relationships, search in org_members (organization directory)
             if not target_member:
-                logger.info(f"❌ {member_name} has no Feishu user_id in relationship")   
-                return f"❌ {member_name} 不是我的关系"
+                logger.info(f"[Feishu] {member_name} not in relationships, searching org_members...")
+                from app.models.agent import Agent as AgentModel
+
+                # Get agent's tenant_id to filter members
+                agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                agent_obj = agent_r.scalar_one_or_none()
+                tenant_id = agent_obj.tenant_id if agent_obj else None
+
+                # Search by exact name match
+                member_query = select(OrgMember).where(
+                    OrgMember.name == member_name,
+                    OrgMember.status == "active"
+                )
+                if tenant_id:
+                    member_query = member_query.where(OrgMember.tenant_id == tenant_id)
+                member_query = member_query.limit(1)
+
+                member_result = await db.execute(member_query)
+                target_member = member_result.scalar_one_or_none()
+
+            if not target_member:
+                logger.info(f"❌ {member_name} not found in relationships or org_members")
+                return f"❌ 找不到用户「{member_name}」，请先搜索确认姓名是否正确（可用 feishu_user_search 工具）"
                 
             logger.info(f"target_member={target_member.external_id}, {target_member.open_id}, {target_member.email}, {target_member.phone}")
             if not target_member.external_id and not target_member.open_id and not target_member.email and not target_member.phone:
