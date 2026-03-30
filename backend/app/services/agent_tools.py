@@ -860,20 +860,20 @@ AGENT_TOOLS = [
         "function": {
             "name": "feishu_user_search",
             "description": (
-                "Search for a colleague in the Feishu (Lark) directory by name. "
-                "Returns their open_id, email, and department so you can send messages, "
-                "invite them to calendar events, or share documents. "
-                "Use this whenever you need to find a colleague's Feishu identity."
+                "Search for colleagues in the organization directory. "
+                "If name is provided, search by name and return matching users with their open_id, email, and department. "
+                "If name is empty, list all members in the organization grouped by department. "
+                "Use this to find colleagues' Feishu identity for sending messages, calendar invites, or document sharing."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "The colleague's name to search for, e.g. '覃睿' or '张三'",
+                        "description": "The colleague's name to search for, e.g. '张三'. Leave empty to list all members.",
                     },
                 },
-                "required": ["name"],
+                "required": [],
             },
         },
     },
@@ -5757,18 +5757,60 @@ async def _feishu_calendar_delete(agent_id: uuid.UUID, arguments: dict) -> str:
 async def _feishu_user_search(agent_id: uuid.UUID, arguments: dict) -> str:
     """Search for colleagues in the Feishu directory by name.
 
-    Strategy:
-    1. Search local contacts cache (populated when anyone messages the bot).
-    2. Fall back to Contact v3 GET /users/{open_id} if we find a match by email.
-    The cache is populated by feishu.py each time a message sender is resolved.
+    If name is provided, search by name and return matching users.
+    If name is empty, list all members in the organization.
     """
     import httpx
     import json as _json
     import pathlib as _pl
 
     name = (arguments.get("name") or "").strip()
+
+    # If no name provided, list all org members
     if not name:
-        return "❌ Missing required argument 'name'"
+        from app.database import async_session as _async_session
+        from sqlalchemy import select as _sa_select
+        from app.models.org import OrgMember as _OrgMember
+        from app.models.agent import Agent as _Agent
+
+        async with _async_session() as _db:
+            # Get agent's tenant_id to filter members
+            _agent_r = await _db.execute(_sa_select(_Agent).where(_Agent.id == agent_id))
+            _agent = _agent_r.scalar_one_or_none()
+            _tenant_id = _agent.tenant_id if _agent else None
+
+            # Build query
+            _query = _sa_select(_OrgMember).where(_OrgMember.status == "active")
+            if _tenant_id:
+                _query = _query.where(_OrgMember.tenant_id == _tenant_id)
+            _query = _query.order_by(_OrgMember.name).limit(100)
+
+            _r = await _db.execute(_query)
+            _members = _r.scalars().all()
+
+        if not _members:
+            return "❌ 组织通讯录为空。请先在企业设置中同步组织架构。"
+
+        lines = [f"📋 组织通讯录共 {len(_members)} 人：\n"]
+
+        # Group by department
+        _dept_members: dict = {}
+        for _m in _members:
+            _dept = _m.department_path or "未分配部门"
+            if _dept not in _dept_members:
+                _dept_members[_dept] = []
+            _dept_members[_dept].append(_m)
+
+        for _dept, _members_in_dept in _dept_members.items():
+            lines.append(f"\n**{_dept}** ({len(_members_in_dept)}人)")
+            for _m in _members_in_dept[:15]:
+                _title = f" ({_m.title})" if _m.title else ""
+                lines.append(f"  • {_m.name}{_title}")
+            if len(_members_in_dept) > 15:
+                lines.append(f"  ... 还有 {len(_members_in_dept) - 15} 人")
+
+        lines.append("\n\n💡 提示：搜索具体姓名可获取其 open_id 和详细信息。")
+        return "\n".join(lines)
 
     creds = await _get_feishu_token(agent_id)
     if not creds:
