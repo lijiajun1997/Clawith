@@ -1029,6 +1029,42 @@ AGENT_TOOLS = [
             },
         },
     },
+    # ── LLM Proxy Tool ──────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "llm_proxy",
+            "description": "调用外部 LLM API 进行智能分析。支持：1) 文本对话 2) 图片分析（传入图片路径）3) 文档分析（传入 PDF/DOCX/XLSX 路径）。结果会自动保存到 workspace/llm_results/ 目录。适用于复杂推理、代码生成、内容创作、数据分析等场景。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "提示词/问题，详细描述任务要求",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "模型 ID，可选。不指定时使用默认模型。",
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "文件路径列表（workspace 相对路径），支持图片(jpg/png/gif/webp)和文档(txt/md/pdf/docx/xlsx/pptx)",
+                    },
+                    "save_result": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "是否保存结果到文件，默认 True",
+                    },
+                    "result_filename": {
+                        "type": "string",
+                        "description": "结果文件名（不含扩展名），默认根据时间自动生成",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -1606,6 +1642,9 @@ async def execute_tool(
             result = await _search_clawhub(agent_id, arguments)
         elif tool_name == "install_skill":
             result = await _install_skill(agent_id, ws, arguments)
+        # ── LLM Proxy ──
+        elif tool_name == "llm_proxy":
+            result = await _llm_proxy(agent_id, ws, arguments)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -2880,32 +2919,64 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 except Exception as e:
                     logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
 
-            # Step 1: Try using feishu_user_id (tenant-stable, works across apps)
+            # Step 1: Try to resolve open_id for THIS app using user_id
+            # (open_id is app-specific, each app has different open_id for the same user)
+            resolved_open_id = None
+            if target_member.external_id:
+                logger.info(f"[Feishu] Attempting to resolve open_id for user_id={target_member.external_id}")
+                resolved_open_id = await feishu_service.get_open_id_by_user_id(
+                    config.app_id, config.app_secret, target_member.external_id
+                )
+                if resolved_open_id:
+                    logger.info(f"[Feishu] Resolved open_id from user_id: {resolved_open_id}")
+                else:
+                    logger.info(f"[Feishu] Could not resolve open_id from user_id={target_member.external_id}")
+
+            # Step 2: Try email/mobile lookup if user_id lookup failed
+            if not resolved_open_id and (target_member.email or target_member.phone):
+                logger.info(f"[Feishu] Attempting to resolve open_id for {member_name} via email/mobile")
+                resolved_open_id = await feishu_service.resolve_open_id(
+                    config.app_id, config.app_secret,
+                    email=target_member.email,
+                    mobile=target_member.phone
+                )
+                if resolved_open_id:
+                    logger.info(f"[Feishu] Resolved open_id from email/mobile: {resolved_open_id}")
+                else:
+                    logger.info(f"[Feishu] Could not resolve open_id from email/mobile")
+
+            # Step 3: Send message using resolved open_id
+            if resolved_open_id:
+                resp = await _try_send(config.app_id, config.app_secret, resolved_open_id, "open_id")
+                if resp.get("code") == 0:
+                    await _save_outgoing_to_feishu_session(resolved_open_id)
+                    return f"✅ Successfully sent message to {member_name}"
+                logger.info(f"❌ Failed to send message to {resolved_open_id} via Feishu (open_id): {resp}")
+
+            # Step 4: Try using feishu_user_id directly (requires contact:user.employee_id:readonly)
             if target_member.external_id:
                 resp = await _try_send(config.app_id, config.app_secret, target_member.external_id, "user_id")
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(target_member.external_id or target_member.open_id)
                     return f"✅ Successfully sent message to {member_name}"
                 logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {resp}")
-                
-                # Fallback to open_id if user_id fails (e.g., due to missing employee_id:readonly permission)
-                if target_member.open_id:
-                    resp_open = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
-                    if resp_open.get("code") == 0:
-                        await _save_outgoing_to_feishu_session(target_member.open_id)
-                        return f"✅ Successfully sent message to {member_name}"
-                    logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp_open}")
-                    return f"发送失败 (user_id: {resp.get('code')}, open_id: {resp_open.get('code')}): {resp_open.get('msg')}"
-                return f"发送失败 {resp}"
-            
-            # Step 2: If no external_id, try open_id directly
-            elif target_member.open_id:
+
+            # Step 5: Fallback to stored open_id (may fail if from different app)
+            if target_member.open_id:
                 resp = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(target_member.open_id)
                     return f"✅ Successfully sent message to {member_name}"
                 logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp}")
-                return f"发送失败 {resp}"
+
+            # All attempts failed
+            error_msg = f"❌ 发送失败：找不到有效的发送方式。"
+            if not target_member.external_id:
+                error_msg += " 用户没有 user_id。"
+            if not target_member.email and not target_member.phone:
+                error_msg += " 用户没有邮箱/手机号信息。"
+            error_msg += " 请确保飞书应用有 contact:user.base:readonly 或 contact:user.employee_id:readonly 权限。"
+            return error_msg
     except Exception as e:
         return f"❌ Message send error: {str(e)[:200]}"
 
@@ -6360,6 +6431,299 @@ async def _search_clawhub(agent_id: uuid.UUID, arguments: dict) -> str:
             lines.append(f"  {summary}")
     lines.append("\nTo install a skill, use: install_skill(source=\"<slug>\")")
     return "\n".join(lines)
+
+
+# ─── LLM Proxy Tool ──────────────────────────────────────────────
+
+# 图片扩展名
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+# 文档扩展名（需要提取文本）
+DOCUMENT_EXTS = {".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv", ".json"}
+
+
+async def _llm_proxy(
+    agent_id: uuid.UUID,
+    ws: Path,
+    arguments: dict,
+) -> str:
+    """调用外部 LLM API，支持文件附件和结果保存。
+
+    功能：
+    1. 从 tools 表读取配置（base_url, api_key, models）
+    2. 处理文件：图片转 base64，文档提取文本
+    3. 调用 LLM API（兼容 OpenAI 格式）
+    4. 保存结果到 workspace/llm_results/
+    5. 返回结果文本
+    """
+    import httpx
+    import base64
+    from datetime import datetime
+    from app.services.text_extractor import extract_text
+
+    prompt = arguments.get("prompt", "").strip()
+    if not prompt:
+        return "❌ 请提供 prompt 参数"
+
+    model_id = arguments.get("model")
+    files = arguments.get("files", [])
+    if isinstance(files, str):
+        files = [files]  # 兼容单个字符串
+    save_result = arguments.get("save_result", True)
+    result_filename = arguments.get("result_filename")
+
+    # ── 1. 获取配置 ──
+    config = await _get_tool_config(agent_id, "llm_proxy")
+    if not config:
+        return "❌ LLM Proxy 工具未配置，请联系管理员在后台配置 base_url、api_key 和模型列表"
+
+    base_url = config.get("base_url", "").rstrip("/")
+    api_key = config.get("api_key", "")
+    models_raw = config.get("models", [])
+
+    # 解析 models 字段（支持数组或字符串格式）
+    models = []
+    if isinstance(models_raw, str) and models_raw.strip():
+        # 字符串格式：每行一个模型，格式为 "id|name|description" 或 "id|name"
+        for line in models_raw.strip().split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split('|')
+            if len(parts) >= 1:
+                model_info = {"id": parts[0].strip()}
+                if len(parts) >= 2:
+                    model_info["name"] = parts[1].strip()
+                if len(parts) >= 3:
+                    model_info["description"] = parts[2].strip()
+                models.append(model_info)
+    elif isinstance(models_raw, list):
+        models = models_raw
+
+    if not base_url or not api_key:
+        return "❌ LLM Proxy 缺少 base_url 或 api_key 配置，请联系管理员"
+
+    # 选择模型
+    if model_id:
+        # 验证模型是否在列表中
+        model_ids = [m["id"] for m in models if isinstance(m, dict) and "id" in m]
+        if model_ids and model_id not in model_ids:
+            return f"❌ 模型 '{model_id}' 不在可用列表中。可用模型: {', '.join(model_ids)}"
+    else:
+        # 使用第一个模型作为默认
+        if models:
+            first_model = models[0]
+            model_id = first_model.get("id") if isinstance(first_model, dict) else first_model
+        else:
+            return "❌ 未配置可用模型，请联系管理员在工具配置中添加模型列表"
+
+    # 获取模型 max_tokens
+    model_info = next((m for m in models if isinstance(m, dict) and m.get("id") == model_id), None)
+    max_tokens = model_info.get("max_tokens", 4096) if model_info else 4096
+
+    # ── 2. 处理文件 ──
+    ws_resolved = ws.resolve()
+    content_parts = []
+
+    # 添加文本提示
+    content_parts.append({"type": "text", "text": prompt})
+
+    file_info = []  # 记录处理的文件信息
+
+    for file_path_str in files:
+        file_path = (ws / file_path_str).resolve()
+
+        # 安全校验：防止目录遍历
+        if not str(file_path).startswith(str(ws_resolved)):
+            return f"❌ 文件路径不合法: {file_path_str}（不能超出 workspace 范围）"
+
+        if not file_path.exists():
+            return f"❌ 文件不存在: {file_path_str}"
+
+        ext = file_path.suffix.lower()
+        file_info.append(file_path_str)
+
+        if ext in IMAGE_EXTS:
+            # 图片：转 base64
+            try:
+                file_bytes = file_path.read_bytes()
+                b64_data = base64.b64encode(file_bytes).decode("utf-8")
+
+                # 根据扩展名确定 MIME 类型
+                mime_types = {
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".png": "image/png",
+                    ".gif": "image/gif",
+                    ".webp": "image/webp",
+                }
+                mime_type = mime_types.get(ext, "image/jpeg")
+
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{b64_data}"
+                    }
+                })
+                logger.info(f"[LLMProxy] 已处理图片: {file_path_str}")
+            except Exception as e:
+                return f"❌ 读取图片失败 {file_path_str}: {e}"
+
+        elif ext in DOCUMENT_EXTS:
+            # 文档：提取文本
+            try:
+                if ext in {".txt", ".md", ".csv", ".json"}:
+                    # 纯文本文件
+                    text_content = file_path.read_text(encoding="utf-8", errors="replace")
+                else:
+                    # 使用 text_extractor 提取
+                    file_bytes = file_path.read_bytes()
+                    text_content = extract_text(file_bytes, file_path.name) or ""
+
+                if text_content:
+                    # 将文档内容追加到提示词
+                    content_parts[0]["text"] += f"\n\n---\n**文件: {file_path_str}**\n\n{text_content}"
+                    logger.info(f"[LLMProxy] 已提取文档文本: {file_path_str} ({len(text_content)} 字符)")
+                else:
+                    return f"❌ 文档内容为空或提取失败: {file_path_str}"
+
+            except Exception as e:
+                return f"❌ 读取文档失败 {file_path_str}: {e}"
+        else:
+            return f"❌ 不支持的文件类型: {ext}（支持: 图片 jpg/png/gif/webp，文档 txt/md/pdf/docx/xlsx/pptx）"
+
+    # ── 3. 调用 LLM API ──
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    messages = [{"role": "user", "content": content_parts}]
+
+    payload = {
+        "model": model_id,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }
+
+    # 调试日志：打印请求结构（不打印完整 base64）
+    content_summary = []
+    for i, part in enumerate(content_parts):
+        if part.get("type") == "text":
+            content_summary.append(f"text({len(part['text'])} chars)")
+        elif part.get("type") == "image_url":
+            img_url = part.get("image_url", {}).get("url", "")
+            if img_url.startswith("data:"):
+                # 截断 base64 数据
+                mime_end = img_url.find(";base64,")
+                if mime_end > 0:
+                    mime = img_url[5:mime_end]
+                    b64_len = len(img_url) - mime_end - 8
+                    content_summary.append(f"image_url({mime}, {b64_len} bytes base64)")
+                else:
+                    content_summary.append("image_url(data:...)")
+            else:
+                content_summary.append(f"image_url({img_url[:50]}...)")
+    logger.info(f"[LLMProxy] 调用模型: {model_id}, base_url: {base_url}")
+    logger.info(f"[LLMProxy] Content parts: {content_summary}")
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+
+        if resp.status_code != 200:
+            error_detail = resp.text[:500]
+            logger.error(f"[LLMProxy] API 调用失败: {resp.status_code} - {error_detail}")
+            return f"❌ API 调用失败 (HTTP {resp.status_code}): {error_detail}"
+
+        result = resp.json()
+        choices = result.get("choices", [])
+        if not choices:
+            return f"❌ API 返回空结果: {result}"
+
+        response_text = choices[0].get("message", {}).get("content", "")
+        usage = result.get("usage", {})
+
+    except httpx.TimeoutException:
+        return "❌ API 调用超时（120秒），请稍后重试"
+    except Exception as e:
+        logger.exception(f"[LLMProxy] API 调用错误: {e}")
+        return f"❌ API 调用错误: {type(e).__name__}: {str(e)[:200]}"
+
+    if not response_text:
+        return "❌ LLM 返回空结果"
+
+    # ── 4. 保存结果 ──
+    saved_path = None
+    if save_result:
+        # 确保 llm_results 目录存在
+        results_dir = ws / "llm_results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        # 生成文件名
+        if result_filename:
+            # 清理文件名（移除非法字符）
+            safe_name = "".join(c for c in result_filename if c.isalnum() or c in (' ', '-', '_')).strip()
+            filename = f"{safe_name}.md"
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"llm_result_{timestamp}.md"
+
+        save_path = results_dir / filename
+
+        # 构建保存内容
+        file_list = "\n".join([f"- {f}" for f in file_info]) if file_info else "_无_"
+        save_content = f"""# LLM 调用结果
+
+## 调用信息
+- **模型**: {model_id}
+- **时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+- **Token 用量**: 输入 {usage.get('prompt_tokens', 'N/A')}, 输出 {usage.get('completion_tokens', 'N/A')}
+- **附件文件**:
+{file_list}
+
+## 提示词
+```
+{prompt}
+```
+
+## 响应结果
+{response_text}
+"""
+
+        try:
+            save_path.write_text(save_content, encoding="utf-8")
+            saved_path = f"llm_results/{filename}"
+            logger.info(f"[LLMProxy] 结果已保存: {saved_path}")
+        except Exception as e:
+            logger.error(f"[LLMProxy] 保存结果失败: {e}")
+
+    # ── 5. 返回结果 ──
+    # 截断过长的响应
+    preview = response_text[:2000] + "..." if len(response_text) > 2000 else response_text
+
+    if saved_path:
+        return f"""✅ LLM 调用成功
+
+**模型**: {model_id}
+**Token 用量**: 输入 {usage.get('prompt_tokens', 'N/A')}, 输出 {usage.get('completion_tokens', 'N/A')}
+**结果已保存至**: `{saved_path}`
+
+---
+
+{preview}"""
+    else:
+        return f"""✅ LLM 调用成功
+
+**模型**: {model_id}
+**Token 用量**: 输入 {usage.get('prompt_tokens', 'N/A')}, 输出 {usage.get('completion_tokens', 'N/A')}
+
+---
+
+{preview}"""
 
 
 async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:

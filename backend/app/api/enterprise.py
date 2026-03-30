@@ -134,6 +134,9 @@ async def add_llm_model(
         max_tokens_per_day=data.max_tokens_per_day,
         enabled=data.enabled,
         supports_vision=data.supports_vision,
+        max_output_tokens=data.max_output_tokens,
+        temperature=data.temperature,
+        auto_retry_count=data.auto_retry_count if data.auto_retry_count is not None else 3,
         tenant_id=uuid.UUID(tid) if tid else None,
     )
     db.add(model)
@@ -214,6 +217,12 @@ async def update_llm_model(
             model.enabled = data.enabled
         if hasattr(data, 'supports_vision') and data.supports_vision is not None:
             model.supports_vision = data.supports_vision
+        if hasattr(data, 'max_output_tokens') and data.max_output_tokens is not None:
+            model.max_output_tokens = data.max_output_tokens
+        if hasattr(data, 'temperature') and data.temperature is not None:
+            model.temperature = data.temperature
+        if hasattr(data, 'auto_retry_count') and data.auto_retry_count is not None:
+            model.auto_retry_count = min(max(data.auto_retry_count, 0), 100)  # Clamp to 0-100
 
         await db.commit()
         await db.refresh(model)

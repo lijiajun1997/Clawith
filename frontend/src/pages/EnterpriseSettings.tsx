@@ -26,7 +26,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 interface LLMModel {
     id: string; provider: string; model: string; label: string;
-    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; temperature?: number; created_at: string;
+    base_url?: string; api_key_masked?: string; max_tokens_per_day?: number; enabled: boolean; supports_vision?: boolean; max_output_tokens?: number; temperature?: number; auto_retry_count?: number; created_at: string;
 }
 
 interface LLMProviderSpec {
@@ -1805,7 +1805,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, temperature: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, temperature: '' as string, auto_retry_count: '3' as string });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -1909,6 +1909,7 @@ export default function EnterpriseSettings() {
                                     label: '', supports_vision: false,
                                     max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
                                     temperature: '',
+                                    auto_retry_count: '3',
                                 });
                                 setShowAddModel(true);
                             }}>+ {t('enterprise.llm.addModel')}</button>
@@ -1978,6 +1979,11 @@ export default function EnterpriseSettings() {
                                         <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
                                     </div>
+                                    <div className="form-group">
+                                        <label className="form-label">{t('enterprise.llm.autoRetryCount', 'Auto Retry Count')}</label>
+                                        <input className="form-input" type="number" min="0" max="100" placeholder="3" value={modelForm.auto_retry_count} onChange={e => setModelForm({ ...modelForm, auto_retry_count: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.autoRetryCountDesc', 'Number of automatic retries on API failure (0-100, default 3)')}</div>
+                                    </div>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
                                     <button className="btn btn-secondary" onClick={() => { setShowAddModel(false); setEditingModelId(null); }}>{t('common.cancel')}</button>
@@ -2011,7 +2017,8 @@ export default function EnterpriseSettings() {
                                         const data = {
                                             ...modelForm,
                                             max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
-                                            temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
+                                            temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null,
+                                            auto_retry_count: modelForm.auto_retry_count !== '' ? Number(modelForm.auto_retry_count) : 3
                                         };
                                         addModel.mutate(data);
                                     }} disabled={!modelForm.model || !modelForm.api_key}>
@@ -2081,6 +2088,11 @@ export default function EnterpriseSettings() {
                                                     <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
                                                 </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">{t('enterprise.llm.autoRetryCount', 'Auto Retry Count')}</label>
+                                                    <input className="form-input" type="number" min="0" max="100" placeholder="3" value={modelForm.auto_retry_count} onChange={e => setModelForm({ ...modelForm, auto_retry_count: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.autoRetryCountDesc', 'Number of automatic retries on API failure (0-100, default 3)')}</div>
+                                                </div>
                                             </div>
                                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
                                                 <button className="btn btn-secondary" onClick={() => { setShowAddModel(false); setEditingModelId(null); }}>{t('common.cancel')}</button>
@@ -2115,7 +2127,8 @@ export default function EnterpriseSettings() {
                                                     const data = {
                                                         ...modelForm,
                                                         max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
-                                                        temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
+                                                        temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null,
+                                                        auto_retry_count: modelForm.auto_retry_count !== '' ? Number(modelForm.auto_retry_count) : 3
                                                     };
                                                     updateModel.mutate({ id: editingModelId!, data });
                                                 }} disabled={!modelForm.model}>
@@ -2163,7 +2176,7 @@ export default function EnterpriseSettings() {
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
-                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
+                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '', auto_retry_count: m.auto_retry_count !== null && m.auto_retry_count !== undefined ? String(m.auto_retry_count) : '3' });
                                                     setShowAddModel(true);
                                                 }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>

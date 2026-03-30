@@ -239,7 +239,9 @@ class FeishuService:
         Each Feishu app gets a unique open_id per user. This method looks up the
         correct open_id for the given app's credentials.
         """
+        from loguru import logger
         if not email and not mobile:
+            logger.info(f"[Feishu] resolve_open_id: no email or mobile provided")
             return None
 
         async with httpx.AsyncClient() as client:
@@ -255,6 +257,7 @@ class FeishuService:
             if mobile:
                 body["mobiles"] = [mobile]
 
+            logger.info(f"[Feishu] resolve_open_id: calling batch_get_id with email={email}, mobile={mobile}")
             resp = await client.post(
                 "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
                 json=body,
@@ -262,6 +265,7 @@ class FeishuService:
                 params={"user_id_type": "open_id"},
             )
             data = resp.json()
+            logger.info(f"[Feishu] resolve_open_id response: code={data.get('code')}, msg={data.get('msg')}")
             if data.get("code") != 0:
                 return None
 
@@ -269,7 +273,9 @@ class FeishuService:
             for u in user_list:
                 oid = u.get("user_id")
                 if oid:
+                    logger.info(f"[Feishu] resolve_open_id: found open_id={oid}")
                     return oid
+            logger.info(f"[Feishu] resolve_open_id: no user found in response")
             return None
 
     async def resolve_user_id(self, app_id: str, app_secret: str,
@@ -310,6 +316,46 @@ class FeishuService:
                 uid = u.get("user_id")
                 if uid:
                     return uid
+            return None
+
+    async def get_open_id_by_user_id(self, app_id: str, app_secret: str, user_id: str) -> str | None:
+        """Resolve open_id for a specific app using the tenant-level user_id.
+
+        Each Feishu app has its own open_id for each user. This method converts
+        the tenant-stable user_id to the app-specific open_id.
+
+        Uses batch_get_id API which can also accept user_ids to get open_ids.
+        Requires permission: contact:user.base:readonly
+        """
+        from loguru import logger
+        async with httpx.AsyncClient() as client:
+            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
+                "app_id": app_id,
+                "app_secret": app_secret,
+            })
+            app_token = token_resp.json().get("app_access_token", "")
+
+            # Use batch_get_id API with user_ids to get open_ids
+            # This is the same API used for email/mobile lookup
+            resp = await client.post(
+                "https://open.feishu.cn/open-apis/contact/v3/users/batch_get_id",
+                json={"user_ids": [user_id]},
+                headers={"Authorization": f"Bearer {app_token}"},
+                params={"user_id_type": "open_id"},
+            )
+            data = resp.json()
+            logger.info(f"[Feishu] get_open_id_by_user_id response: code={data.get('code')}, msg={data.get('msg')}, data={data.get('data')}")
+            if data.get("code") != 0:
+                logger.warning(f"[Feishu] get_open_id_by_user_id failed: {data}")
+                return None
+
+            user_list = data.get("data", {}).get("user_list", [])
+            for u in user_list:
+                oid = u.get("user_id")  # This is actually open_id due to user_id_type=open_id
+                if oid:
+                    logger.info(f"[Feishu] get_open_id_by_user_id found: {oid}")
+                    return oid
+            logger.warning(f"[Feishu] get_open_id_by_user_id: no user found in response")
             return None
 
     async def send_approval_card(self, app_id: str, app_secret: str,

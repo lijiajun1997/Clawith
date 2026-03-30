@@ -209,12 +209,14 @@ async def call_llm(
 
     # Create the unified LLM client
     try:
+        auto_retry_count = getattr(model, 'auto_retry_count', 3) or 3
         client = create_llm_client(
             provider=model.provider,
             api_key=model.api_key_encrypted,
             model=model.model,
             base_url=model.base_url,
             timeout=120.0,
+            auto_retry_count=auto_retry_count,
         )
     except Exception as e:
         return f"[Error] Failed to create LLM client: {e}"

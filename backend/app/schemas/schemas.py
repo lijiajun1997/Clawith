@@ -277,6 +277,7 @@ class LLMModelCreate(BaseModel):
     enabled: bool = True
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    auto_retry_count: int | None = Field(3, ge=0, le=100, description="Auto retry count for API calls, default 3, max 100")
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -289,6 +290,7 @@ class LLMModelUpdate(BaseModel):
     enabled: bool | None = None
     supports_vision: bool | None = None
     max_output_tokens: int | None = None
+    auto_retry_count: int | None = Field(None, ge=0, le=100, description="Auto retry count for API calls, default 3, max 100")
 
 
 class LLMModelOut(BaseModel):
@@ -303,6 +305,7 @@ class LLMModelOut(BaseModel):
     enabled: bool
     supports_vision: bool = False
     max_output_tokens: int | None = None
+    auto_retry_count: int = 3
     created_at: datetime
 
     model_config = {"from_attributes": True}

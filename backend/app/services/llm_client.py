@@ -178,11 +178,13 @@ class LLMClient(ABC):
         base_url: str | None = None,
         model: str | None = None,
         timeout: float = 120.0,
+        auto_retry_count: int = 3,
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        self.auto_retry_count = min(max(auto_retry_count, 0), 100)  # Clamp to 0-100
 
     @abstractmethod
     async def complete(
@@ -232,8 +234,9 @@ class OpenAICompatibleClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        auto_retry_count: int = 3,
     ):
-        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
+        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout, auto_retry_count)
         self.supports_tool_choice = supports_tool_choice
         self._client: httpx.AsyncClient | None = None
 
@@ -429,32 +432,54 @@ class OpenAICompatibleClient(LLMClient):
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """Non-streaming completion."""
+        """Non-streaming completion with automatic retry."""
         url = f"{self._normalize_base_url()}/chat/completions"
         payload = self._build_payload(messages, tools, temperature, max_tokens, stream=False, **kwargs)
 
-        client = await self._get_client()
-        response = await client.post(url, json=payload, headers=self._get_headers())
+        last_error = None
+        for attempt in range(self.auto_retry_count + 1):
+            try:
+                client = await self._get_client()
+                response = await client.post(url, json=payload, headers=self._get_headers())
 
-        if response.status_code >= 400:
-            error_text = response.text[:500]
-            raise LLMError(f"HTTP {response.status_code}: {error_text}")
+                if response.status_code >= 400:
+                    error_text = response.text[:500]
+                    last_error = LLMError(f"HTTP {response.status_code}: {error_text}")
+                    if attempt < self.auto_retry_count:
+                        logger.warning(f"[LLM] API error (attempt {attempt + 1}/{self.auto_retry_count + 1}): {error_text[:100]}")
+                        await asyncio.sleep(1)
+                        continue
+                    raise last_error
 
-        data = response.json()
+                data = response.json()
 
-        if "error" in data:
-            raise LLMError(f"API error: {data['error']}")
+                if "error" in data:
+                    last_error = LLMError(f"API error: {data['error']}")
+                    if attempt < self.auto_retry_count:
+                        logger.warning(f"[LLM] API error (attempt {attempt + 1}/{self.auto_retry_count + 1}): {data['error']}")
+                        await asyncio.sleep(1)
+                        continue
+                    raise last_error
 
-        choice = data.get("choices", [{}])[0]
-        msg = choice.get("message", {})
+                choice = data.get("choices", [{}])[0]
+                msg = choice.get("message", {})
 
-        return LLMResponse(
-            content=msg.get("content", ""),
-            tool_calls=msg.get("tool_calls", []),
-            finish_reason=choice.get("finish_reason"),
-            usage=data.get("usage"),
-            model=data.get("model"),
-        )
+                return LLMResponse(
+                    content=msg.get("content", ""),
+                    tool_calls=msg.get("tool_calls", []),
+                    finish_reason=choice.get("finish_reason"),
+                    usage=data.get("usage"),
+                    model=data.get("model"),
+                )
+            except httpx.HTTPError as e:
+                last_error = LLMError(f"HTTP error: {e}")
+                if attempt < self.auto_retry_count:
+                    logger.warning(f"[LLM] HTTP error (attempt {attempt + 1}/{self.auto_retry_count + 1}): {e}")
+                    await asyncio.sleep(1)
+                    continue
+                raise last_error
+
+        raise last_error or LLMError("Unknown error")
 
     async def stream(
         self,
@@ -583,8 +608,9 @@ class OpenAIResponsesClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        auto_retry_count: int = 3,
     ):
-        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
+        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout, auto_retry_count)
         self.supports_tool_choice = supports_tool_choice
         self._client: httpx.AsyncClient | None = None
 
@@ -880,8 +906,9 @@ class GeminiClient(LLMClient):
         model: str | None = None,
         timeout: float = 120.0,
         supports_tool_choice: bool = True,
+        auto_retry_count: int = 3,
     ):
-        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
+        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout, auto_retry_count)
         self.supports_tool_choice = supports_tool_choice
         self._client: httpx.AsyncClient | None = None
         self._openai_fallback_client: OpenAICompatibleClient | None = None
@@ -1364,8 +1391,9 @@ class AnthropicClient(LLMClient):
         base_url: str | None = None,
         model: str | None = None,
         timeout: float = 120.0,
+        auto_retry_count: int = 3,
     ):
-        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout)
+        super().__init__(api_key, base_url or self.DEFAULT_BASE_URL, model, timeout, auto_retry_count)
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -1898,6 +1926,7 @@ def create_llm_client(
     model: str,
     base_url: str | None = None,
     timeout: float = 120.0,
+    auto_retry_count: int = 3,
 ) -> LLMClient:
     """Create an LLM client for the given provider.
 
@@ -1907,6 +1936,7 @@ def create_llm_client(
         model: Model name
         base_url: Optional custom base URL
         timeout: Request timeout in seconds
+        auto_retry_count: Number of automatic retries on API failure (0-100, default 3)
 
     Returns:
         An instance of the appropriate LLMClient subclass
@@ -1927,6 +1957,7 @@ def create_llm_client(
             base_url=final_base_url,
             model=model,
             timeout=timeout,
+            auto_retry_count=auto_retry_count,
         )
     elif spec and spec.protocol == "openai_responses":
         return OpenAIResponsesClient(
@@ -1935,6 +1966,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+            auto_retry_count=auto_retry_count,
         )
     elif spec and spec.protocol == "gemini":
         return GeminiClient(
@@ -1943,6 +1975,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=spec.supports_tool_choice,
+            auto_retry_count=auto_retry_count,
         )
     elif normalized_provider in PROVIDER_CLIENTS:
         supports_tool_choice = normalized_provider in TOOL_CHOICE_PROVIDERS
@@ -1952,6 +1985,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=supports_tool_choice,
+            auto_retry_count=auto_retry_count,
         )
     else:
         # Default to OpenAI-compatible for unknown providers
@@ -1961,6 +1995,7 @@ def create_llm_client(
             model=model,
             timeout=timeout,
             supports_tool_choice=True,
+            auto_retry_count=auto_retry_count,
         )
 
 
