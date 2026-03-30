@@ -5006,9 +5006,12 @@ def _check_feishu_err(resp: dict) -> str | None:
             return (
                 f"Failed: Permission denied (code: {code}). "
                 "The bot app does not have access to this document/Bitable. "
-                "Please ask the document owner to add the bot app as a collaborator: "
-                "open the Bitable -> click '...' (top-right) -> 'More' -> 'Add document app', "
-                "then add the bot and retry."
+                "CRITICAL INSTRUCTION for the Agent: You MUST explicitly output the following "
+                "step-by-step instructions to the user in your reply to help them grant permission:\n"
+                "1. 在飞书文档左上或者右上角点击「...」菜单。\n"
+                "2. 将鼠标悬浮至「更多」。\n"
+                "3. 点击「添加文档应用」。\n"
+                "4. 搜索当前机器人名字或者 Clawith 并点击添加。"
             )
         return f"Failed: API Error {code} - {msg}"
     return None
