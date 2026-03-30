@@ -2867,9 +2867,16 @@ export default function EnterpriseSettings() {
                                                             ) : field.type === 'password' ? (
                                                                 <input type="password" autoComplete="new-password" className="form-input" value={editingConfig[field.key] ?? ''} placeholder={field.placeholder || ''}
                                                                     onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            ) : field.type === 'textarea' ? (
+                                                                <textarea className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''}
+                                                                    onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))}
+                                                                    rows={field.rows || 4} style={{ resize: 'vertical', minHeight: '80px' }} />
                                                             ) : (
                                                                 <input type="text" className="form-input" value={editingConfig[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''}
                                                                     onChange={e => setEditingConfig(p => ({ ...p, [field.key]: e.target.value }))} />
+                                                            )}
+                                                            {field.help_text && (
+                                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{field.help_text}</div>
                                                             )}
                                                         </div>
                                                     );

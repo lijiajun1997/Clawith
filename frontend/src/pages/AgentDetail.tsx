@@ -452,6 +452,10 @@ function ToolsManager({ agentId, canManage = false }: { agentId: string; canMana
                                                         </select>
                                                     ) : field.type === 'number' ? (
                                                         <input type="number" className="form-input" value={configData[field.key] ?? field.default ?? ''} placeholder={field.placeholder || ''} min={field.min} max={field.max} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value ? Number(e.target.value) : '' }))} />
+                                                    ) : field.type === 'textarea' ? (
+                                                        <textarea className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || t('admin.leaveBlankDefault', 'Leave blank to use global default')}
+                                                            onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))}
+                                                            rows={field.rows || 4} style={{ resize: 'vertical', minHeight: '80px' }} />
                                                     ) : (
                                                         <input type="text" className="form-input" value={configData[field.key] ?? ''} placeholder={field.placeholder || 'Leave blank to use global default'} onChange={e => setConfigData(p => ({ ...p, [field.key]: e.target.value }))} />
                                                     )}
