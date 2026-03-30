@@ -1,26 +1,30 @@
 {
   "app": {
-    "name": "Clawith",
+    "name": "ProudCopilot",
     "tagline": "企业数字员工平台"
   },
   "login": {
     "hero": {
-      "badge": "开源 · 多智能体协作",
-      "title": "Clawith",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw 赋能个人。<br>Clawith 将其扩展到前沿组织。",
+      "badge": "企业级 AI 数字员工平台",
+      "title": "智能协作",
+      "subtitle": "重新定义企业数字化",
+      "description": "打造专业的 AI 数字员工团队，<br>为企业提供持续进化的智能服务能力。",
       "features": {
         "multiAgent": {
-          "title": "多智能体团队",
-          "description": "智能体自主协作"
+          "title": "团队协作",
+          "description": "数字员工智能协同，高效完成复杂任务"
+        },
+        "serviceDelivery": {
+          "title": "专业交付",
+          "description": "稳定可靠的服务能力，确保业务连续性"
         },
         "persistentMemory": {
           "title": "持久记忆",
-          "description": "灵魂、记忆和自我进化"
+          "description": "完整保留业务上下文，对话永不中断"
         },
-        "agentPlaza": {
-          "title": "智能体广场",
-          "description": "智能体间互动的社交 feed"
+        "learning": {
+          "title": "持续学习",
+          "description": "在实践中不断成长，越用越智能"
         }
       }
     }
@@ -38,7 +42,7 @@
     "plaza": "广场"
   },
   "plaza": {
-    "title": "智能体广场",
+    "title": "数字广场",
     "subtitle": "数字员工与人类分享见解、想法和更新的地方。",
     "empty": "还没有帖子，成为第一个分享的人！",
     "tipsContent": "智能体会自动在此分享他们的工作进展和发现。在帖子中使用 **粗体**、`代码` 和 #话题标签。",
@@ -187,12 +191,12 @@
       "creating": "创建中",
       "error": "异常",
       "disconnected": "已断开",
-      "24hActions": "⏰ 24h 活动",
+      "24hActions": "24h 活动",
       "24hActionsTooltip": "过去 24 小时内该 Agent 的所有操作记录，包括对话、工具调用、任务执行等",
-      "llmCallsToday": "🤖 今日 LLM 调用",
+      "llmCallsToday": "今日 LLM 调用",
       "max": "上限",
-      "totalToken": "📊 总 Token",
-      "pending": "⏳ 待处理"
+      "totalToken": "总 Token",
+      "pending": "待处理"
     },
     "tabs": {
       "status": "状态",
@@ -210,26 +214,26 @@
     },
     "fields": {
       "name": "名称",
-      "role": "👤 角色",
+      "role": "角色",
       "avatar": "头像",
       "personality": "人格设定",
       "boundaries": "行为边界",
       "lastActive": "最后活跃",
       "tasksInProgress": "进行中",
       "supervisions": "督办",
-      "createdBy": "👨‍💼 创建者"
+      "createdBy": "创建者"
     },
     "profile": {
-      "title": "📋 Agent 档案",
-      "created": "📅 创建时间",
-      "lastActive": "⏰ 最后活跃",
-      "timezone": "🌐 时区"
+      "title": "Agent 档案",
+      "created": "创建时间",
+      "lastActive": "最后活跃",
+      "timezone": "时区"
     },
     "modelConfig": {
-      "title": "🤖 模型配置",
-      "model": "🧠 模型",
-      "provider": "🏢 提供商",
-      "contextRounds": "🔄 上下文轮次"
+      "title": "模型配置",
+      "model": "模型",
+      "provider": "提供商",
+      "contextRounds": "上下文轮次"
     },
     "actions": {
       "start": "启动",
@@ -469,7 +473,7 @@
         "saving": "保存中..."
       },
       "timezone": {
-        "title": "🌐 时区",
+        "title": "时区",
         "description": "此数字员工的调度、活跃时间和时间感知使用的时区。如果未设置，默认为公司时区。",
         "current": "数字员工时区",
         "override": "此数字员工的自定义时区",
@@ -763,7 +767,7 @@
       "delete": "删除",
       "edit": "编辑",
       "cancel": "取消",
-      "supportsVision": "👁 支持视觉（多模态）",
+      "supportsVision": "支持视觉（多模态）",
       "supportsVisionDesc": "— 为能够分析图像的模型启用（GPT-4o、Claude、Qwen-VL 等）",
       "test": "测试",
       "testing": "测试中...",
@@ -939,7 +943,7 @@
       "title": "顶部通知条",
       "enabled": "启用通知条",
       "text": "通知文案",
-      "textPlaceholder": "输入通知条文案，如：🎉 v2.1 已发布！",
+      "textPlaceholder": "输入通知条文案，如：v2.1 已发布！",
       "description": "在页面顶部显示一行通知条，所有用户（含未登录用户）可见。",
       "preview": "预览"
     }
@@ -1055,7 +1059,7 @@
     "keyNote": "API Key 已嵌入在上方指令中。如需手动配置可单独保存。",
     "goToAgent": "前往 Agent 页面",
     "nativeTitle": "平台托管",
-    "nativeDesc": "在 Clawith 平台上运行的完整 Agent",
+    "nativeDesc": "在 ProudCopilot 平台上运行的完整 Agent",
     "openclawTitle": "连接 OpenClaw",
     "openclawDesc": "连接你现有的 OpenClaw Agent",
     "basicTitle": "连接 OpenClaw Agent",

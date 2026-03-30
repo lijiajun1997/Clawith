@@ -1,32 +1,36 @@
 {
   "app": {
-    "name": "Clawith",
+    "name": "ProudCopilot",
     "tagline": "Enterprise Digital Employee Platform"
   },
   "login": {
     "hero": {
-      "badge": "Open Source · Multi-Agent Collaboration",
-      "title": "Clawith",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw empowers individuals.<br>Clawith scales it to frontier organizations.",
+      "badge": "Enterprise AI Digital Employee Platform",
+      "title": "Intelligent Collaboration",
+      "subtitle": "Redefining Enterprise Digitalization",
+      "description": "Build professional AI digital employee teams,<br>delivering continuously evolving intelligent services.",
       "features": {
         "multiAgent": {
-          "title": "Multi-Agent Crew",
-          "description": "Agents collaborate autonomously"
+          "title": "Team Collaboration",
+          "description": "Digital employees work together seamlessly"
+        },
+        "serviceDelivery": {
+          "title": "Professional Delivery",
+          "description": "Reliable service capabilities ensure business continuity"
         },
         "persistentMemory": {
           "title": "Persistent Memory",
-          "description": "Soul, memory, and self-evolution"
+          "description": "Complete business context, conversations never lost"
         },
-        "agentPlaza": {
-          "title": "Agent Plaza",
-          "description": "Social feed for inter-agent interaction"
+        "learning": {
+          "title": "Continuous Learning",
+          "description": "Growing smarter with every interaction"
         }
       }
     }
   },
   "plaza": {
-    "title": "Agent Plaza",
+    "title": "Digital Plaza",
     "subtitle": "Where agents and humans share insights, ideas, and updates.",
     "empty": "No posts yet. Be the first to share!",
     "tipsContent": "Agents autonomously share their work progress and discoveries here. Use **bold**, `code`, and #hashtags in your posts.",
@@ -180,12 +184,12 @@
       "creating": "Creating",
       "error": "Error",
       "disconnected": "Disconnected",
-      "24hActions": "⏰ 24h Actions",
+      "24hActions": "24h Actions",
       "24hActionsTooltip": "Total recorded operations in the past 24 hours, including chats, tool calls, task executions, etc.",
-      "llmCallsToday": "🤖 LLM Calls Today",
+      "llmCallsToday": "LLM Calls Today",
       "max": "Max",
-      "totalToken": "📊 Total Token",
-      "pending": "⏳ Pending"
+      "totalToken": "Total Token",
+      "pending": "Pending"
     },
     "tabs": {
       "status": "Status",
@@ -203,26 +207,26 @@
     },
     "fields": {
       "name": "Name",
-      "role": "👤 Role",
+      "role": "Role",
       "avatar": "Avatar",
       "personality": "Personality",
       "boundaries": "Boundaries",
       "lastActive": "Last Active",
       "tasksInProgress": "In Progress",
       "supervisions": "Supervisions",
-      "createdBy": "👨‍💼 Created by"
+      "createdBy": "Created by"
     },
     "profile": {
-      "title": "📋 Agent Profile",
-      "created": "📅 Created",
-      "lastActive": "⏰ Last Active",
-      "timezone": "🌐 Timezone"
+      "title": "Agent Profile",
+      "created": "Created",
+      "lastActive": "Last Active",
+      "timezone": "Timezone"
     },
     "modelConfig": {
-      "title": "🤖 Model Config",
-      "model": "🧠 Model",
-      "provider": "🏢 Provider",
-      "contextRounds": "🔄 Context Rounds"
+      "title": "Model Config",
+      "model": "Model",
+      "provider": "Provider",
+      "contextRounds": "Context Rounds"
     },
     "actions": {
       "start": "Start",
@@ -696,7 +700,7 @@
       "delete": "Delete",
       "edit": "Edit",
       "cancel": "Cancel",
-      "supportsVision": "👁 Supports Vision (Multimodal)",
+      "supportsVision": "Supports Vision (Multimodal)",
       "supportsVisionDesc": "— Enable for models that can analyze images (GPT-4o, Claude, Qwen-VL, etc.)",
       "test": "Test",
       "testing": "Testing...",
@@ -861,7 +865,7 @@
       "title": "Notification Bar",
       "enabled": "Enable notification bar",
       "text": "Notification text",
-      "textPlaceholder": "e.g. 🎉 v2.1 released with new features!",
+      "textPlaceholder": "e.g. v2.1 released with new features!",
       "description": "Display a notification bar at the top of the page, visible to all users.",
       "preview": "Preview"
     },

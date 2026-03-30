@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # App
-    APP_NAME: str = "Clawith"
+    APP_NAME: str = "ProudCopilot"
     APP_VERSION: str = _read_version()
     DEBUG: bool = False
     SECRET_KEY: str = "change-me-in-production"
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
 
     # System email (platform-owned outbound mail)
     SYSTEM_EMAIL_FROM_ADDRESS: str = ""
-    SYSTEM_EMAIL_FROM_NAME: str = "Clawith"
+    SYSTEM_EMAIL_FROM_NAME: str = "ProudCopilot"
     SYSTEM_SMTP_HOST: str = ""
     SYSTEM_SMTP_PORT: int = 465
     SYSTEM_SMTP_USERNAME: str = ""
