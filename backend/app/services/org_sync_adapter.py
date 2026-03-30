@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import IdentityProvider
 from app.models.org import OrgDepartment, OrgMember
+from app.models.tenant import Tenant  # Import Tenant to register its table metadata for FK validation
 from app.models.user import User
 from pypinyin import pinyin, Style
 
@@ -277,18 +278,13 @@ class BaseOrgSyncAdapter(ABC):
         update_mappings = [{"id": d_id, "member_count": d_data["total"]} for d_id, d_data in dept_map.items()]
         
         if update_mappings:
-            from app.database import async_engine
-            # Use core update with executemany approach handled cleanly by SQLAlchemy mapping
-            # SQLAlchemy 2.0 style bulk update
-            from sqlalchemy import bindparam
-            stmt = (
-                update(OrgDepartment)
-                .where(OrgDepartment.id == bindparam("b_id"))
-                .values(member_count=bindparam("b_count"))
-            )
-            # Re-map keys for bindparams
-            bind_mappings = [{"b_id": m["id"], "b_count": m["member_count"]} for m in update_mappings]
-            await db.execute(stmt, bind_mappings)
+            # Use simple individual updates to avoid SQLAlchemy bulk update issues
+            for mapping in update_mappings:
+                await db.execute(
+                    update(OrgDepartment)
+                    .where(OrgDepartment.id == mapping["id"])
+                    .values(member_count=mapping["member_count"])
+                )
 
     async def _ensure_provider(self, db: AsyncSession) -> IdentityProvider:
         """Ensure IdentityProvider record exists."""

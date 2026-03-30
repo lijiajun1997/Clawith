@@ -171,6 +171,12 @@ async def lifespan(app: FastAPI):
         logger.warning(f"[startup] Agent templates seed failed: {e}")
 
     try:
+        from app.services.audit_consulting_seeder import seed_audit_consulting_templates
+        await seed_audit_consulting_templates()
+    except Exception as e:
+        logger.warning(f"[startup] Audit consulting templates seed failed: {e}")
+
+    try:
         from app.services.skill_seeder import seed_skills, push_default_skills_to_existing_agents
         await seed_skills()
         await push_default_skills_to_existing_agents()
