@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconMoon, IconSun, IconSunHigh } from '@tabler/icons-react';
 import { agentApi, taskApi, activityApi } from '../services/api';
 import type { Agent, Task } from '../types';
 
@@ -406,7 +407,12 @@ export default function Dashboard() {
 
     // Greeting
     const hour = new Date().getHours();
-    const greeting = hour < 6 ? '🌙 ' + t('dashboard.greeting.lateNight') : hour < 12 ? '☀️ ' + t('dashboard.greeting.morning') : hour < 18 ? '🌤️ ' + t('dashboard.greeting.afternoon') : '🌙 ' + t('dashboard.greeting.evening');
+    const getGreetingIcon = () => {
+        if (hour < 6 || hour >= 18) return <IconMoon size={20} stroke={1.5} style={{ marginRight: 8, verticalAlign: 'middle' }} />;
+        if (hour < 12) return <IconSun size={20} stroke={1.5} style={{ marginRight: 8, verticalAlign: 'middle' }} />;
+        return <IconSunHigh size={20} stroke={1.5} style={{ marginRight: 8, verticalAlign: 'middle' }} />;
+    };
+    const greetingText = hour < 6 ? t('dashboard.greeting.lateNight') : hour < 12 ? t('dashboard.greeting.morning') : hour < 18 ? t('dashboard.greeting.afternoon') : t('dashboard.greeting.evening');
 
     return (
         <div>
@@ -416,8 +422,8 @@ export default function Dashboard() {
                 alignItems: 'center', marginBottom: '28px',
             }}>
                 <div>
-                    <h1 style={{ fontSize: '20px', fontWeight: 600, margin: 0, marginBottom: '2px', letterSpacing: '-0.02em' }}>
-                        {greeting}
+                    <h1 style={{ fontSize: '20px', fontWeight: 600, margin: 0, marginBottom: '2px', letterSpacing: '-0.02em', display: 'flex', alignItems: 'center' }}>
+                        {getGreetingIcon()}{greetingText}
                     </h1>
                     <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', margin: 0 }}>
                         {t('dashboard.totalAgents', { count: agents.length })}

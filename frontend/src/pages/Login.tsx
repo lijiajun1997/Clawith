@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconRobot, IconBrain, IconWorld, IconAlertCircle, IconTarget, IconSchool } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
 
@@ -150,30 +151,37 @@ export default function Login() {
                         {t('login.hero.badge')}
                     </div>
                     <h1 className="login-hero-title">
-                        {t('login.hero.title')}<br />
-                        <span style={{ fontSize: '0.65em', fontWeight: 600, opacity: 0.85 }}>{t('login.hero.subtitle')}</span>
+                        {t('login.hero.title')}
                     </h1>
+                    <p className="login-hero-subtitle">{t('login.hero.subtitle')}</p>
                     <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
                     <div className="login-hero-features">
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🤖</span>
+                            <span className="login-hero-feature-icon"><IconRobot size={24} stroke={1.5} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧠</span>
+                            <span className="login-hero-feature-icon"><IconTarget size={24} stroke={1.5} /></span>
+                            <div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.serviceDelivery.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.serviceDelivery.description')}</div>
+                            </div>
+                        </div>
+                        <div className="login-hero-feature">
+                            <span className="login-hero-feature-icon"><IconBrain size={24} stroke={1.5} /></span>
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🏛️</span>
+                            <span className="login-hero-feature-icon"><IconSchool size={24} stroke={1.5} /></span>
                             <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.learning.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.learning.description')}</div>
                             </div>
                         </div>
                     </div>
@@ -185,18 +193,18 @@ export default function Login() {
                 {/* Language Switcher */}
                 <div style={{
                     position: 'absolute', top: '16px', right: '16px',
-                    cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)',
+                    cursor: 'pointer', fontSize: '13px', color: '#64748b',
                     display: 'flex', alignItems: 'center', gap: '4px',
                     padding: '6px 12px', borderRadius: '8px',
-                    background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
+                    background: '#f1f5f9', border: '1px solid #e2e8f0',
                     zIndex: 101,
                 }} onClick={toggleLang}>
-                    🌐
+                    <IconWorld size={16} stroke={1.5} />
                 </div>
 
                 <div className="login-form-wrapper">
                     <div className="login-form-header">
-                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />Clawith</div>
+                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />ProudCopilot</div>
                         <h2 className="login-form-title">
                             {isRegister ? t('auth.register') : t('auth.login')}
                         </h2>
@@ -207,7 +215,7 @@ export default function Login() {
 
                     {error && (
                         <div className="login-error">
-                            <span>⚠</span> {error}
+                            <IconAlertCircle size={16} stroke={1.5} /> {error}
                         </div>
                     )}
 
