@@ -3673,8 +3673,8 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 return f"⚠️ {target.name} has no LLM model configured"
 
             # Build target system prompt
-            target_system = await build_agent_context(target.id, target.name, target.role_description or "")
-            target_system += (
+            target_static, target_dynamic = await build_agent_context(target.id, target.name, target.role_description or "")
+            target_dynamic += (
                 "\n\n--- Agent-to-Agent Message ---\n"
                 "You are receiving a message from another digital employee. "
                 "Reply concisely and helpfully. Focus on the request and provide a clear answer.\n"
@@ -3734,7 +3734,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
             if not base_url:
                 return f"⚠️ {target.name}'s model has no API base URL configured"
 
-            full_msgs: list[LLMMessage] = [LLMMessage(role="system", content=target_system)] + [
+            full_msgs: list[LLMMessage] = [LLMMessage(role="system", content=target_static, dynamic_content=target_dynamic)] + [
                 LLMMessage(role=m["role"], content=m["content"]) for m in conversation_messages
             ]
 
