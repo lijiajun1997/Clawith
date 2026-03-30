@@ -411,14 +411,27 @@ class BaseOrgSyncAdapter(ABC):
             )
             department = dept_result.scalars().first()
 
-        # Check if exists by external_id and provider
-        result = await db.execute(
-            select(OrgMember).where(
-                OrgMember.external_id == user.external_id,
-                OrgMember.provider_id == provider.id,
+        # Check if exists by open_id (most reliable), then by external_id
+        # open_id is platform-stable and never changes
+        existing_member = None
+        if user.open_id:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.open_id == user.open_id,
+                    OrgMember.provider_id == provider.id,
+                )
             )
-        )
-        existing_member = result.scalars().first()
+            existing_member = result.scalars().first()
+
+        # Fallback to external_id if open_id not found
+        if not existing_member and user.external_id:
+            result = await db.execute(
+                select(OrgMember).where(
+                    OrgMember.external_id == user.external_id,
+                    OrgMember.provider_id == provider.id,
+                )
+            )
+            existing_member = result.scalars().first()
 
         now = datetime.now()
 
