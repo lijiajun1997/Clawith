@@ -145,6 +145,14 @@ export default function Login() {
             {/* ── Left: Branding Panel ── */}
             <div className="login-hero">
                 <div className="login-hero-bg" />
+                <div className="login-hero-decor" />
+                <div className="login-hero-shapes">
+                    <div className="login-hero-shape" />
+                    <div className="login-hero-shape" />
+                    <div className="login-hero-shape" />
+                    <div className="login-hero-shape" />
+                </div>
+                <div className="login-hero-grid" />
                 <div className="login-hero-content">
                     <div className="login-hero-badge">
                         <span className="login-hero-badge-dot" />
