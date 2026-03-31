@@ -44,6 +44,9 @@ async def check_agent_access(db: AsyncSession, user: User, agent_id: uuid.UUID) 
             return agent, perm.access_level or "use"
         if perm.scope_type == "user" and perm.scope_id == user.id:
             return agent, perm.access_level or "use"
+        # Team visibility: scope_id stores the user_id who has access
+        if perm.scope_type == "team" and perm.scope_id == user.id:
+            return agent, perm.access_level or "use"
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this agent")
 

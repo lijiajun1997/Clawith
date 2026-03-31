@@ -430,3 +430,24 @@ export const triggerApi = {
         request<void>(`/agents/${agentId}/triggers/${triggerId}`, { method: 'DELETE' }),
 };
 
+// ─── Organization (Users) ───────────────────────────────
+export const organizationApi = {
+    listUsers: (tenantId?: string) =>
+        request<any[]>(`/org/users${tenantId ? `?tenant_id=${tenantId}` : ''}`),
+};
+
+// ─── Team Members ───────────────────────────────────────
+export const teamMemberApi = {
+    list: (agentId: string) =>
+        request<any[]>(`/agents/${agentId}/team-members`),
+    add: (agentId: string, userIds: string[]) =>
+        request<{ message: string; added_count: number }>(`/agents/${agentId}/team-members`, {
+            method: 'POST',
+            body: JSON.stringify({ user_ids: userIds }),
+        }),
+    remove: (agentId: string, userIds: string[]) =>
+        request<{ message: string; removed_count: number }>(`/agents/${agentId}/team-members`, {
+            method: 'DELETE',
+            body: JSON.stringify({ user_ids: userIds }),
+        }),
+};

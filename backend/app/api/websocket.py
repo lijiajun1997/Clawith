@@ -153,6 +153,7 @@ async def call_llm(
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+    logger.info(f"[WS] Loaded {len(tools_for_llm)} tools for agent {agent_id}, llm_proxy included: {any(t.get('function', {}).get('name') == 'llm_proxy' for t in tools_for_llm)}")
 
     # Convert messages to LLMMessage format
     api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]

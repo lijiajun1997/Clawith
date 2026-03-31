@@ -1649,6 +1649,7 @@ async def execute_tool(
         session_id: The ChatSession ID, used to isolate AgentBay instances
                     per conversation. Passed through to agentbay_* tools.
     """
+    logger.info(f"[execute_tool] Called with tool_name={tool_name}, agent_id={agent_id}")
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
@@ -1865,10 +1866,12 @@ async def execute_tool(
         # Log tool call activity (skip noisy read operations)
         if tool_name not in ("list_files", "read_file", "read_document"):
             from app.services.activity_logger import log_activity
+            # Safely encode result for logging (handle unicode)
+            safe_result = result[:200].encode('utf-8', errors='replace').decode('utf-8')
             await log_activity(
                 agent_id, "tool_call",
-                f"Called tool {tool_name}: {result[:80]}",
-                detail={"tool": tool_name, "args": {k: str(v)[:100] for k, v in arguments.items()}, "result": result[:300]},
+                f"Called tool {tool_name}",
+                detail={"tool": tool_name, "args": {k: str(v)[:100] for k, v in arguments.items()}, "result": safe_result},
             )
         return result
     except Exception as e:

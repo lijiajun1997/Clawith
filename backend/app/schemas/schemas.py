@@ -115,7 +115,7 @@ class AgentCreate(BaseModel):
     primary_model_id: uuid.UUID | None = None
     fallback_model_id: uuid.UUID | None = None
     # Permissions
-    permission_scope_type: str = "company"  # company | user
+    permission_scope_type: str = "company"  # company | user | team
     permission_scope_ids: list[uuid.UUID] = []
     permission_access_level: str = "use"  # use | manage
     # Target tenant (admin-only override; otherwise ignored)
@@ -129,6 +129,28 @@ class AgentCreate(BaseModel):
     max_tokens_per_month: int | None = None
     # Skills to copy into agent workspace
     skill_ids: list[uuid.UUID] = []
+
+
+# ─── Team Member Management ────────────────────────────
+
+class TeamMemberAdd(BaseModel):
+    """Request to add team members to an agent."""
+    user_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=50, description="List of user IDs to add")
+
+
+class TeamMemberRemove(BaseModel):
+    """Request to remove team members from an agent."""
+    user_ids: list[uuid.UUID] = Field(..., min_length=1, description="List of user IDs to remove")
+
+
+class TeamMemberResponse(BaseModel):
+    """Team member information."""
+    user_id: uuid.UUID
+    username: str
+    display_name: str | None = None
+    access_level: str  # "manage" | "use"
+
+    model_config = {"from_attributes": True}
 
 
 class AgentOut(BaseModel):

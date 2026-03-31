@@ -11,12 +11,220 @@ import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress, organizationApi, teamMemberApi } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+
+// Team Members Section Component
+function TeamMembersSection({ agentId, isOwner }: { agentId: string; isOwner: boolean }) {
+    const { t } = useTranslation();
+    const queryClient = useQueryClient();
+    const [showAddModal, setShowAddModal] = useState(false);
+    const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
+    const currentTenant = localStorage.getItem('current_tenant_id');
+
+    // Fetch team members
+    const { data: teamMembers = [], isLoading: loadingMembers } = useQuery({
+        queryKey: ['team-members', agentId],
+        queryFn: () => teamMemberApi.list(agentId),
+    });
+
+    // Fetch all users for adding
+    const { data: allUsers = [] } = useQuery({
+        queryKey: ['organization-users'],
+        queryFn: () => organizationApi.listUsers(currentTenant || undefined),
+        enabled: showAddModal && !!currentTenant,
+    });
+
+    // Add members mutation
+    const addMutation = useMutation({
+        mutationFn: (userIds: string[]) => teamMemberApi.add(agentId, userIds),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['team-members', agentId] });
+            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
+            setShowAddModal(false);
+            setSelectedUsers([]);
+        },
+    });
+
+    // Remove member mutation
+    const removeMutation = useMutation({
+        mutationFn: (userId: string) => teamMemberApi.remove(agentId, [userId]),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['team-members', agentId] });
+            queryClient.invalidateQueries({ queryKey: ['agent-permissions', agentId] });
+        },
+    });
+
+    // Filter out users already in team
+    const availableUsers = allUsers.filter(
+        (u: any) => !teamMembers.some((m: any) => m.user_id === u.id)
+    );
+
+    return (
+        <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-subtle)', paddingTop: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <h5 style={{ margin: 0, fontSize: '13px', fontWeight: 600 }}>
+                    👥 {t('agent.settings.perm.teamMembers', 'Team Members')}
+                </h5>
+                {isOwner && (
+                    <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: '12px', padding: '6px 12px' }}
+                        onClick={() => setShowAddModal(true)}
+                    >
+                        + {t('agent.settings.perm.addMembers', 'Add')}
+                    </button>
+                )}
+            </div>
+
+            {loadingMembers ? (
+                <div style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>{t('common.loading')}</div>
+            ) : teamMembers.length === 0 ? (
+                <div style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                    {t('agent.settings.perm.noMembers', 'No team members yet')}
+                </div>
+            ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {teamMembers.map((member: any) => (
+                        <div
+                            key={member.user_id}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '8px 12px',
+                                background: 'var(--bg-elevated)',
+                                borderRadius: '6px',
+                                border: '1px solid var(--border-subtle)',
+                            }}
+                        >
+                            <div>
+                                <div style={{ fontWeight: 500, fontSize: '13px' }}>
+                                    {member.display_name || member.username}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    {member.access_level === 'manage'
+                                        ? t('agent.settings.perm.creator', 'Creator')
+                                        : t('agent.settings.perm.member', 'Member')}
+                                </div>
+                            </div>
+                            {isOwner && member.access_level !== 'manage' && (
+                                <button
+                                    className="btn btn-secondary"
+                                    style={{ fontSize: '11px', padding: '4px 8px', color: 'var(--error)' }}
+                                    onClick={() => removeMutation.mutate(member.user_id)}
+                                    disabled={removeMutation.isPending}
+                                >
+                                    {t('agent.settings.perm.removeMember', 'Remove')}
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {!isOwner && (
+                <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                    {t('agent.settings.perm.onlyCreatorCanManage', 'Only the creator can manage team members')}
+                </div>
+            )}
+
+            {/* Add Members Modal */}
+            {showAddModal && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                    onClick={() => setShowAddModal(false)}
+                >
+                    <div
+                        style={{
+                            background: 'var(--bg-primary)',
+                            borderRadius: '12px',
+                            padding: '20px',
+                            width: '400px',
+                            maxWidth: '90vw',
+                            maxHeight: '80vh',
+                            overflow: 'auto',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <h4 style={{ marginBottom: '16px' }}>{t('agent.settings.perm.addMembers', 'Add Team Members')}</h4>
+
+                        <div style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '16px' }}>
+                            {availableUsers.length === 0 ? (
+                                <div style={{ color: 'var(--text-tertiary)', fontSize: '13px', textAlign: 'center', padding: '20px' }}>
+                                    {t('common.noData', 'No data')}
+                                </div>
+                            ) : (
+                                availableUsers.map((user: any) => (
+                                    <label
+                                        key={user.id}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '10px',
+                                            padding: '10px',
+                                            borderBottom: '1px solid var(--border-subtle)',
+                                            cursor: 'pointer',
+                                            background: selectedUsers.includes(user.id) ? 'var(--accent-subtle)' : 'transparent',
+                                        }}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedUsers.includes(user.id)}
+                                            onChange={(e) => {
+                                                if (e.target.checked) {
+                                                    setSelectedUsers([...selectedUsers, user.id]);
+                                                } else {
+                                                    setSelectedUsers(selectedUsers.filter((id) => id !== user.id));
+                                                }
+                                            }}
+                                        />
+                                        <div>
+                                            <div style={{ fontWeight: 500, fontSize: '13px' }}>
+                                                {user.display_name || user.username}
+                                            </div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                {user.email}
+                                            </div>
+                                        </div>
+                                    </label>
+                                ))
+                            )}
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowAddModal(false)}>
+                                {t('common.cancel')}
+                            </button>
+                            <button
+                                className="btn btn-primary"
+                                disabled={selectedUsers.length === 0 || addMutation.isPending}
+                                onClick={() => addMutation.mutate(selectedUsers)}
+                            >
+                                {addMutation.isPending ? t('common.loading') : t('common.confirm')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -4444,6 +4652,7 @@ function AgentDetailInner() {
                                 {(() => {
                                     const scopeLabels: Record<string, string> = {
                                         company: '🏢 ' + t('agent.settings.perm.companyWide', 'Company-wide'),
+                                        team: '👥 ' + t('agent.settings.perm.team', 'Team'),
                                         user: '👤 ' + t('agent.settings.perm.onlyMe', 'Only Me'),
                                     };
 
@@ -4456,6 +4665,9 @@ function AgentDetailInner() {
                                             });
                                             queryClient.invalidateQueries({ queryKey: ['agent-permissions', id] });
                                             queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                            if (newScope === 'team') {
+                                                queryClient.invalidateQueries({ queryKey: ['team-members', id] });
+                                            }
                                         } catch (e) {
                                             console.error('Failed to update permissions', e);
                                         }
@@ -4488,7 +4700,7 @@ function AgentDetailInner() {
 
                                             {/* Scope Selection */}
                                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-                                                {(['company', 'user'] as const).map((scope) => (
+                                                {(['company', 'team', 'user'] as const).map((scope) => (
                                                     <label
                                                         key={scope}
                                                         style={{
@@ -4520,6 +4732,7 @@ function AgentDetailInner() {
                                                             <div style={{ fontWeight: 500, fontSize: '13px' }}>{scopeLabels[scope]}</div>
                                                             <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
                                                                 {scope === 'company' && t('agent.settings.perm.companyWideDesc', 'All users in the organization can use this agent')}
+                                                                {scope === 'team' && t('agent.settings.perm.teamDesc', 'Creator can add specific team members')}
                                                                 {scope === 'user' && t('agent.settings.perm.onlyMeDesc', 'Only the creator can use this agent')}
                                                             </div>
                                                         </div>
@@ -4569,6 +4782,11 @@ function AgentDetailInner() {
                                                     <span style={{ fontWeight: 500 }}>{t('agent.settings.perm.currentAccess', 'Current access')}:</span>{' '}
                                                     {permData.scope_names.map((s: any) => s.name).join(', ')}
                                                 </div>
+                                            )}
+
+                                            {/* Team Members Management */}
+                                            {currentScope === 'team' && (
+                                                <TeamMembersSection agentId={id!} isOwner={isOwner} />
                                             )}
 
                                             {!isOwner && (

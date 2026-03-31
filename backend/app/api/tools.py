@@ -487,6 +487,9 @@ async def update_agent_tool_config(
                 detail="Only platform admin or organization admin can modify network access settings"
             )
 
+    # Log the incoming config for debugging
+    logger.info(f"[ToolConfig] Saving agent config for tool {tool_id}, agent {agent_id}: api_key length = {len(data.config.get('api_key', '')) if data.config.get('api_key') else 0}")
+
     # Encrypt sensitive fields
     encrypted_config = _encrypt_sensitive_fields(data.config)
 

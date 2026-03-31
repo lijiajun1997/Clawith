@@ -16,7 +16,7 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent, AgentPermission
 from app.models.user import User
-from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
+from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate, TeamMemberAdd, TeamMemberRemove, TeamMemberResponse
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -169,6 +169,7 @@ async def list_agents(
         .where(
             (AgentPermission.scope_type == "company")
             | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
+            | ((AgentPermission.scope_type == "team") & (AgentPermission.scope_id == current_user.id))
         )
     )
     permitted = select(Agent).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
@@ -270,10 +271,19 @@ async def create_agent(
 
     # Set permissions
     access_level = data.permission_access_level if data.permission_access_level in ("use", "manage") else "use"
-    if data.permission_scope_type not in ("company", "user"):
+    if data.permission_scope_type not in ("company", "user", "team"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported permission_scope_type")
     if data.permission_scope_type == "company":
         db.add(AgentPermission(agent_id=agent.id, scope_type="company", access_level=access_level))
+    elif data.permission_scope_type == "team":
+        # Team visibility: add each team member with "use" access level
+        if data.permission_scope_ids:
+            for scope_id in data.permission_scope_ids:
+                db.add(AgentPermission(agent_id=agent.id, scope_type="team", scope_id=scope_id, access_level="use"))
+        else:
+            # If no members yet, create a placeholder record to indicate team mode
+            db.add(AgentPermission(agent_id=agent.id, scope_type="team", scope_id=current_user.id, access_level="manage"))
+        # Creator always has "manage" access via agent.creator_id check
     elif data.permission_scope_type == "user":
         if data.permission_scope_ids:
             for scope_id in data.permission_scope_ids:
@@ -391,12 +401,16 @@ async def get_agent_permissions(
         return {"scope_type": "user", "scope_ids": [], "access_level": "manage" if is_agent_creator(current_user, agent) else "use", "is_owner": is_agent_creator(current_user, agent)}
 
     scope_type = perms[0].scope_type
-    scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
+    # For team scope, exclude creator's placeholder record from scope_ids
+    if scope_type == "team":
+        scope_ids = [str(p.scope_id) for p in perms if p.scope_id and p.scope_id != agent.creator_id]
+    else:
+        scope_ids = [str(p.scope_id) for p in perms if p.scope_id]
     perm_access_level = perms[0].access_level or "use"
 
     # Resolve names for display
     scope_names = []
-    if scope_type == "user":
+    if scope_type in ("user", "team"):
         for sid in scope_ids:
             r = await db.execute(select(User).where(User.id == uuid.UUID(sid)))
             u = r.scalar_one_or_none()
@@ -429,7 +443,7 @@ async def update_agent_permissions(
     access_level = data.get("access_level", "use")
     if access_level not in ("use", "manage"):
         access_level = "use"
-    if scope_type not in ("company", "user"):
+    if scope_type not in ("company", "user", "team"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported scope_type")
 
     # Delete existing permissions
@@ -439,6 +453,16 @@ async def update_agent_permissions(
     # Insert new permissions
     if scope_type == "company":
         db.add(AgentPermission(agent_id=agent_id, scope_type="company", access_level=access_level))
+    elif scope_type == "team":
+        # Team visibility: add each team member with "use" access level
+        if scope_ids:
+            for sid in scope_ids:
+                db.add(AgentPermission(agent_id=agent_id, scope_type="team", scope_id=uuid.UUID(sid), access_level="use"))
+        else:
+            # If no members yet, create a placeholder record to indicate team mode
+            # Use creator's ID as a marker (will be filtered out in team members list)
+            db.add(AgentPermission(agent_id=agent_id, scope_type="team", scope_id=current_user.id, access_level="manage"))
+        # Creator always has "manage" access via agent.creator_id check
     elif scope_type == "user":
         if scope_ids:
             for sid in scope_ids:
@@ -806,3 +830,168 @@ async def list_gateway_messages(
             "completed_at": m.completed_at.isoformat() if m.completed_at else None,
         })
     return out
+
+
+# ─── Team Member Management ────────────────────────────
+
+
+@router.get("/{agent_id}/team-members", response_model=list[TeamMemberResponse])
+async def get_team_members(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get team members for an agent (creator only)."""
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can view team members")
+
+    # Query team members from AgentPermission (excluding creator's placeholder record)
+    from sqlalchemy import and_
+    result = await db.execute(
+        select(AgentPermission, User)
+        .join(User, AgentPermission.scope_id == User.id)
+        .where(
+            AgentPermission.agent_id == agent_id,
+            AgentPermission.scope_type == "team",
+            AgentPermission.scope_id != agent.creator_id  # Exclude creator's placeholder
+        )
+    )
+    rows = result.all()
+
+    members = []
+    for perm, user in rows:
+        members.append(TeamMemberResponse(
+            user_id=user.id,
+            username=user.username,
+            display_name=user.display_name,
+            access_level=perm.access_level or "use"
+        ))
+
+    # Add creator as manager (creator has manage access by default)
+    creator_result = await db.execute(select(User).where(User.id == agent.creator_id))
+    creator = creator_result.scalar_one_or_none()
+    if creator:
+        members.insert(0, TeamMemberResponse(
+            user_id=creator.id,
+            username=creator.username,
+            display_name=creator.display_name,
+            access_level="manage"
+        ))
+
+    return members
+
+
+@router.post("/{agent_id}/team-members", status_code=status.HTTP_201_CREATED)
+async def add_team_members(
+    agent_id: uuid.UUID,
+    data: TeamMemberAdd,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add team members to an agent (creator only)."""
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can add team members")
+
+    # Check if agent is in team mode
+    existing_perms = await db.execute(
+        select(AgentPermission).where(
+            AgentPermission.agent_id == agent_id,
+            AgentPermission.scope_type == "team"
+        )
+    )
+    if not existing_perms.scalars().first():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent is not in team visibility mode")
+
+    # Get existing team member IDs
+    existing_ids_result = await db.execute(
+        select(AgentPermission.scope_id).where(
+            AgentPermission.agent_id == agent_id,
+            AgentPermission.scope_type == "team"
+        )
+    )
+    existing_ids = {row[0] for row in existing_ids_result.all()}
+
+    # Add new members
+    added_count = 0
+    for user_id in data.user_ids:
+        # Skip if already a team member or is the creator
+        if user_id in existing_ids or user_id == agent.creator_id:
+            continue
+        # Verify user exists and is in the same tenant
+        user_result = await db.execute(select(User).where(User.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if not user:
+            continue
+        if user.tenant_id != current_user.tenant_id:
+            continue
+
+        permission = AgentPermission(
+            agent_id=agent_id,
+            scope_type="team",
+            scope_id=user_id,
+            access_level="use"
+        )
+        db.add(permission)
+        added_count += 1
+
+    await db.commit()
+    return {"message": f"Added {added_count} team member(s)", "added_count": added_count}
+
+
+@router.delete("/{agent_id}/team-members")
+async def remove_team_members(
+    agent_id: uuid.UUID,
+    data: TeamMemberRemove,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove team members from an agent (creator only)."""
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+    if not is_agent_creator(current_user, agent):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only creator can remove team members")
+
+    # Cannot remove creator
+    if agent.creator_id in data.user_ids:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot remove the creator")
+
+    from sqlalchemy import delete as sql_delete
+    result = await db.execute(
+        sql_delete(AgentPermission).where(
+            AgentPermission.agent_id == agent_id,
+            AgentPermission.scope_type == "team",
+            AgentPermission.scope_id.in_(data.user_ids)
+        )
+    )
+    await db.commit()
+
+    return {"message": f"Removed {result.rowcount} team member(s)", "removed_count": result.rowcount}
+
+
+# ─── AgentBay Channel Config ─────────────────────────────
+
+@router.get("/{agent_id}/agentbay-channel")
+async def get_agentbay_channel(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get AgentBay channel configuration."""
+    from app.models.channel_config import ChannelConfig
+
+    await check_agent_access(db, current_user, agent_id)
+    result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == "agentbay",
+        )
+    )
+    config = result.scalar_one_or_none()
+    if not config:
+        return {"is_configured": False, "channel_type": "agentbay"}
+    return {
+        "is_configured": True,
+        "channel_type": "agentbay",
+        "config": config.extra_config or {},
+    }
