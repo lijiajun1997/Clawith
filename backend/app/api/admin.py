@@ -281,11 +281,11 @@ async def get_platform_timeseries(
               AND created_at <= CAST(:range_end AS timestamptz)
         ),
         day_series AS (
-            SELECT generate_series(
+            SELECT CAST(generate_series(
                 CAST(:series_start AS date),
                 CAST(:series_end AS date),
-                '1 day'::interval
-            )::date AS d
+                CAST('1 day' AS interval)
+            ) AS date) AS d
         )
         SELECT
             ds.d,
