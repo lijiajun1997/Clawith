@@ -153,7 +153,8 @@ async def list_tools(
             "mcp_tool_name": t.mcp_tool_name,
             "enabled": t.enabled,
             "is_default": t.is_default,
-            "config": t.config or {},
+            # Decrypt config for the admin UI so saved values are readable
+            "config": _decrypt_sensitive_fields(t.config or {}),
             "config_schema": t.config_schema or {},
             "created_at": t.created_at.isoformat() if t.created_at else None,
         }
@@ -431,7 +432,11 @@ async def get_agent_tool_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get merged tool config (global defaults + agent overrides) and config_schema."""
+    """Get merged tool config (global defaults + agent overrides) and config_schema.
+
+    Both configs are decrypted before returning. Global sensitive fields are
+    masked so the frontend can show a key is configured without exposing it.
+    """
     tool_r = await db.execute(select(Tool).where(Tool.id == tool_id))
     tool = tool_r.scalar_one_or_none()
     if not tool:
@@ -440,11 +445,26 @@ async def get_agent_tool_config(
         select(AgentTool).where(AgentTool.agent_id == agent_id, AgentTool.tool_id == tool_id)
     )
     at = at_r.scalar_one_or_none()
-    agent_config = at.config if at else {}
-    merged = {**(tool.config or {}), **(agent_config or {})}
+
+    # Decrypt both configs
+    raw_global = _decrypt_sensitive_fields(tool.config or {})
+    raw_agent = _decrypt_sensitive_fields(at.config if at else {})
+
+    # Mask sensitive fields in global config for display
+    masked_global = dict(raw_global)
+    for key in SENSITIVE_FIELD_KEYS:
+        val = masked_global.get(key)
+        if val and isinstance(val, str) and len(val) > 0:
+            suffix = val[-4:] if len(val) > 4 else val
+            masked_global[key] = f"****{suffix}"
+
+    # Merged: agent overrides take precedence over global defaults.
+    # Use raw (non-masked) global as the base so the agent inherits actual values
+    # at runtime, but the UI will show masked_global for display hints.
+    merged = {**raw_global, **(raw_agent or {})}
     return {
-        "global_config": tool.config or {},
-        "agent_config": agent_config or {},
+        "global_config": masked_global,
+        "agent_config": raw_agent or {},
         "merged_config": merged,
         "config_schema": tool.config_schema or {},
     }
@@ -489,7 +509,16 @@ async def get_agent_tools_with_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get agent's enabled tools with per-agent config info and config_schema for settings UI."""
+    """Get agent's enabled tools with per-agent config info and config_schema for settings UI.
+
+    Both global_config and agent_config are decrypted before returning.
+    For global_config, sensitive fields are masked (e.g. "sk-****abcd") so the
+    frontend can show that a company key is configured without exposing it.
+
+    Special handling: some tools (Jina) store their API key in system_settings
+    rather than Tool.config. We resolve those as part of the global config so
+    the agent-level UI can show the inherited key hint.
+    """
     from app.services.agent_tools import _agent_has_feishu
     has_feishu = await _agent_has_feishu(agent_id)
 
@@ -497,6 +526,15 @@ async def get_agent_tools_with_config(
     all_tools = all_tools_r.scalars().all()
     agent_tools_r = await db.execute(select(AgentTool).where(AgentTool.agent_id == agent_id))
     assignments = {str(at.tool_id): at for at in agent_tools_r.scalars().all()}
+
+    # Pre-fetch system_settings keys that some tools use as an alternative
+    # config storage (e.g. Jina stores its API key in system_settings.jina_api_key)
+    system_keys_cache: dict[str, str] = {}
+    SYSTEM_SETTINGS_TOOL_MAP = {
+        # tool_name -> system_settings key + value path
+        "jina_search": ("jina_api_key", "api_key"),
+        "jina_read": ("jina_api_key", "api_key"),
+    }
 
     result = []
     for t in all_tools:
@@ -510,6 +548,41 @@ async def get_agent_tools_with_config(
         if t.source == "agent" and not at:
             continue
         enabled = at.enabled if at else t.is_default
+
+        # Decrypt configs for the frontend
+        raw_global = _decrypt_sensitive_fields(t.config or {})
+
+        # Fallback: resolve api_key from system_settings for tools that store
+        # their key there (e.g. Jina). Only if Tool.config doesn't have it.
+        if t.name in SYSTEM_SETTINGS_TOOL_MAP and not raw_global.get("api_key"):
+            ss_key, ss_field = SYSTEM_SETTINGS_TOOL_MAP[t.name]
+            if ss_key not in system_keys_cache:
+                try:
+                    from app.models.system_settings import SystemSetting
+                    ss_r = await db.execute(
+                        select(SystemSetting).where(SystemSetting.key == ss_key)
+                    )
+                    ss = ss_r.scalar_one_or_none()
+                    system_keys_cache[ss_key] = (
+                        ss.value.get(ss_field, "") if ss and ss.value else ""
+                    )
+                except Exception:
+                    system_keys_cache[ss_key] = ""
+            if system_keys_cache[ss_key]:
+                raw_global["api_key"] = system_keys_cache[ss_key]
+
+        raw_agent = _decrypt_sensitive_fields((at.config if at else {}) or {})
+
+        # Mask sensitive fields in global_config so users can see that a key
+        # is configured at the company level without exposing the full value.
+        masked_global = dict(raw_global)
+        for key in SENSITIVE_FIELD_KEYS:
+            val = masked_global.get(key)
+            if val and isinstance(val, str) and len(val) > 0:
+                # Show "****" + last 4 chars as a hint
+                suffix = val[-4:] if len(val) > 4 else val
+                masked_global[key] = f"****{suffix}"
+
         result.append({
             "id": tid,
             "agent_tool_id": str(at.id) if at else None,
@@ -523,8 +596,8 @@ async def get_agent_tools_with_config(
             "is_default": t.is_default,
             "mcp_server_name": t.mcp_server_name,
             "config_schema": t.config_schema or {},
-            "global_config": t.config or {},
-            "agent_config": (at.config if at else {}) or {},
+            "global_config": masked_global,
+            "agent_config": raw_agent,
             "source": t.source,
         })
     return result
@@ -575,11 +648,42 @@ async def get_category_config(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get shared configuration for a tool category (stored in ChannelConfig)."""
+    """Get shared configuration for a tool category.
+
+    Returns both global_config (company-level, from Tool.config) and
+    agent_config (agent-level override, from ChannelConfig) separately.
+    Sensitive fields in global_config are masked for display.
+    Company-level values always take precedence at runtime.
+    """
     from app.core.permissions import check_agent_access
     from app.models.channel_config import ChannelConfig
 
     await check_agent_access(db, current_user, agent_id)
+
+    # ── 1. Load company-level (global) config from Tool.config ──────────────
+    # Find a tool in this category that actually has config data.
+    # We cannot just LIMIT 1 because most tools may have empty config.
+    all_cat_tools = await db.execute(
+        select(Tool).where(
+            Tool.category == category,
+            Tool.enabled == True,
+        ).order_by(Tool.name)
+    )
+    raw_global: dict = {}
+    for ct in all_cat_tools.scalars():
+        if ct.config and ct.config != {}:
+            raw_global = _decrypt_sensitive_fields(ct.config)
+            break
+
+    # Mask sensitive fields for UI display
+    masked_global = dict(raw_global)
+    for key in SENSITIVE_FIELD_KEYS:
+        val = masked_global.get(key)
+        if val and isinstance(val, str):
+            suffix = val[-4:] if len(val) > 4 else val
+            masked_global[key] = f"****{suffix}"
+
+    # ── 2. Load agent-level config from ChannelConfig ───────────────────────
     result = await db.execute(
         select(ChannelConfig).where(
             ChannelConfig.agent_id == agent_id,
@@ -587,40 +691,36 @@ async def get_category_config(
         )
     )
     config = result.scalar_one_or_none()
-    
+
     config_id = None
-    is_configured = False
-    decrypted_config = {}
-    
+    is_configured = bool(raw_global) or config is not None
+    raw_agent: dict = {}
+
     if config:
         config_id = str(config.id)
-        is_configured = config.is_configured
-        
-        # If it's encrypted, decrypt it for the UI
-        full_config = {
+        full_agent = {
             "api_key": config.app_secret,
-            **(config.extra_config or {})
+            **(config.extra_config or {}),
         }
-        decrypted_config = _decrypt_sensitive_fields(full_config)
-    else:
-        # Fallback to global Tool.config for this category (Company Settings)
-        from app.models.tool import Tool
-        tool_result = await db.execute(
-            select(Tool).where(
-                Tool.category == category,
-                Tool.enabled == True,
-            ).limit(1)
-        )
-        global_tool = tool_result.scalar_one_or_none()
-        if global_tool and global_tool.config:
-            decrypted_config = _decrypt_sensitive_fields(global_tool.config)
+        raw_agent = _decrypt_sensitive_fields(full_agent)
+        # Remove None values produced by missing app_secret
+        raw_agent = {k: v for k, v in raw_agent.items() if v is not None}
+
+    # ── 3. Build effective config ───────────────────────────────────────────
+    # Priority: Agent config > Company config > Default
+    # Agent can override company values by setting their own.
+    effective_config = {**raw_global, **raw_agent}
 
     return {
         "id": config_id,
         "agent_id": str(agent_id),
         "category": category,
         "is_configured": is_configured,
-        "config": decrypted_config
+        # Legacy field (backward-compat): full effective config for display
+        "config": effective_config,
+        # New fields for richer UI: show global and agent configs separately
+        "global_config": masked_global,
+        "agent_config": raw_agent,
     }
 
 

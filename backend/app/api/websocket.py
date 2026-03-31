@@ -149,13 +149,13 @@ async def call_llm(
                     _current_user_name = _u.display_name or _u.username
         except Exception:
             pass
-    system_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
+    static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
     # Convert messages to LLMMessage format
-    api_messages = [LLMMessage(role="system", content=system_prompt)]
+    api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
     for msg in messages:
         api_messages.append(LLMMessage(
             role=msg.get("role", "user"),
@@ -543,7 +543,7 @@ async def websocket_chat(
                     select(ChatMessage)
                     .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == conv_id)
                     .order_by(ChatMessage.created_at.desc())
-                    .limit(20)
+                    .limit(ctx_size)
                 )
                 history_messages = list(reversed(history_result.scalars().all()))
                 logger.info(f"[WS] Loaded {len(history_messages)} history messages for session {conv_id}")
@@ -590,11 +590,16 @@ async def websocket_chat(
                 if tc_data.get("reasoning_content"):
                     asst_msg["reasoning_content"] = tc_data["reasoning_content"]
                 conversation.append(asst_msg)
-                # Tool result message
+                # Tool result message.
+                # Sanitize any stale [ImageID: ...] markers left by the ephemeral
+                # screenshot cache — those images are gone from memory and would
+                # confuse the LLM if sent as-is.
+                from app.services.vision_inject import sanitize_history_tool_result
+                sanitized_result = sanitize_history_tool_result(str(tc_result))
                 conversation.append({
                     "role": "tool",
                     "tool_call_id": tc_id,
-                    "content": str(tc_result)[:500],
+                    "content": sanitized_result[:500],
                 })
             except Exception:
                 continue  # Skip malformed tool_call records
