@@ -1816,7 +1816,7 @@ async def execute_tool(
         elif tool_name == "feishu_doc_append":
             result = await _feishu_doc_append(agent_id, arguments)
         # ── Feishu Calendar Tools ──
-        elif tool_name in ("feishu_drive_share", "feishu_doc_share"):  # backward compat
+        elif tool_name == "feishu_drive_share":
             result = await _feishu_drive_share(agent_id, arguments)
         elif tool_name == "feishu_drive_delete":
             result = await _feishu_drive_delete(agent_id, arguments)
@@ -5822,7 +5822,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
                 async with httpx.AsyncClient(timeout=10) as client:
                     share_resp = await client.post(
                         f"https://open.feishu.cn/open-apis/drive/v1/permissions/{doc_token}/members",
-                        params={"type": "docx", "need_notification": "false"},
+                        params={"type": "docx"},
                         json={
                             "member_type": "openid",
                             "member_id": sender_open_id,
@@ -6068,22 +6068,20 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         return f"Failed: {str(e)[:300]}"
 
 
-# ─── Feishu Drive Share (all file types) ──────────────────────────────────────
+# ─── Feishu Drive Share (All File Types) ────────────────────────────────────────
 
 async def _feishu_drive_share(agent_id: uuid.UUID, arguments: dict) -> str:
-    """Manage Feishu Drive file collaborators.
-    Supports all file types: docx, bitable, sheet, doc, folder, mindnote, slides.
-    Automatically handles both regular files (Drive permissions API)
+    """Manage Feishu drive file collaborators.
+    Automatically handles both regular docs/files (Drive permissions API)
     and Wiki node documents (Wiki space members API).
     """
     import httpx
     import re as _re
 
     document_token = (arguments.get("document_token") or "").strip()
+    doc_type = (arguments.get("doc_type") or "docx").strip()
     action = (arguments.get("action") or "list").strip()
     permission = (arguments.get("permission") or "edit").strip()
-    # doc_type defaults to 'docx' for backward compatibility
-    doc_type = (arguments.get("doc_type") or "docx").strip()
 
     if not document_token:
         return "❌ Missing required argument 'document_token'"

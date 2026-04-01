@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
@@ -8,8 +8,10 @@ import type { TokenResponse } from '../types';
 export default function Login() {
     const { t, i18n } = useTranslation();
     const navigate = useNavigate();
+    const [searchParams] = useSearchParams();
+    const invitationCode = searchParams.get('code');
     const setAuth = useAuthStore((s) => s.setAuth);
-    const [isRegister, setIsRegister] = useState(false);
+    const [isRegister, setIsRegister] = useState(!!invitationCode);
     const [error, setError] = useState('');
     const [successMessage, setSuccessMessage] = useState('');
     const [loading, setLoading] = useState(false);
@@ -95,6 +97,7 @@ export default function Login() {
                     email: form.login_identifier,
                     password: form.password,
                     display_name: form.login_identifier.split('@')[0],
+                    ...(invitationCode ? { invitation_code: invitationCode } : {})
                 });
                 // Save authentication state for company selection (user not active yet)
                 if (regRes.access_token && regRes.user) {
@@ -154,6 +157,8 @@ export default function Login() {
                     setError(t('auth.notInOrganization', 'This account does not belong to this organization.'));
                 } else if (msg.includes('500') || msg.includes('Internal Server Error')) {
                     setError(t('auth.serverStarting'));
+                } else if (msg.includes('Email already registered') || msg.includes('该邮箱已注册')) {
+                    setError(t('auth.emailAlreadyRegistered', '该邮箱已注册，请直接登录'));
                 } else {
                     setError(msg);
                 }

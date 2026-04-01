@@ -460,6 +460,9 @@ class ApprovalAction(BaseModel):
 
 # ─── Enterprise Info ────────────────────────────────────
 
+class UserInviteRequest(BaseModel):
+    emails: list[EmailStr] = Field(..., description="List of emails to invite")
+
 class EnterpriseInfoUpdate(BaseModel):
     content: dict
     visible_roles: list[str] = []

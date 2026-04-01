@@ -276,6 +276,47 @@ function OrgTab({ tenant }: { tenant: any }) {
     const { t } = useTranslation();
     const qc = useQueryClient();
 
+    const [showInviteModal, setShowInviteModal] = useState(false);
+    const [inviteEmails, setInviteEmails] = useState('');
+    const [inviting, setInviting] = useState(false);
+    const [inviteResult, setInviteResult] = useState<{ invited: number; message: string } | null>(null);
+    const [inviteLink, setInviteLink] = useState('');
+
+    const generateInviteLink = async () => {
+        try {
+            const res = await fetchJson<any>('/enterprise/invitation-codes', {
+                method: 'POST',
+                body: JSON.stringify({ count: 1, max_uses: 100 })
+            });
+            if (res.codes && res.codes.length > 0) {
+                const code = res.codes[0];
+                const url = new URL('/register', window.location.origin);
+                url.searchParams.set('code', code);
+                setInviteLink(url.toString());
+            }
+        } catch (e: any) {
+            alert(e.message || 'Failed to generate link');
+        }
+    };
+
+    const handleSendInvites = async () => {
+        const emails = inviteEmails.split(/[\n,]+/).map(e => e.trim()).filter(Boolean);
+        if (emails.length === 0) return;
+        setInviting(true);
+        setInviteResult(null);
+        try {
+            const res = await fetchJson<any>('/enterprise/invite-users', {
+                method: 'POST',
+                body: JSON.stringify({ emails })
+            });
+            setInviteResult({ invited: res.invited, message: res.message });
+            setInviteEmails('');
+        } catch (e: any) {
+            alert(e.message || 'Failed to send invites');
+        }
+        setInviting(false);
+    };
+
     const SsoStatus = () => {
         const [isExpanded, setIsExpanded] = useState(!!tenant?.sso_enabled);
         const [ssoEnabled, setSsoEnabled] = useState(!!tenant?.sso_enabled);
@@ -772,6 +813,23 @@ function OrgTab({ tenant }: { tenant: any }) {
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+            {/* Email Invitations Section */}
+            <div className="card" style={{ padding: '0', overflow: 'hidden' }}>
+                <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-secondary)' }}>
+                    <div>
+                        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 600 }}>
+                            {t('enterprise.invitations.title', 'Email Invitations')}
+                        </h3>
+                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                            {t('enterprise.invitations.desc', 'Invite users to join your organization via email.')}
+                        </div>
+                    </div>
+                    <button className="btn btn-primary" onClick={() => setShowInviteModal(true)}>
+                        {t('enterprise.invitations.inviteUsers', 'Invite Users')}
+                    </button>
+                </div>
+            </div>
+
             {/* SSO status is now derived from per-channel toggles — no global switch */}
 
             {/* 1. Identity Providers Section */}
@@ -843,6 +901,61 @@ function OrgTab({ tenant }: { tenant: any }) {
                     })}
                 </div>
             </div>
+
+            {showInviteModal && (
+                <div className="modal-overlay" onClick={() => setShowInviteModal(false)}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '500px' }}>
+                        <div style={{ padding: '20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h3 style={{ margin: 0, fontSize: '18px' }}>{t('enterprise.invitations.inviteUsersTitle', 'Invite Users')}</h3>
+                            <button className="btn btn-ghost" style={{ padding: '4px' }} onClick={() => setShowInviteModal(false)}>✕</button>
+                        </div>
+                        <div style={{ padding: '20px' }}>
+                            <label className="form-label">{t('enterprise.invitations.emailAddresses', 'Email Addresses')}</label>
+                            <textarea
+                                className="form-input"
+                                rows={5}
+                                placeholder={t('enterprise.invitations.emailPlaceholder', 'Enter email addresses, separated by commas or newlines...')}
+                                value={inviteEmails}
+                                onChange={e => setInviteEmails(e.target.value)}
+                                style={{ resize: 'vertical', fontSize: '13px', marginBottom: '16px' }}
+                            />
+                            
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                    {t('enterprise.invitations.orShareLink', 'Or share an invitation link directly:')}
+                                </div>
+                                {!inviteLink ? (
+                                    <button className="btn btn-secondary btn-sm" onClick={generateInviteLink}>
+                                        {t('enterprise.invitations.generateLink', 'Generate Link')}
+                                    </button>
+                                ) : (
+                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                        <input className="form-input" value={inviteLink} readOnly style={{ width: '200px', fontSize: '12px', padding: '4px 8px' }} />
+                                        <button className="btn btn-secondary btn-sm" onClick={() => { navigator.clipboard.writeText(inviteLink); alert(t('enterprise.invitations.linkCopied', 'Copied!')); }}>
+                                            {t('common.copy', 'Copy')}
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
+                            {inviteResult && (
+                                <div style={{ marginTop: '16px', padding: '12px', background: 'rgba(0,200,100,0.1)', color: 'var(--success)', borderRadius: '6px', fontSize: '13px' }}>
+                                    {inviteResult.message} ({inviteResult.invited} {t('enterprise.invitations.invitedUsers', 'users')})
+                                </div>
+                            )}
+
+                        </div>
+                        <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: '12px', background: 'var(--bg-secondary)' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowInviteModal(false)}>
+                                {t('common.cancel', 'Cancel')}
+                            </button>
+                            <button className="btn btn-primary" onClick={handleSendInvites} disabled={inviting || !inviteEmails.trim()}>
+                                {inviting ? t('common.loading', 'Sending...') : t('enterprise.invitations.sendInvites', 'Send Invitations')}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -1688,68 +1801,6 @@ export default function EnterpriseSettings() {
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
 
-    // System email configuration
-    const [systemEmailConfig, setSystemEmailConfig] = useState({
-        SYSTEM_EMAIL_FROM_ADDRESS: '',
-        SYSTEM_EMAIL_FROM_NAME: 'Clawith',
-        SYSTEM_SMTP_HOST: '',
-        SYSTEM_SMTP_PORT: 465,
-        SYSTEM_SMTP_USERNAME: '',
-        SYSTEM_SMTP_PASSWORD: '',
-        SYSTEM_SMTP_SSL: true,
-        SYSTEM_SMTP_TIMEOUT_SECONDS: 15,
-    });
-    const [emailConfigSaving, setEmailConfigSaving] = useState(false);
-    const [emailConfigSaved, setEmailConfigSaved] = useState(false);
-
-    // Load system email config
-    useEffect(() => {
-        setSystemEmailConfig({
-            SYSTEM_EMAIL_FROM_ADDRESS: '',
-            SYSTEM_EMAIL_FROM_NAME: 'Clawith',
-            SYSTEM_SMTP_HOST: '',
-            SYSTEM_SMTP_PORT: 465,
-            SYSTEM_SMTP_USERNAME: '',
-            SYSTEM_SMTP_PASSWORD: '',
-            SYSTEM_SMTP_SSL: true,
-            SYSTEM_SMTP_TIMEOUT_SECONDS: 15,
-        });
-        if (!selectedTenantId) return;
-        const emailConfigKey = `system_email_${selectedTenantId}`;
-        fetchJson<any>(`/enterprise/system-settings/${emailConfigKey}`)
-            .then(d => {
-                if (d?.value) {
-                    setSystemEmailConfig({
-                        SYSTEM_EMAIL_FROM_ADDRESS: d.value.SYSTEM_EMAIL_FROM_ADDRESS || '',
-                        SYSTEM_EMAIL_FROM_NAME: d.value.SYSTEM_EMAIL_FROM_NAME || 'Clawith',
-                        SYSTEM_SMTP_HOST: d.value.SYSTEM_SMTP_HOST || '',
-                        SYSTEM_SMTP_PORT: d.value.SYSTEM_SMTP_PORT || 465,
-                        SYSTEM_SMTP_USERNAME: d.value.SYSTEM_SMTP_USERNAME || '',
-                        SYSTEM_SMTP_PASSWORD: d.value.SYSTEM_SMTP_PASSWORD || '',
-                        SYSTEM_SMTP_SSL: d.value.SYSTEM_SMTP_SSL !== undefined ? d.value.SYSTEM_SMTP_SSL : true,
-                        SYSTEM_SMTP_TIMEOUT_SECONDS: d.value.SYSTEM_SMTP_TIMEOUT_SECONDS || 15,
-                    });
-                }
-            })
-            .catch(() => { });
-    }, [selectedTenantId]);
-
-    const saveEmailConfig = async () => {
-        setEmailConfigSaving(true);
-        try {
-            const emailConfigKey = `system_email_${selectedTenantId}`;
-            await fetchJson(`/enterprise/system-settings/${emailConfigKey}`, {
-                method: 'PUT',
-                body: JSON.stringify({ value: systemEmailConfig }),
-            });
-            setEmailConfigSaved(true);
-            setTimeout(() => setEmailConfigSaved(false), 2000);
-        } catch (e: any) {
-            alert('Failed to save email config: ' + (e.message || 'Unknown error'));
-        } finally {
-            setEmailConfigSaving(false);
-        }
-    };
 
     // Company intro key: always per-tenant scoped
     const companyIntroKey = selectedTenantId ? `company_intro_${selectedTenantId}` : 'company_intro';
@@ -2370,125 +2421,6 @@ export default function EnterpriseSettings() {
 
                         {/* ── 0.5. Company Timezone ── */}
                         <CompanyTimezoneEditor key={`tz-${selectedTenantId}`} />
-
-                        {/* ── 1. System Email Configuration ── */}
-                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.systemEmail.title', 'System Email Configuration')}</h3>
-                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
-                            {t('enterprise.systemEmail.description', 'Configure SMTP settings for sending system emails such as password resets and notifications.')}
-                        </p>
-                        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.fromAddress', 'From Email Address')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_EMAIL_FROM_ADDRESS}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_EMAIL_FROM_ADDRESS: e.target.value })}
-                                        placeholder="noreply@yourcompany.com"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.fromName', 'From Name')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_EMAIL_FROM_NAME}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_EMAIL_FROM_NAME: e.target.value })}
-                                        placeholder="Clawith"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.smtpHost', 'SMTP Host')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_SMTP_HOST}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_HOST: e.target.value })}
-                                        placeholder="smtp.gmail.com"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.smtpPort', 'SMTP Port')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        type="number"
-                                        value={systemEmailConfig.SYSTEM_SMTP_PORT}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_PORT: parseInt(e.target.value) || 465 })}
-                                        placeholder="465"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.username', 'SMTP Username')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        value={systemEmailConfig.SYSTEM_SMTP_USERNAME}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_USERNAME: e.target.value })}
-                                        placeholder="your-email@gmail.com"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.password', 'SMTP Password / App Password')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        type="password"
-                                        value={systemEmailConfig.SYSTEM_SMTP_PASSWORD}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_PASSWORD: e.target.value })}
-                                        placeholder="••••••••"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label" style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                        {t('enterprise.systemEmail.timeout', 'Timeout (seconds)')}
-                                    </label>
-                                    <input
-                                        className="form-input"
-                                        type="number"
-                                        value={systemEmailConfig.SYSTEM_SMTP_TIMEOUT_SECONDS}
-                                        onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_TIMEOUT_SECONDS: parseInt(e.target.value) || 15 })}
-                                        placeholder="15"
-                                        style={{ fontSize: '13px' }}
-                                    />
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', paddingTop: '24px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={systemEmailConfig.SYSTEM_SMTP_SSL}
-                                            onChange={e => setSystemEmailConfig({ ...systemEmailConfig, SYSTEM_SMTP_SSL: e.target.checked })}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '13px' }}>
-                                            {t('enterprise.systemEmail.useSsl', 'Use SSL/TLS')}
-                                        </span>
-                                    </label>
-                                </div>
-                            </div>
-                            <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <button className="btn btn-primary" onClick={saveEmailConfig} disabled={emailConfigSaving}>
-                                    {emailConfigSaving ? t('common.loading') : t('common.save', 'Save')}
-                                </button>
-                                {emailConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('common.saved', 'Saved')}</span>}
-                            </div>
-                            <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                💡 {t('enterprise.systemEmail.hint', 'For Gmail, use an App Password. For QQ/163 mail, use the SMTP authorization code.')}
-                            </div>
-                        </div>
 
                         {/* ── 2. Company Intro ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyIntro.title', 'Company Intro')}</h3>

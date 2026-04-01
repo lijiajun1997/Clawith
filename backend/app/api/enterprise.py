@@ -5,7 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from pydantic import BaseModel
 from sqlalchemy import select, func, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -22,7 +22,7 @@ from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo
 from app.schemas.schemas import (
     ApprovalAction, ApprovalRequestOut, AuditLogOut, EnterpriseInfoOut,
     EnterpriseInfoUpdate, LLMModelCreate, LLMModelOut, LLMModelUpdate,
-    IdentityProviderOut
+    IdentityProviderOut, UserInviteRequest
 )
 from app.services.autonomy_service import autonomy_service
 from app.services.enterprise_sync import enterprise_sync_service
@@ -475,6 +475,83 @@ async def update_tenant_quotas(
         "message": "Tenant quotas updated",
         "heartbeat_agents_adjusted": adjusted_count,
     }
+
+
+# ── System Email: Test & Templates ──────────────────────
+
+
+class TestEmailRequest(BaseModel):
+    email: str
+
+
+@router.post("/system-email/test")
+async def send_test_email_endpoint(
+    data: TestEmailRequest,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a test email to verify SMTP configuration (admin only)."""
+    from app.services.system_email_service import send_test_email
+
+    try:
+        await send_test_email(data.email, db=db)
+        return {"success": True, "message": f"Test email sent to {data.email}"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/email-templates")
+async def get_email_templates_endpoint(
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get email templates (current values + available variables per scenario)."""
+    from app.services.system_email_service import (
+        get_email_templates,
+        EMAIL_TEMPLATE_VARIABLES,
+        DEFAULT_EMAIL_TEMPLATES,
+    )
+
+    templates = await get_email_templates(db=db)
+    return {
+        "templates": templates,
+        "variables": EMAIL_TEMPLATE_VARIABLES,
+        "defaults": DEFAULT_EMAIL_TEMPLATES,
+    }
+
+
+class EmailTemplatesUpdate(BaseModel):
+    templates: dict
+
+
+@router.put("/email-templates")
+async def update_email_templates_endpoint(
+    data: EmailTemplatesUpdate,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save email templates (admin only)."""
+    from app.services.system_email_service import EMAIL_TEMPLATE_VARIABLES
+
+    # Validate that only known scenario keys are provided
+    for key in data.templates:
+        if key not in EMAIL_TEMPLATE_VARIABLES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown email template scenario: {key}"
+            )
+
+    result = await db.execute(
+        select(SystemSetting).where(SystemSetting.key == "email_templates")
+    )
+    setting = result.scalar_one_or_none()
+    if setting:
+        setting.value = data.templates
+    else:
+        setting = SystemSetting(key="email_templates", value=data.templates)
+        db.add(setting)
+    await db.commit()
+    return {"success": True, "message": "Email templates saved"}
 
 
 # ─── System Settings ───────────────────────────────────
@@ -1234,6 +1311,70 @@ async def create_invitation_codes(
 
     await db.commit()
     return {"created": len(codes_created), "codes": codes_created}
+
+
+@router.post("/invite-users")
+async def invite_users(
+    request: Request,
+    data: UserInviteRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Batch-invite users via email to the current user's company."""
+    _require_tenant_admin(current_user)
+    if not data.emails:
+        raise HTTPException(status_code=400, detail="No emails provided")
+        
+    import random
+    import string
+    from app.services.system_email_service import send_company_invitation_email
+    from app.services.platform_service import platform_service
+    from app.models.tenant import Tenant
+    
+    tenant_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant = tenant_result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    base_url = await platform_service.get_public_base_url(db, request=request)
+    
+    invited_count = 0
+    codes = []
+    
+    for email in data.emails:
+        email = email.lower().strip()
+        if not email:
+            continue
+            
+        code_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+        code = InvitationCode(
+            code=code_str,
+            tenant_id=current_user.tenant_id,
+            max_uses=1,
+            created_by=current_user.id,
+        )
+        db.add(code)
+        codes.append(code)
+        
+        invite_url = f"{base_url}/register?code={code_str}"
+        
+        inviter_name = current_user.display_name or current_user.username
+        
+        # Use background task to send email
+        background_tasks.add_task(
+            send_company_invitation_email,
+            to=email,
+            inviter_name=inviter_name,
+            company_name=tenant.name,
+            invite_url=invite_url,
+        )
+        invited_count += 1
+
+    if invited_count > 0:
+        await db.commit()
+        
+    return {"invited": invited_count, "message": "Invitations sent successfully"}
 
 
 @router.get("/invitation-codes")

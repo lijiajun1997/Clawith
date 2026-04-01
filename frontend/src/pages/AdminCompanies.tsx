@@ -129,6 +129,24 @@ function PlatformTab() {
     const [emailConfigSaving, setEmailConfigSaving] = useState(false);
     const [emailConfigSaved, setEmailConfigSaved] = useState(false);
 
+    // Test email
+    const [showTestEmail, setShowTestEmail] = useState(false);
+    const [testEmailAddr, setTestEmailAddr] = useState('');
+    const [testEmailSending, setTestEmailSending] = useState(false);
+    const [testEmailResult, setTestEmailResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+    // Email templates
+    const [emailTemplates, setEmailTemplates] = useState<Record<string, { subject: string; body: string }>>({
+        email_verification: { subject: '', body: '' },
+        password_reset: { subject: '', body: '' },
+        company_invitation: { subject: '', body: '' },
+    });
+    const [emailTemplateVars, setEmailTemplateVars] = useState<Record<string, string[]>>({});
+    const [emailTemplateDefaults, setEmailTemplateDefaults] = useState<Record<string, { subject: string; body: string }>>({});
+    const [templatesSaving, setTemplatesSaving] = useState(false);
+    const [templatesSaved, setTemplatesSaved] = useState(false);
+    const [expandedTemplate, setExpandedTemplate] = useState<string | null>(null);
+
     // Toast
     const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
     const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
@@ -175,6 +193,15 @@ function PlatformTab() {
                         SYSTEM_SMTP_TIMEOUT_SECONDS: d.value.SYSTEM_SMTP_TIMEOUT_SECONDS || 15,
                     });
                 }
+            })
+            .catch(() => { });
+
+        // Load email templates
+        fetchJson<any>('/enterprise/email-templates')
+            .then(d => {
+                if (d.templates) setEmailTemplates(d.templates);
+                if (d.variables) setEmailTemplateVars(d.variables);
+                if (d.defaults) setEmailTemplateDefaults(d.defaults);
             })
             .catch(() => { });
     }, []);
@@ -236,6 +263,56 @@ function PlatformTab() {
         } finally {
             setEmailConfigSaving(false);
         }
+    };
+
+    const handleSendTestEmail = async () => {
+        if (!testEmailAddr.trim()) return;
+        setTestEmailSending(true);
+        setTestEmailResult(null);
+        try {
+            await fetchJson('/enterprise/system-email/test', {
+                method: 'POST',
+                body: JSON.stringify({ email: testEmailAddr }),
+            });
+            setTestEmailResult({ ok: true, msg: t('enterprise.systemEmail.testSuccess', 'Test email sent successfully!') });
+        } catch (e: any) {
+            setTestEmailResult({ ok: false, msg: e.message || 'Failed to send test email' });
+        }
+        setTestEmailSending(false);
+    };
+
+    const saveEmailTemplates = async () => {
+        setTemplatesSaving(true);
+        try {
+            await fetchJson('/enterprise/email-templates', {
+                method: 'PUT',
+                body: JSON.stringify({ templates: emailTemplates }),
+            });
+            setTemplatesSaved(true);
+            setTimeout(() => setTemplatesSaved(false), 2000);
+            showToast(t('enterprise.emailTemplates.saved', 'Email templates saved'));
+        } catch (e: any) {
+            showToast(e.message || 'Failed to save templates', 'error');
+        }
+        setTemplatesSaving(false);
+    };
+
+    const resetTemplate = (key: string) => {
+        if (emailTemplateDefaults[key]) {
+            setEmailTemplates(prev => ({ ...prev, [key]: { ...emailTemplateDefaults[key] } }));
+        }
+    };
+
+    const insertVariable = (scenarioKey: string, field: 'subject' | 'body', varName: string) => {
+        const placeholder = `{{${varName}}}`;
+        // Append placeholder to end of the field 
+        setEmailTemplates(prev => ({
+            ...prev,
+            [scenarioKey]: {
+                ...prev[scenarioKey],
+                [field]: (prev[scenarioKey]?.[field] || '') + placeholder,
+            }
+        }));
     };
 
     const switchStyle = (checked: boolean, disabled?: boolean): React.CSSProperties => ({
@@ -465,14 +542,145 @@ function PlatformTab() {
                         </label>
                     </div>
                 </div>
-                <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div style={{ marginTop: '16px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <button className="btn btn-primary" onClick={saveEmailConfig} disabled={emailConfigSaving}>
                         {emailConfigSaving ? t('common.loading') : t('common.save', 'Save')}
                     </button>
-                    {emailConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('common.saved', 'Saved')}</span>}
+                    <button className="btn btn-secondary" onClick={() => { setShowTestEmail(!showTestEmail); setTestEmailResult(null); }}>
+                        {t('enterprise.systemEmail.sendTest', 'Send Test Email')}
+                    </button>
+                    {emailConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('common.saved', 'Saved')}</span>}
                 </div>
+
+                {/* Test email inline form */}
+                {showTestEmail && (
+                    <div style={{ marginTop: '12px', padding: '12px 16px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <input
+                                className="form-input"
+                                type="email"
+                                placeholder={t('enterprise.systemEmail.testPlaceholder', 'Enter recipient email...')}
+                                value={testEmailAddr}
+                                onChange={e => setTestEmailAddr(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleSendTestEmail()}
+                                style={{ flex: 1, fontSize: '13px' }}
+                            />
+                            <button className="btn btn-primary btn-sm" onClick={handleSendTestEmail} disabled={testEmailSending || !testEmailAddr.trim()}>
+                                {testEmailSending ? t('common.loading', 'Sending...') : t('enterprise.systemEmail.send', 'Send')}
+                            </button>
+                        </div>
+                        {testEmailResult && (
+                            <div style={{ marginTop: '8px', fontSize: '12px', color: testEmailResult.ok ? 'var(--success)' : 'var(--error)' }}>
+                                {testEmailResult.msg}
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 <div style={{ marginTop: '12px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                    💡 {t('enterprise.systemEmail.hint', 'For Gmail, use an App Password. For QQ/163 mail, use the SMTP authorization code.')}
+                    {t('enterprise.systemEmail.hint', 'For Gmail, use an App Password. For QQ/163 mail, use the SMTP authorization code.')}
+                </div>
+            </div>
+
+            {/* Email Templates Configuration */}
+            <div className="card" style={{ padding: '16px', marginBottom: '16px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>
+                    {t('enterprise.emailTemplates.title', 'Email Templates')}
+                </div>
+                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                    {t('enterprise.emailTemplates.description', 'Customize email content for each scenario. Use {{variable}} placeholders to insert dynamic data.')}
+                </p>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    {([
+                        { key: 'email_verification', label: t('enterprise.emailTemplates.emailVerification', 'Email Verification Code'), desc: t('enterprise.emailTemplates.emailVerificationDesc', 'Sent when a user registers and needs to verify their email address.') },
+                        { key: 'password_reset', label: t('enterprise.emailTemplates.passwordReset', 'Password Reset'), desc: t('enterprise.emailTemplates.passwordResetDesc', 'Sent when a user requests to reset their password.') },
+                        { key: 'company_invitation', label: t('enterprise.emailTemplates.companyInvitation', 'Company Invitation'), desc: t('enterprise.emailTemplates.companyInvitationDesc', 'Sent when an admin invites a user to join their company.') },
+                    ] as const).map(scenario => {
+                        const isExpanded = expandedTemplate === scenario.key;
+                        const template = emailTemplates[scenario.key] || { subject: '', body: '' };
+                        const vars = emailTemplateVars[scenario.key] || [];
+
+                        return (
+                            <div key={scenario.key} style={{ border: '1px solid var(--border-subtle)', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px' }}>
+                                {/* Scenario header */}
+                                <div
+                                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', cursor: 'pointer', background: isExpanded ? 'var(--bg-secondary)' : 'transparent', transition: 'background 0.15s' }}
+                                    onClick={() => setExpandedTemplate(isExpanded ? null : scenario.key)}
+                                >
+                                    <div>
+                                        <div style={{ fontWeight: 500, fontSize: '13px' }}>{scenario.label}</div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{scenario.desc}</div>
+                                    </div>
+                                    <div style={{ color: 'var(--text-tertiary)', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', fontSize: '12px' }}>▼</div>
+                                </div>
+
+                                {/* Expanded editor */}
+                                {isExpanded && (
+                                    <div style={{ padding: '16px', background: 'var(--bg-secondary)', borderTop: '1px solid var(--border-subtle)' }}>
+                                        {/* Available variables */}
+                                        <div style={{ marginBottom: '12px' }}>
+                                            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                                {t('enterprise.emailTemplates.availableVars', 'Available Variables')}
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                {vars.map(v => (
+                                                    <span
+                                                        key={v}
+                                                        style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '3px 8px', borderRadius: '4px', background: 'rgba(var(--accent-rgb, 99,102,241), 0.1)', color: 'var(--accent-primary)', fontSize: '11px', fontFamily: 'var(--font-mono)', cursor: 'default' }}
+                                                        title={t('enterprise.emailTemplates.clickToInsert', 'Click to copy variable')}
+                                                    >
+                                                        {`{{${v}}}`}
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Subject */}
+                                        <div style={{ marginBottom: '12px' }}>
+                                            <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>
+                                                {t('enterprise.emailTemplates.subject', 'Subject')}
+                                            </label>
+                                            <input
+                                                className="form-input"
+                                                value={template.subject}
+                                                onChange={e => setEmailTemplates(prev => ({ ...prev, [scenario.key]: { ...prev[scenario.key], subject: e.target.value } }))}
+                                                style={{ fontSize: '13px' }}
+                                            />
+                                        </div>
+
+                                        {/* Body */}
+                                        <div style={{ marginBottom: '12px' }}>
+                                            <label className="form-label" style={{ fontSize: '12px', marginBottom: '4px' }}>
+                                                {t('enterprise.emailTemplates.body', 'Body')}
+                                            </label>
+                                            <textarea
+                                                className="form-input"
+                                                rows={8}
+                                                value={template.body}
+                                                onChange={e => setEmailTemplates(prev => ({ ...prev, [scenario.key]: { ...prev[scenario.key], body: e.target.value } }))}
+                                                style={{ fontSize: '13px', fontFamily: 'var(--font-mono)', resize: 'vertical', lineHeight: 1.6 }}
+                                            />
+                                        </div>
+
+                                        {/* Reset to default */}
+                                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                            <button className="btn btn-ghost" style={{ fontSize: '12px', color: 'var(--text-tertiary)' }} onClick={() => resetTemplate(scenario.key)}>
+                                                {t('enterprise.emailTemplates.resetDefault', 'Reset to Default')}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+
+                <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <button className="btn btn-primary" onClick={saveEmailTemplates} disabled={templatesSaving}>
+                        {templatesSaving ? t('common.loading') : t('enterprise.emailTemplates.saveTemplates', 'Save Templates')}
+                    </button>
+                    {templatesSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>{t('common.saved', 'Saved')}</span>}
                 </div>
             </div>
         </>
