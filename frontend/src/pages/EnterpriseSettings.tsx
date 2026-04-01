@@ -217,9 +217,9 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
                             className="btn btn-ghost btn-sm"
                             style={{ fontSize: '11px' }}
                             disabled={!domain}
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.preventDefault();
-                                navigator.clipboard.writeText(domain.startsWith('http') ? domain : `https://${domain}`);
+                                await copyToClipboard(domain.startsWith('http') ? domain : `https://${domain}`);
                                 const el = e.currentTarget;
                                 const old = el.textContent;
                                 el.textContent = 'Copied✓';
@@ -249,9 +249,9 @@ function SsoChannelSection({ idpType, existingProvider, tenant, t }: {
                             className="btn btn-ghost btn-sm"
                             style={{ fontSize: '11px' }}
                             disabled={!callbackUrl}
-                            onClick={(e) => {
+                            onClick={async (e) => {
                                 e.preventDefault();
-                                navigator.clipboard.writeText(callbackUrl);
+                                await copyToClipboard(callbackUrl);
                                 const el = e.currentTarget;
                                 const old = el.textContent;
                                 el.textContent = 'Copied✓';

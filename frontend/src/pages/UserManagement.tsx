@@ -4,6 +4,7 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
+import { copyToClipboard } from '../utils/clipboard';
 
 interface UserInfo {
     id: string;
@@ -525,8 +526,8 @@ export default function UserManagement() {
                                 ) : (
                                     <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                                         <input className="form-input" value={inviteLink} readOnly style={{ width: '200px', fontSize: '11px', padding: '4px 8px' }} />
-                                        <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => {
-                                            navigator.clipboard.writeText(inviteLink);
+                                        <button className="btn btn-secondary" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={async () => {
+                                            await copyToClipboard(inviteLink);
                                             setToast(isChinese ? '已复制' : 'Copied!');
                                             setTimeout(() => setToast(''), 2000);
                                         }}>
