@@ -45,9 +45,14 @@ services:
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       DOCKER_NETWORK: clawith_network
       SS_CONFIG_FILE: /data/ss-nodes.json
+      # Skill 依赖安装相关环境变量
+      PIP_TARGET_DIR: /data/skill_packages
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     volumes:
       - ./backend:/app
       - ./backend/agent_data:/data/agents
+      # Skill 依赖持久化目录
+      - skill_packages:/data/skill_packages
       - /var/run/docker.sock:/var/run/docker.sock
       - ./ss-nodes.json:/data/ss-nodes.json:ro
     depends_on:
@@ -76,6 +81,8 @@ services:
 volumes:
   pgdata:
   redisdata:
+  # Skill 依赖持久化卷
+  skill_packages:
 
 
 networks:

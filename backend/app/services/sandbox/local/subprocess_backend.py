@@ -3,6 +3,7 @@
 import asyncio
 from loguru import logger
 import os
+import re
 import time
 from pathlib import Path
 
@@ -39,6 +40,33 @@ _DANGEROUS_NODE_ALWAYS = [
 _DANGEROUS_NODE_NETWORK = [
     "require('http')", "require('https')", "require('net')"
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Skill 依赖安装相关配置
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 全局 Skill 依赖目录
+SKILL_PACKAGES_DIR = os.environ.get("PIP_TARGET_DIR", "/data/skill_packages")
+
+# pip 镜像源（默认清华镜像）
+DEFAULT_PIP_INDEX_URL = os.environ.get(
+    "PIP_INDEX_URL",
+    "https://pypi.tuna.tsinghua.edu.cn/simple"
+)
+
+# 允许安装的包白名单（空列表表示允许所有）
+ALLOWED_PACKAGES: list[str] = []
+
+# 禁止安装的包黑名单（安全隐患）
+BLOCKED_PACKAGES = [
+    "pwn", "pwntools",  # CTF/渗透测试工具
+    "rat", "keylogger",  # 恶意软件
+    "malware", "backdoor",
+    "rootkit",
+]
+
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _check_code_safety(language: str, code: str, allow_network: bool = False) -> str | None:
@@ -86,6 +114,123 @@ def _check_code_safety(language: str, code: str, allow_network: bool = False) ->
                     return f"Blocked: network operation not allowed ({pattern.strip()})"
 
     return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# pip 命令检测和处理函数
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _extract_pip_packages(code: str) -> list[str]:
+    """从 pip install 命令中提取包名列表。
+
+    Args:
+        code: bash 或 python 代码
+
+    Returns:
+        包名列表
+    """
+    packages = []
+
+    # 匹配 pip install 后面的包名
+    # 支持: pip install pkg, pip install pkg==1.0, pip install pkg>=1.0
+    patterns = [
+        r'pip\d*\s+install\s+([^\s;|&><]+)',  # bash 格式
+        r'subprocess.*pip.*install.*?([a-zA-Z0-9_-]+)',  # subprocess 调用
+    ]
+
+    for pattern in patterns:
+        matches = re.findall(pattern, code, re.IGNORECASE)
+        for match in matches:
+            # 提取纯包名（去掉版本号）
+            pkg_name = re.split(r'[=<>!~\[]', match)[0].strip()
+            if pkg_name and pkg_name not in ['-', '--', '-r', '-U', '-q', '--quiet']:
+                packages.append(pkg_name.lower())
+
+    return packages
+
+
+def _check_pip_safety(code: str) -> str | None:
+    """检查 pip install 命令的安全性。
+
+    Args:
+        code: 待执行的代码
+
+    Returns:
+        错误消息，如果安全则返回 None
+    """
+    packages = _extract_pip_packages(code)
+
+    for pkg in packages:
+        # 检查黑名单
+        if pkg in BLOCKED_PACKAGES:
+            return f"Blocked: package '{pkg}' is in the blocked list (security risk)"
+
+        # 检查白名单（如果配置了）
+        if ALLOWED_PACKAGES and pkg not in ALLOWED_PACKAGES:
+            return f"Blocked: package '{pkg}' is not in the allowed list"
+
+    return None
+
+
+def _build_safe_pip_command(original_code: str) -> str:
+    """构建安全的 pip 安装命令。
+
+    将用户代码中的 pip install 转换为带有全局配置的安全命令。
+
+    Args:
+        original_code: 原始代码
+
+    Returns:
+        修改后的代码
+    """
+    # 确保目标目录存在
+    os.makedirs(SKILL_PACKAGES_DIR, exist_ok=True)
+
+    modified_code = original_code
+
+    # 如果没有指定 --target，添加它
+    if "--target" not in original_code and "-t " not in original_code:
+        modified_code = modified_code.replace(
+            "pip install",
+            f"pip install --target={SKILL_PACKAGES_DIR}"
+        )
+        modified_code = modified_code.replace(
+            "pip3 install",
+            f"pip3 install --target={SKILL_PACKAGES_DIR}"
+        )
+
+    # 如果没有指定 --index-url 或 -i，添加默认镜像
+    if "--index-url" not in original_code and "-i " not in original_code:
+        modified_code = modified_code.replace(
+            "pip install",
+            f"pip install --index-url={DEFAULT_PIP_INDEX_URL}"
+        )
+        modified_code = modified_code.replace(
+            "pip3 install",
+            f"pip3 install --index-url={DEFAULT_PIP_INDEX_URL}"
+        )
+
+    return modified_code
+
+
+def _is_pip_install_command(code: str, language: str) -> bool:
+    """检测代码是否为 pip install 命令。
+
+    Args:
+        code: 代码内容
+        language: 代码语言
+
+    Returns:
+        是否为 pip install 命令
+    """
+    if language != "bash":
+        return False
+
+    code_lower = code.lower()
+    return "pip" in code_lower and "install" in code_lower
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 class SubprocessBackend(BaseSandboxBackend):
@@ -144,6 +289,30 @@ class SubprocessBackend(BaseSandboxBackend):
                 error=f"Unsupported language: {language}. Use: python, bash, or node"
             )
 
+        # ═════════════════════════════════════════════════════════════════════
+        # pip install 特殊处理
+        # ═════════════════════════════════════════════════════════════════════
+        is_pip_install = _is_pip_install_command(code, language)
+
+        if is_pip_install:
+            # pip install 安全检查
+            pip_safety_error = _check_pip_safety(code)
+            if pip_safety_error:
+                logger.warning(f"[Subprocess] Pip install blocked: {pip_safety_error}")
+                return ExecutionResult(
+                    success=False,
+                    stdout="",
+                    stderr="",
+                    exit_code=1,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    error=f"❌ {pip_safety_error}"
+                )
+
+            # 构建安全的 pip 命令
+            code = _build_safe_pip_command(code)
+            logger.info(f"[Subprocess] Pip install: modified with target={SKILL_PACKAGES_DIR}")
+        # ═════════════════════════════════════════════════════════════════════
+
         # Security check - pass allow_network config
         safety_error = _check_code_safety(language, code, self.config.allow_network)
         if safety_error:
@@ -173,7 +342,7 @@ class SubprocessBackend(BaseSandboxBackend):
         elif language == "node":
             ext = ".js"
             cmd_prefix = ["node"]
-        
+
         # Write code to temp file
         script_path = work_path / f"_exec_tmp{ext}"
 
@@ -184,6 +353,24 @@ class SubprocessBackend(BaseSandboxBackend):
             safe_env = dict(os.environ)
             safe_env["HOME"] = str(work_path)
             safe_env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+            # ═════════════════════════════════════════════════════════════════
+            # 清除代理环境变量，避免 pip 连接代理失败
+            # ═════════════════════════════════════════════════════════════════
+            for proxy_var in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy"]:
+                safe_env.pop(proxy_var, None)
+            # ═════════════════════════════════════════════════════════════════
+
+            # ═════════════════════════════════════════════════════════════════
+            # 为 Python 代码设置 PYTHONPATH，包含 Skill 依赖目录
+            # ═════════════════════════════════════════════════════════════════
+            if language == "python":
+                existing_pythonpath = safe_env.get("PYTHONPATH", "")
+                if existing_pythonpath:
+                    safe_env["PYTHONPATH"] = f"{SKILL_PACKAGES_DIR}:{existing_pythonpath}"
+                else:
+                    safe_env["PYTHONPATH"] = SKILL_PACKAGES_DIR
+            # ═════════════════════════════════════════════════════════════════
 
             # Execute
             proc = await asyncio.create_subprocess_exec(
@@ -215,6 +402,13 @@ class SubprocessBackend(BaseSandboxBackend):
             stderr_str = stderr.decode("utf-8", errors="replace")[:5000]
 
             duration_ms = int((time.time() - start_time) * 1000)
+
+            # ═════════════════════════════════════════════════════════════════
+            # pip install 成功后记录日志
+            # ═════════════════════════════════════════════════════════════════
+            if is_pip_install and proc.returncode == 0:
+                logger.info(f"[Subprocess] Pip install succeeded: installed to {SKILL_PACKAGES_DIR}")
+            # ═════════════════════════════════════════════════════════════════
 
             return ExecutionResult(
                 success=proc.returncode == 0,
