@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -74,7 +74,7 @@ async def mark_sso_session_scanned(sid: uuid.UUID, db: AsyncSession = Depends(ge
     return {"status": "ok"}
 
 @router.get("/sso/config")
-async def get_sso_config(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_sso_config(sid: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
     """List active SSO providers with their redirect URLs for the specified session ID."""
     # 1. Resolve session to get tenant context
     res = await db.execute(select(SSOScanSession).where(SSOScanSession.id == sid))
@@ -97,17 +97,15 @@ async def get_sso_config(sid: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(query)
     providers = result.scalars().all()
     
-    # Determine the base URL for OAuth callbacks:
-    # If the tenant has an sso_domain configured, use it (e.g. https://default.clawith.ai)
-    # Otherwise, fall back to PUBLIC_BASE_URL env var
-    public_base = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+    # Determine the base URL for OAuth callbacks using centralized platform service:
+    from app.services.platform_service import platform_service
     if session.tenant_id:
         from app.models.tenant import Tenant
         tenant_result = await db.execute(select(Tenant).where(Tenant.id == session.tenant_id))
         tenant_obj = tenant_result.scalar_one_or_none()
-        if tenant_obj and tenant_obj.sso_domain:
-            # Use the tenant's SSO domain as the callback base URL
-            public_base = f"https://{tenant_obj.sso_domain}"
+        public_base = await platform_service.get_tenant_sso_base_url(db, tenant_obj, request)
+    else:
+        public_base = await platform_service.get_public_base_url(db, request)
     
     auth_urls = []
     for p in providers:
