@@ -40,6 +40,9 @@ export interface Agent {
     openclaw_last_seen?: string;
     created_at: string;
     last_active_at?: string;
+    // Permission fields for grouping
+    permission_scope_type?: 'company' | 'team' | 'user';
+    is_creator?: boolean;
 }
 
 export interface Task {

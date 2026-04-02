@@ -65,6 +65,8 @@
     "username": "Username",
     "password": "Password",
     "email": "Email",
+    "emailOrUsername": "Email / Username",
+    "emailOrUsernamePlaceholder": "Email, username, or phone",
     "displayName": "Display Name",
     "loginWithFeishu": "Login with Feishu SSO",
     "or": "or",

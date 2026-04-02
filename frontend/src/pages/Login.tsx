@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { IconUsers, IconBrain, IconBuilding, IconRocket } from '@tabler/icons-react';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
 import type { TokenResponse } from '../types';
@@ -359,24 +360,31 @@ export default function Login() {
                     <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
                     <div className="login-hero-features">
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🤖</span>
+                            <IconUsers size={24} stroke={1.5} className="login-hero-feature-icon" />
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧠</span>
+                            <IconBrain size={24} stroke={1.5} className="login-hero-feature-icon" />
                             <div>
                                 <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
                                 <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
                             </div>
                         </div>
                         <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🏛️</span>
+                            <IconBuilding size={24} stroke={1.5} className="login-hero-feature-icon" />
                             <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.serviceDelivery.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.serviceDelivery.description')}</div>
+                            </div>
+                        </div>
+                        <div className="login-hero-feature">
+                            <IconRocket size={24} stroke={1.5} className="login-hero-feature-icon" />
+                            <div>
+                                <div className="login-hero-feature-title">{t('login.hero.features.learning.title')}</div>
+                                <div className="login-hero-feature-desc">{t('login.hero.features.learning.description')}</div>
                             </div>
                         </div>
                     </div>
@@ -409,7 +417,7 @@ export default function Login() {
                     ) : (
                     <>
                     <div className="login-form-header">
-                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />Clawith</div>
+                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />ProudCopilot</div>
                         <h2 className="login-form-title">
                             {isRegister ? t('auth.register') : t('auth.login')}
                         </h2>
@@ -514,14 +522,14 @@ export default function Login() {
 
                     <form onSubmit={handleSubmit} className="login-form">
                         <div className="login-field">
-                            <label>{t('auth.email')}</label>
+                            <label>{t('auth.emailOrUsername', '邮箱 / 用户名')}</label>
                             <input
-                                type="email"
+                                type="text"
                                 value={form.login_identifier}
                                 onChange={(e) => setForm({ ...form, login_identifier: e.target.value })}
                                 required
                                 autoFocus
-                                placeholder={t('auth.emailPlaceholder')}
+                                placeholder={t('auth.emailOrUsernamePlaceholder', '邮箱、用户名或手机号')}
                             />
                         </div>
 

@@ -72,6 +72,8 @@
     "username": "用户名",
     "password": "密码",
     "email": "邮箱",
+    "emailOrUsername": "邮箱 / 用户名",
+    "emailOrUsernamePlaceholder": "邮箱、用户名或手机号",
     "displayName": "显示名称",
     "loginWithFeishu": "飞书 SSO 登录",
     "or": "或",

@@ -29,6 +29,8 @@ import {
     IconSwitchHorizontal,
     IconChevronRight,
     IconCheck,
+    IconUsers,
+    IconUserCircle,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
 
@@ -405,6 +407,22 @@ export default function Layout() {
             return stored ? new Set(JSON.parse(stored)) : new Set();
         } catch { return new Set(); }
     });
+    // Collapsible groups state
+    const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => {
+        try {
+            const stored = localStorage.getItem('sidebar_collapsed_groups');
+            return stored ? new Set(JSON.parse(stored)) : new Set();
+        } catch { return new Set(); }
+    });
+    const toggleGroupCollapse = (group: string) => {
+        setCollapsedGroups(prev => {
+            const next = new Set(prev);
+            if (next.has(group)) next.delete(group);
+            else next.add(group);
+            localStorage.setItem('sidebar_collapsed_groups', JSON.stringify([...next]));
+            return next;
+        });
+    };
     const togglePin = (agentId: string) => {
         setPinnedAgents(prev => {
             const next = new Set(prev);
@@ -588,24 +606,49 @@ export default function Layout() {
                             )}
                         </div>
                     )}
-                    {/* Agent list */}
+                    {/* Agent list with grouping */}
                     {(() => {
                         const q = sidebarSearch.trim().toLowerCase();
                         const filterAgent = (a: any) => !q || (a.name || '').toLowerCase().includes(q) || (a.role_description || '').toLowerCase().includes(q);
-                        const sortedAgents = [...agents].filter(filterAgent).sort((a: any, b: any) => {
-                            const ap = pinnedAgents.has(a.id) ? 1 : 0;
-                            const bp = pinnedAgents.has(b.id) ? 1 : 0;
-                            if (ap !== bp) return bp - ap;
-                            // Sort by created_at descending (newest first)
-                            const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
-                            const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
-                            return bTime - aTime;
-                        });
+                        const filteredAgents = agents.filter(filterAgent);
+
+                        // Group agents by permission scope
+                        const groupAgents = (agentList: any[]) => {
+                            const groups: { company: any[]; team: any[]; personal: any[] } = { company: [], team: [], personal: [] };
+                            for (const a of agentList) {
+                                const scopeType = a.permission_scope_type || 'company';
+                                const isCreator = a.is_creator !== undefined ? a.is_creator : a.creator_id === user?.id;
+
+                                if (isCreator && (scopeType === 'user' || !a.permission_scope_type)) {
+                                    groups.personal.push(a);
+                                } else if (scopeType === 'team') {
+                                    groups.team.push(a);
+                                } else {
+                                    groups.company.push(a);
+                                }
+                            }
+                            // Sort each group by pinned first, then by created_at
+                            const sortGroup = (list: any[]) => list.sort((a: any, b: any) => {
+                                const ap = pinnedAgents.has(a.id) ? 1 : 0;
+                                const bp = pinnedAgents.has(b.id) ? 1 : 0;
+                                if (ap !== bp) return bp - ap;
+                                const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+                                const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+                                return bTime - aTime;
+                            });
+                            sortGroup(groups.company);
+                            sortGroup(groups.team);
+                            sortGroup(groups.personal);
+                            return groups;
+                        };
+
+                        const groups = groupAgents(filteredAgents);
+
                         const renderAgent = (agent: any) => {
                             const badge = getAgentBadgeStatus(agent);
                             const avatarChar = ((Array.from(agent.name || '?')[0] as string) || '?').toUpperCase();
                             return (
-                            <div key={agent.id} style={{ position: 'relative' }} className={`sidebar-agent-item${agent.creator_id === user?.id ? ' owned' : ''}`}>
+                            <div key={agent.id} style={{ position: 'relative' }} className={`sidebar-agent-item${agent.is_creator || agent.creator_id === user?.id ? ' owned' : ''}`}>
                                 <NavLink
                                     to={`/agents/${agent.id}`}
                                     className={({ isActive }) => `sidebar-item ${isActive ? 'active' : ''}`}
@@ -640,19 +683,66 @@ export default function Layout() {
                                 )}
                             </div>
                         );};
+
+                        const renderGroup = (groupId: string, title: string, icon: React.ReactNode, agentList: any[]) => {
+                            if (agentList.length === 0) return null;
+                            const isCollapsed = collapsedGroups.has(groupId);
+                            return (
+                                <div key={groupId} className="sidebar-group">
+                                    <div
+                                        className="sidebar-group-header"
+                                        onClick={() => toggleGroupCollapse(groupId)}
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            padding: '8px 12px',
+                                            cursor: 'pointer',
+                                            fontSize: '11px',
+                                            fontWeight: 600,
+                                            color: 'var(--text-tertiary)',
+                                            textTransform: 'uppercase',
+                                            letterSpacing: '0.5px',
+                                            userSelect: 'none',
+                                            transition: 'color 0.15s',
+                                        }}
+                                    >
+                                        <IconChevronRight
+                                            size={12}
+                                            stroke={2}
+                                            style={{
+                                                transition: 'transform 0.15s',
+                                                transform: isCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                                            }}
+                                        />
+                                        {icon}
+                                        <span>{title}</span>
+                                        <span style={{ marginLeft: 'auto', opacity: 0.6 }}>{agentList.length}</span>
+                                    </div>
+                                    {!isCollapsed && (
+                                        <div className="sidebar-group-content">
+                                            {agentList.map(renderAgent)}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        };
+
                         return (
                             <>
-                                {sortedAgents.map(renderAgent)}
                                 {agents.length === 0 && (
                                     <div className="sidebar-section">
                                         <div className="sidebar-section-title">{t('nav.myAgents')}</div>
                                     </div>
                                 )}
-                                {agents.length > 0 && sortedAgents.length === 0 && q && (
+                                {agents.length > 0 && filteredAgents.length === 0 && q && (
                                     <div style={{ padding: '12px 16px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
                                         {isChinese ? '无匹配结果' : 'No matches'}
                                     </div>
                                 )}
+                                {renderGroup('company', isChinese ? '公司级' : 'Company', <IconBuilding size={12} stroke={1.5} />, groups.company)}
+                                {renderGroup('team', isChinese ? '团队' : 'Team', <IconUsers size={12} stroke={1.5} />, groups.team)}
+                                {renderGroup('personal', isChinese ? '个人' : 'Personal', <IconUserCircle size={12} stroke={1.5} />, groups.personal)}
                             </>
                         );
                     })()}

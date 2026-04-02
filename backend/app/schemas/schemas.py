@@ -270,6 +270,9 @@ class AgentOut(BaseModel):
     api_key_hash: str | None = None
     created_at: datetime
     last_active_at: datetime | None = None
+    # Permission fields for grouping
+    permission_scope_type: str | None = None  # "company" | "team" | "user"
+    is_creator: bool = False  # True if current user is the creator
 
     model_config = {"from_attributes": True}
 

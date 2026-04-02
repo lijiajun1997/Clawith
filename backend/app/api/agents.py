@@ -153,7 +153,53 @@ async def list_agents(
                 needs_flush = True
         if needs_flush:
             await db.commit()
-        return [AgentOut.model_validate(a) for a in agents]
+
+        # Build agent list with permission info
+        agent_outs = []
+        for a in agents:
+            agent_dict = {
+                "id": a.id,
+                "name": a.name,
+                "avatar_url": a.avatar_url,
+                "role_description": a.role_description,
+                "bio": a.bio,
+                "welcome_message": a.welcome_message,
+                "status": a.status,
+                "creator_id": a.creator_id,
+                "creator_username": None,
+                "primary_model_id": a.primary_model_id,
+                "fallback_model_id": a.fallback_model_id,
+                "autonomy_policy": a.autonomy_policy,
+                "tokens_used_today": a.tokens_used_today,
+                "tokens_used_month": a.tokens_used_month,
+                "tokens_used_total": a.tokens_used_total,
+                "max_tokens_per_day": a.max_tokens_per_day,
+                "max_tokens_per_month": a.max_tokens_per_month,
+                "context_window_size": a.context_window_size,
+                "max_tool_rounds": a.max_tool_rounds,
+                "max_triggers": a.max_triggers,
+                "min_poll_interval_min": a.min_poll_interval_min,
+                "webhook_rate_limit": a.webhook_rate_limit,
+                "heartbeat_enabled": a.heartbeat_enabled,
+                "heartbeat_interval_minutes": a.heartbeat_interval_minutes,
+                "heartbeat_active_hours": a.heartbeat_active_hours,
+                "last_heartbeat_at": a.last_heartbeat_at,
+                "timezone": a.timezone,
+                "expires_at": a.expires_at,
+                "is_expired": a.is_expired,
+                "llm_calls_today": a.llm_calls_today,
+                "max_llm_calls_per_day": a.max_llm_calls_per_day,
+                "agent_type": a.agent_type,
+                "openclaw_last_seen": a.openclaw_last_seen,
+                "has_api_key": a.has_api_key,
+                "api_key_hash": a.api_key_hash,
+                "created_at": a.created_at,
+                "last_active_at": a.last_active_at,
+                "permission_scope_type": "company",  # Admins see all as company
+                "is_creator": a.creator_id == current_user.id,
+            }
+            agent_outs.append(AgentOut(**agent_dict))
+        return agent_outs
 
     # agent_admin sees their own created agents + permitted
     # member sees only permitted
@@ -189,7 +235,74 @@ async def list_agents(
             needs_flush = True
     if needs_flush:
         await db.commit()
-    return [AgentOut.model_validate(a) for a in agents]
+
+    # Get permission info for each agent
+    agent_ids = [a.id for a in agents]
+    perms_result = await db.execute(
+        select(AgentPermission).where(AgentPermission.agent_id.in_(agent_ids))
+    )
+    all_perms = perms_result.scalars().all()
+
+    # Build permission map: agent_id -> (scope_type, scope_ids)
+    perm_map: dict = {}
+    for p in all_perms:
+        if p.agent_id not in perm_map:
+            perm_map[p.agent_id] = {"scope_type": p.scope_type, "scope_ids": []}
+        perm_map[p.agent_id]["scope_type"] = p.scope_type
+        if p.scope_id:
+            perm_map[p.agent_id]["scope_ids"].append(p.scope_id)
+
+    # Build agent list with permission info
+    agent_outs = []
+    for a in agents:
+        perm_info = perm_map.get(a.id, {"scope_type": "company", "scope_ids": []})
+        scope_type = perm_info["scope_type"]
+        # If user is creator and scope is "user", treat as "personal"
+        is_creator = a.creator_id == current_user.id
+
+        agent_dict = {
+            "id": a.id,
+            "name": a.name,
+            "avatar_url": a.avatar_url,
+            "role_description": a.role_description,
+            "bio": a.bio,
+            "welcome_message": a.welcome_message,
+            "status": a.status,
+            "creator_id": a.creator_id,
+            "creator_username": None,
+            "primary_model_id": a.primary_model_id,
+            "fallback_model_id": a.fallback_model_id,
+            "autonomy_policy": a.autonomy_policy,
+            "tokens_used_today": a.tokens_used_today,
+            "tokens_used_month": a.tokens_used_month,
+            "tokens_used_total": a.tokens_used_total,
+            "max_tokens_per_day": a.max_tokens_per_day,
+            "max_tokens_per_month": a.max_tokens_per_month,
+            "context_window_size": a.context_window_size,
+            "max_tool_rounds": a.max_tool_rounds,
+            "max_triggers": a.max_triggers,
+            "min_poll_interval_min": a.min_poll_interval_min,
+            "webhook_rate_limit": a.webhook_rate_limit,
+            "heartbeat_enabled": a.heartbeat_enabled,
+            "heartbeat_interval_minutes": a.heartbeat_interval_minutes,
+            "heartbeat_active_hours": a.heartbeat_active_hours,
+            "last_heartbeat_at": a.last_heartbeat_at,
+            "timezone": a.timezone,
+            "expires_at": a.expires_at,
+            "is_expired": a.is_expired,
+            "llm_calls_today": a.llm_calls_today,
+            "max_llm_calls_per_day": a.max_llm_calls_per_day,
+            "agent_type": a.agent_type,
+            "openclaw_last_seen": a.openclaw_last_seen,
+            "has_api_key": a.has_api_key,
+            "api_key_hash": a.api_key_hash,
+            "created_at": a.created_at,
+            "last_active_at": a.last_active_at,
+            "permission_scope_type": scope_type,
+            "is_creator": is_creator,
+        }
+        agent_outs.append(AgentOut(**agent_dict))
+    return agent_outs
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
