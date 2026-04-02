@@ -553,7 +553,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_code",
-            "description": "Execute code (Python, Bash, or Node.js) in a sandboxed environment within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Security restrictions apply: no network access commands, no system-level operations, 30-second timeout.",
+            "description": "Execute code (Python, Bash, or Node.js) in a local sandboxed subprocess within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Security restrictions apply: no network access commands, no system-level operations, 30-second timeout.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -565,6 +565,32 @@ AGENT_TOOLS = [
                     "code": {
                         "type": "string",
                         "description": "Code to execute. For Python, you can import standard libraries (json, csv, math, re, collections, etc.). Working directory is the agent root (skills/, workspace/, memory/ are accessible).",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max execution time in seconds (default 30, max 60)",
+                    },
+                },
+                "required": ["language", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_code_e2b",
+            "description": "Execute code (Python, Bash, or Node.js) in a secure E2B cloud sandbox. The sandbox has full network access and is fully isolated from the server. Use this when local execution is insufficient or when network access is required inside the code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "bash", "node"],
+                        "description": "Programming language to execute",
+                    },
+                    "code": {
+                        "type": "string",
+                        "description": "Code to execute in the E2B cloud sandbox.",
                     },
                     "timeout": {
                         "type": "integer",
@@ -1686,6 +1712,7 @@ _TOOL_AUTONOMY_MAP = {
     "send_file_to_agent": "send_feishu_message",
     "web_search": "web_search",
     "execute_code": "execute_code",
+    "execute_code_e2b": "execute_code",
 }
 
 
@@ -1725,9 +1752,9 @@ async def _execute_tool_direct(
             if not path:
                 return "Missing path"
             return _write_file(ws, path, content, tenant_id=_agent_tenant_id)
-        elif tool_name == "execute_code":
-            logger.info(f"[DirectTool] Executing code with arguments: {arguments}")
-            return await _execute_code(agent_id, ws, arguments)
+        elif tool_name in ("execute_code", "execute_code_e2b"):
+            logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
+            return await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
         elif tool_name == "web_search":
             return await _web_search(arguments, agent_id)
         elif tool_name == "jina_search":
@@ -1865,9 +1892,9 @@ async def execute_tool(
             result = await _plaza_create_post(agent_id, arguments)
         elif tool_name == "plaza_add_comment":
             result = await _plaza_add_comment(agent_id, arguments)
-        elif tool_name == "execute_code":
-            logger.info(f"[DirectTool] Executing code with arguments: {arguments}")
-            result = await _execute_code(agent_id, ws, arguments)
+        elif tool_name in ("execute_code", "execute_code_e2b"):
+            logger.info(f"[DirectTool] Executing code ({tool_name}) with arguments: {arguments}")
+            result = await _execute_code(agent_id, ws, arguments, tool_name=tool_name)
         elif tool_name == "upload_image":
             result = await _upload_image(agent_id, ws, arguments)
         elif tool_name == "generate_image_siliconflow":
@@ -4513,8 +4540,23 @@ def _check_code_safety(language: str, code: str) -> str | None:
     return None
 
 
-async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict) -> str:
-    """Execute code using the configured sandbox backend."""
+async def _execute_code(
+    agent_id: Optional[uuid.UUID],
+    ws: Path,
+    arguments: dict,
+    *,
+    tool_name: str = "execute_code",
+) -> str:
+    """Execute code using the configured sandbox backend.
+
+    Args:
+        agent_id: The agent's UUID (used to fetch per-agent tool config).
+        ws: Agent workspace root path.
+        arguments: Tool call arguments (language, code, timeout).
+        tool_name: The originating tool name — either 'execute_code' (local)
+                   or 'execute_code_e2b' (cloud).  Used to look up the
+                   correct per-agent tool config entry in the database.
+    """
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
     timeout = min(arguments.get("timeout", 30), 60)  # Max 60 seconds
@@ -4525,10 +4567,14 @@ async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict
     if language not in ("python", "bash", "node"):
         return f"❌ Unsupported language: {language}. Use: python, bash, or node"
 
-    # Working directory is the agent's root directory (must be absolute)
-    # This allows code to access skills/, workspace/, memory/ etc. directly
+    # Working directory is the agent's root directory (must be absolute).
+    # This allows code to access skills/, workspace/, memory/ etc. directly.
     work_dir = ws.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
+
+    # For E2B tool: do NOT fall back to local subprocess on error —
+    # the user explicitly chose cloud execution.
+    is_e2b_tool = (tool_name == "execute_code_e2b")
 
     try:
         # Import here to avoid circular imports
@@ -4536,18 +4582,19 @@ async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict
         from app.services.sandbox.config import SandboxConfig
         from app.services.sandbox.registry import get_sandbox_backend
 
-        # Get sandbox config: prefer tool config from DB, fallback to env vars
+        # Get sandbox config: prefer per-agent tool config from DB,
+        # fall back to the platform-level env-var config.
         fallback_config = get_sandbox_config()
-        tool_config = await _get_tool_config(agent_id, "execute_code")
+        tool_config = await _get_tool_config(agent_id, tool_name)
 
         if tool_config:
             sandbox_config = SandboxConfig.from_dict(tool_config, fallback_config)
         else:
             sandbox_config = fallback_config
-            logger.info(f"[Sandbox] Using fallback config for agent {agent_id}")
+            logger.info(f"[Sandbox] No per-agent config found for '{tool_name}', using fallback")
 
         backend = get_sandbox_backend(sandbox_config)
-        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__}")
+        logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name})")
         result = await backend.execute(
             code=code,
             language=language,
@@ -4559,16 +4606,22 @@ async def _execute_code(agent_id: Optional[uuid.UUID], ws: Path, arguments: dict
         return backend._format_result(result)
 
     except ValueError as e:
-        # Sandbox disabled or misconfigured - fall back to legacy subprocess
-        logger.warning(f"[Sandbox] Config issue, falling back to legacy: {e}")
+        # Sandbox disabled or misconfigured
+        if is_e2b_tool:
+            # Do not silently fall back — surface the config error to the user
+            return f"❌ E2B sandbox configuration error: {str(e)[:300]}\nPlease check the API key in the tool settings."
+        logger.warning(f"[Sandbox] Config issue, falling back to legacy subprocess: {e}")
         return await _execute_code_legacy(ws, arguments)
 
     except Exception as e:
-        logger.exception(f"[Sandbox] Execution failed for agent {agent_id}")
-        # Try fallback to legacy subprocess
+        logger.exception(f"[Sandbox] Execution failed for agent {agent_id} (tool={tool_name})")
+        if is_e2b_tool:
+            # Do not silently fall back to local execution
+            return f"❌ E2B execution error: {str(e)[:200]}"
+        # For local tool: try legacy subprocess as last resort
         try:
             return await _execute_code_legacy(ws, arguments)
-        except Exception as fallback_error:
+        except Exception:
             logger.exception(f"[Sandbox] Fallback also failed for agent {agent_id}")
             return f"❌ Execution error: {str(e)[:200]}"
 
