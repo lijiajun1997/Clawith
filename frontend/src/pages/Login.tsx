@@ -269,6 +269,84 @@ export default function Login() {
             {/* ── Left: Branding Panel ── */}
             <div className="login-hero">
                 <div className="login-hero-bg" />
+                <div className="login-hero-decor" />
+                <div className="login-hero-shapes">
+                    {/* Globe decoration - world element */}
+                    <div className="login-hero-chart login-hero-chart--globe">
+                        <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="60" cy="60" r="55" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="1"/>
+                            <circle cx="60" cy="60" r="45" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.35)" strokeWidth="1.5"/>
+                            <ellipse cx="60" cy="60" rx="20" ry="45" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1"/>
+                            <ellipse cx="60" cy="60" rx="35" ry="45" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="0.8"/>
+                            <line x1="15" y1="60" x2="105" y2="60" stroke="rgba(255,255,255,0.15)" strokeWidth="0.8"/>
+                            <line x1="20" y1="45" x2="100" y2="45" stroke="rgba(255,255,255,0.1)" strokeWidth="0.6"/>
+                            <line x1="20" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.1)" strokeWidth="0.6"/>
+                            <ellipse cx="60" cy="60" rx="45" ry="15" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="0.8"/>
+                            <circle cx="45" cy="40" r="2.5" fill="rgba(255,255,255,0.6)"/>
+                            <circle cx="75" cy="50" r="3" fill="rgba(255,255,255,0.7)"/>
+                            <circle cx="55" cy="75" r="2.5" fill="rgba(255,255,255,0.6)"/>
+                            <circle cx="80" cy="35" r="2" fill="rgba(255,255,255,0.5)"/>
+                        </svg>
+                    </div>
+                    {/* Stock chart decoration */}
+                    <div className="login-hero-chart login-hero-chart--stock">
+                        <svg viewBox="0 0 200 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <line x1="0" y1="25" x2="200" y2="25" stroke="rgba(255,255,255,0.08)" strokeWidth="1"/>
+                            <line x1="0" y1="50" x2="200" y2="50" stroke="rgba(255,255,255,0.08)" strokeWidth="1"/>
+                            <line x1="0" y1="75" x2="200" y2="75" stroke="rgba(255,255,255,0.08)" strokeWidth="1"/>
+                            <path d="M0 85 L25 70 L50 75 L75 55 L100 60 L125 40 L150 45 L175 25 L200 15" stroke="rgba(255,255,255,0.5)" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                            <path d="M0 85 L25 70 L50 75 L75 55 L100 60 L125 40 L150 45 L175 25 L200 15 L200 100 L0 100 Z" fill="url(#stockGradient)" opacity="0.2"/>
+                            <defs>
+                                <linearGradient id="stockGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+                                    <stop offset="0%" stopColor="rgba(255,255,255,0.4)"/>
+                                    <stop offset="100%" stopColor="rgba(255,255,255,0)"/>
+                                </linearGradient>
+                            </defs>
+                            <circle cx="75" cy="55" r="3" fill="rgba(255,255,255,0.7)"/>
+                            <circle cx="125" cy="40" r="3" fill="rgba(255,255,255,0.7)"/>
+                            <circle cx="175" cy="25" r="4" fill="rgba(255,255,255,0.9)"/>
+                        </svg>
+                    </div>
+                    {/* Bar chart decoration */}
+                    <div className="login-hero-chart login-hero-chart--bar">
+                        <svg viewBox="0 0 160 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <rect x="10" y="50" width="20" height="30" rx="2" fill="rgba(255,255,255,0.25)"/>
+                            <rect x="40" y="35" width="20" height="45" rx="2" fill="rgba(255,255,255,0.3)"/>
+                            <rect x="70" y="25" width="20" height="55" rx="2" fill="rgba(255,255,255,0.35)"/>
+                            <rect x="100" y="15" width="20" height="65" rx="2" fill="rgba(255,255,255,0.4)"/>
+                            <rect x="130" y="5" width="20" height="75" rx="2" fill="rgba(255,255,255,0.5)"/>
+                        </svg>
+                    </div>
+                    {/* Pie chart decoration */}
+                    <div className="login-hero-chart login-hero-chart--pie">
+                        <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="50" cy="50" r="40" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="1"/>
+                            <path d="M50 50 L50 10 A40 40 0 0 1 85 65 Z" fill="rgba(255,255,255,0.2)"/>
+                            <path d="M50 50 L85 65 A40 40 0 0 1 20 75 Z" fill="rgba(255,255,255,0.15)"/>
+                            <path d="M50 50 L20 75 A40 40 0 0 1 50 10 Z" fill="rgba(255,255,255,0.25)"/>
+                        </svg>
+                    </div>
+                    {/* Decorative orbs */}
+                    <div className="login-hero-orb login-hero-orb--1"></div>
+                    <div className="login-hero-orb login-hero-orb--2"></div>
+                    <div className="login-hero-orb login-hero-orb--3"></div>
+                    {/* Trend line decoration */}
+                    <div className="login-hero-chart login-hero-chart--trend">
+                        <svg viewBox="0 0 180 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M0 58 L36 48 L72 52 L108 35 L144 40 L180 28" stroke="rgba(255,255,255,0.2)" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                            <circle cx="36" cy="48" r="2.5" fill="rgba(255,255,255,0.25)"/>
+                            <circle cx="108" cy="35" r="2.5" fill="rgba(255,255,255,0.25)"/>
+                        </svg>
+                    </div>
+                    {/* Currency symbols */}
+                    <div className="login-hero-symbol login-hero-symbol--dollar">$</div>
+                    <div className="login-hero-symbol login-hero-symbol--yen">¥</div>
+                    <div className="login-hero-symbol login-hero-symbol--euro">€</div>
+                    <div className="login-hero-symbol login-hero-symbol--pound">£</div>
+                    <div className="login-hero-symbol login-hero-symbol--dollar2">$</div>
+                    <div className="login-hero-symbol login-hero-symbol--percent">%</div>
+                </div>
+                <div className="login-hero-grid" />
                 <div className="login-hero-content">
                     <div className="login-hero-badge">
                         <span className="login-hero-badge-dot" />
