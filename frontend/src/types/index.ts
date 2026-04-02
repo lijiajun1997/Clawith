@@ -76,4 +76,5 @@ export interface TokenResponse {
     token_type: string;
     user: User;
     needs_company_setup?: boolean;
+    email?: string;
 }

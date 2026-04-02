@@ -136,8 +136,8 @@ export const authApi = {
     register: (data: { username: string; email: string; password: string; display_name: string }) =>
         request<TokenResponse>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
 
-    login: (data: { username: string; password: string; tenant_id?: string }) =>
-        request<TokenResponse>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+    login: (data: { login_identifier: string; password: string; tenant_id?: string }) =>
+        request<TokenResponse | { requires_tenant_selection: boolean; login_identifier: string; tenants: any[] }>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
 
     forgotPassword: (data: { email: string }) =>
         request<{ ok: boolean; message: string }>('/auth/forgot-password', { method: 'POST', body: JSON.stringify(data) }),
@@ -149,6 +149,15 @@ export const authApi = {
 
     updateMe: (data: Partial<User>) =>
         request<User>('/auth/me', { method: 'PATCH', body: JSON.stringify(data) }),
+
+    emailHint: (username: string) =>
+        request<{ hint: string }>(`/auth/email-hint?username=${encodeURIComponent(username)}`),
+
+    verifyEmail: (token: string) =>
+        request<{ ok: boolean; message: string; access_token: string; user: User; needs_company_setup: boolean }>('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
+
+    resendVerification: (email: string) =>
+        request<{ ok: boolean; message: string }>('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }),
 };
 
 // ─── Tenants ──────────────────────────────────────────
@@ -450,4 +459,48 @@ export const teamMemberApi = {
             method: 'DELETE',
             body: JSON.stringify({ user_ids: userIds }),
         }),
+};
+
+// ─── Agent Credentials ────────────────────────────────
+export const credentialApi = {
+    list: (agentId: string) =>
+        request<any[]>(`/agents/${agentId}/credentials/`),
+
+    create: (agentId: string, data: any) =>
+        request<any>(`/agents/${agentId}/credentials/`, { method: 'POST', body: JSON.stringify(data) }),
+
+    update: (agentId: string, credentialId: string, data: any) =>
+        request<any>(`/agents/${agentId}/credentials/${credentialId}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+    delete: (agentId: string, credentialId: string) =>
+        request<void>(`/agents/${agentId}/credentials/${credentialId}`, { method: 'DELETE' }),
+};
+
+// ─── AgentBay Take Control ────────────────────────────
+export const controlApi = {
+    click: (agentId: string, data: { session_id: string; x: number; y: number; button?: string }) =>
+        request<any>(`/agents/${agentId}/control/click`, { method: 'POST', body: JSON.stringify(data) }),
+
+    type: (agentId: string, data: { session_id: string; text: string }) =>
+        request<any>(`/agents/${agentId}/control/type`, { method: 'POST', body: JSON.stringify(data) }),
+
+    pressKeys: (agentId: string, data: { session_id: string; keys: string[] }) =>
+        request<any>(`/agents/${agentId}/control/press_keys`, { method: 'POST', body: JSON.stringify(data) }),
+
+    /** Simulate a natural human drag (Bezier curve trajectory) for slider CAPTCHAs. */
+    drag: (agentId: string, data: { session_id: string; from_x: number; from_y: number; to_x: number; to_y: number; duration_ms?: number }) =>
+        request<any>(`/agents/${agentId}/control/drag`, { method: 'POST', body: JSON.stringify(data) }),
+
+    /** Get the current active page URL from the browser session (for auto-populating domain). */
+    currentUrl: (agentId: string, data: { session_id: string }) =>
+        request<{ status: string; url: string }>(`/agents/${agentId}/control/current-url`, { method: 'POST', body: JSON.stringify(data) }),
+
+    screenshot: (agentId: string, data: { session_id: string }) =>
+        request<any>(`/agents/${agentId}/control/screenshot`, { method: 'POST', body: JSON.stringify(data) }),
+
+    lock: (agentId: string, data: { session_id: string; platform_hint?: string }) =>
+        request<any>(`/agents/${agentId}/control/lock`, { method: 'POST', body: JSON.stringify(data) }),
+
+    unlock: (agentId: string, data: { session_id: string; export_cookies?: boolean; platform_hint?: string }) =>
+        request<any>(`/agents/${agentId}/control/unlock`, { method: 'POST', body: JSON.stringify(data) }),
 };
