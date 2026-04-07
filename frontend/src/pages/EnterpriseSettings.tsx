@@ -1738,7 +1738,7 @@ function BroadcastSection() {
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites'>('info');
+    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites' | 'memory'>('info');
 
     // Track selected tenant as state so page refreshes on company switch
     const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
@@ -1811,6 +1811,53 @@ export default function EnterpriseSettings() {
         setCompanyIntroSaving(false);
     };
     const [auditFilter, setAuditFilter] = useState<'all' | 'background' | 'actions'>('all');
+
+    // ─── Memory System Config (Token-based) ─────────────────────────────
+    const [memoryConfig, setMemoryConfig] = useState({
+        context_window_tokens: 200000,
+        compress_threshold: 0.75,
+        preserve_ratio: 0.25,
+    });
+    const [memoryConfigLoading, setMemoryConfigLoading] = useState(false);
+    const [memoryConfigSaving, setMemoryConfigSaving] = useState(false);
+    const [memoryConfigSaved, setMemoryConfigSaved] = useState(false);
+
+    const loadMemoryConfig = async () => {
+        setMemoryConfigLoading(true);
+        try {
+            const data = await fetchJson<any>(`/memory/system-config${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`);
+            if (data.config) {
+                setMemoryConfig({
+                    context_window_tokens: data.config.context_window_tokens ?? 200000,
+                    compress_threshold: data.config.compress_threshold ?? 0.75,
+                    preserve_ratio: data.config.preserve_ratio ?? 0.25,
+                });
+            }
+        } catch (e) {
+            console.error('Failed to load memory config:', e);
+        }
+        setMemoryConfigLoading(false);
+    };
+
+    const saveMemoryConfig = async () => {
+        setMemoryConfigSaving(true);
+        try {
+            await fetchJson<{ success: boolean; id: string }>('/memory/system-config', {
+                method: 'PUT',
+                body: JSON.stringify(memoryConfig),
+            });
+            setMemoryConfigSaved(true);
+            setTimeout(() => setMemoryConfigSaved(false), 2000);
+        } catch (e: any) {
+            alert(e.message || 'Failed to save');
+        }
+        setMemoryConfigSaving(false);
+    };
+
+    useEffect(() => {
+        if (activeTab === 'memory') loadMemoryConfig();
+    }, [activeTab, selectedTenantId]);
+
     const [infoRefresh, setInfoRefresh] = useState(0);
     const [kbPromptModal, setKbPromptModal] = useState(false);
     const [kbToast, setKbToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -2022,9 +2069,9 @@ export default function EnterpriseSettings() {
                 </div>
 
                 <div className="tabs">
-                    {(['info', 'llm', 'tools', 'skills', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
+                    {(['info', 'llm', 'tools', 'skills', 'memory', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : t(`enterprise.tabs.${tab}`)}
+                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : tab === 'memory' ? t('enterprise.tabs.memory', 'Memory') : t(`enterprise.tabs.${tab}`)}
                         </div>
                     ))}
                 </div>
@@ -2408,6 +2455,141 @@ export default function EnterpriseSettings() {
                             );
                         })}
                         {filteredAuditLogs.length === 0 && <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.noData')}</div>}
+                    </div>
+                )}
+
+                {/* ── Memory System Config (Token-based) ── */}
+                {activeTab === 'memory' && (
+                    <div>
+                        <div style={{ marginBottom: '24px' }}>
+                            <h3 style={{ marginBottom: '8px' }}>{t('enterprise.memory.title')}</h3>
+                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '16px' }}>
+                                {t('enterprise.memory.description')}
+                            </p>
+                        </div>
+
+                        {memoryConfigLoading ? (
+                            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>
+                        ) : (
+                            <div className="card" style={{ padding: '20px' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                                    {/* Context Window Tokens */}
+                                    <div className="form-group">
+                                        <label className="form-label">{t('enterprise.memory.contextWindowSize')}</label>
+                                        <select
+                                            className="form-input"
+                                            value={memoryConfig.context_window_tokens || 200000}
+                                            onChange={e => setMemoryConfig({ ...memoryConfig, context_window_tokens: parseInt(e.target.value) })}
+                                        >
+                                            <option value="64000">{t('enterprise.memory.64k')}</option>
+                                            <option value="128000">{t('enterprise.memory.128k')}</option>
+                                            <option value="200000">{t('enterprise.memory.200k')}</option>
+                                            <option value="256000">{t('enterprise.memory.256k')}</option>
+                                            <option value="1000000">{t('enterprise.memory.1m')}</option>
+                                        </select>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                            {t('enterprise.memory.contextWindowHint')}
+                                        </div>
+                                    </div>
+
+                                    {/* Compress Threshold */}
+                                    <div className="form-group">
+                                        <label className="form-label">{t('enterprise.memory.compressThreshold')}</label>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <input
+                                                className="form-input"
+                                                type="range"
+                                                min="50"
+                                                max="95"
+                                                step="5"
+                                                value={Math.round(memoryConfig.compress_threshold * 100)}
+                                                onChange={e => setMemoryConfig({ ...memoryConfig, compress_threshold: parseInt(e.target.value) / 100 })}
+                                                style={{ flex: 1 }}
+                                            />
+                                            <span style={{ minWidth: '45px', textAlign: 'right', fontSize: '13px' }}>
+                                                {Math.round(memoryConfig.compress_threshold * 100)}%
+                                            </span>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                            {t('enterprise.memory.compressThresholdHint')}
+                                        </div>
+                                    </div>
+
+                                    {/* Preserve Ratio */}
+                                    <div className="form-group">
+                                        <label className="form-label">{t('enterprise.memory.preserveRatio')}</label>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <input
+                                                className="form-input"
+                                                type="range"
+                                                min="10"
+                                                max="50"
+                                                step="5"
+                                                value={Math.round(memoryConfig.preserve_ratio * 100)}
+                                                onChange={e => setMemoryConfig({ ...memoryConfig, preserve_ratio: parseInt(e.target.value) / 100 })}
+                                                style={{ flex: 1 }}
+                                            />
+                                            <span style={{ minWidth: '45px', textAlign: 'right', fontSize: '13px' }}>
+                                                {Math.round(memoryConfig.preserve_ratio * 100)}%
+                                            </span>
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                            {t('enterprise.memory.preserveRatioHint')}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Preview */}
+                                <div style={{ background: 'rgba(0,0,0,0.03)', borderRadius: '8px', padding: '16px', marginBottom: '24px' }}>
+                                    <h4 style={{ marginBottom: '12px', fontSize: '13px' }}>📊 {t('enterprise.memory.configPreview')}</h4>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', fontSize: '12px' }}>
+                                        <div>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('enterprise.memory.contextWindowLabel')}</span>
+                                            <span style={{ fontWeight: 500 }}>
+                                                {Math.round((memoryConfig.context_window_tokens || 200000) / 1000)}k
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('enterprise.memory.compressTriggerLabel')}</span>
+                                            <span style={{ fontWeight: 500 }}>
+                                                {`${Math.round((memoryConfig.context_window_tokens || 200000) * memoryConfig.compress_threshold / 1000)}k ${t('enterprise.memory.tokens')}`}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>{t('enterprise.memory.preserveMessagesLabel')}</span>
+                                            <span style={{ fontWeight: 500 }}>
+                                                ~{Math.max(3, Math.round((memoryConfig.context_window_tokens || 200000) * memoryConfig.preserve_ratio / 100))} {t('enterprise.memory.messages')}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* How It Works */}
+                                <div style={{ background: 'rgba(0,0,0,0.03)', borderRadius: '8px', padding: '16px', marginBottom: '24px' }}>
+                                    <h4 style={{ marginBottom: '8px', fontSize: '13px' }}>💡 {t('enterprise.memory.howItWorks')}</h4>
+                                    <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                        <li><strong>{t('enterprise.memory.contextWindow')}</strong>：{t('enterprise.memory.contextWindowDesc')}</li>
+                                        <li><strong>{t('enterprise.memory.compressTrigger')}</strong>：{t('enterprise.memory.compressTriggerDesc')}</li>
+                                        <li><strong>{t('enterprise.memory.preserveRecent')}</strong>：{t('enterprise.memory.preserveRecentDesc')}</li>
+                                        <li><strong>{t('enterprise.memory.toolChain')}</strong>：{t('enterprise.memory.toolChainDesc')}</li>
+                                    </ul>
+                                </div>
+
+                                {/* Save Button */}
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: '12px' }}>
+                                    {memoryConfigSaved && (
+                                        <span style={{ color: 'var(--color-success)', fontSize: '13px' }}>✓ {t('common.saved')}</span>
+                                    )}
+                                    <button
+                                        className="btn btn-primary"
+                                        onClick={saveMemoryConfig}
+                                        disabled={memoryConfigSaving}
+                                    >
+                                        {memoryConfigSaving ? t('common.saving') : t('common.save')}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
 

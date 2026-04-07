@@ -134,6 +134,7 @@ async def call_llm(
 
     # ── Token limit check & config ──
     _max_tool_rounds = 50  # default
+    _ctx_size = 100  # context window size (messages)
     if agent_id:
         try:
             from app.models.agent import Agent as AgentModel
@@ -142,6 +143,7 @@ async def call_llm(
                 _agent = _ar.scalar_one_or_none()
                 if _agent:
                     _max_tool_rounds = _agent.max_tool_rounds or 50
+                    _ctx_size = _agent.context_window_size or 100
                     if _agent.max_tokens_per_day and _agent.tokens_used_today >= _agent.max_tokens_per_day:
                         return f"⚠️ Daily token usage has reached the limit ({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). Please try again tomorrow or ask admin to increase the limit."
                     if _agent.max_tokens_per_month and _agent.tokens_used_month >= _agent.max_tokens_per_month:
@@ -747,6 +749,74 @@ async def websocket_chat(
             # Call LLM with streaming
             if llm_model:
                 try:
+                    # ── Memory compression check ──
+                    # Check token usage and compress if needed before calling LLM
+                    _memory_summary = None
+                    try:
+                        from app.services.memory.manager import MemoryManager
+                        from app.services.memory.config import get_effective_memory_config
+                        from app.services.memory.token_counter import estimate_messages_tokens
+
+                        async with async_session() as _mem_db:
+                            _mem_config = await get_effective_memory_config(
+                                agent_id, _mem_db,
+                                model_provider=llm_model.provider,
+                                model_name=llm_model.model,
+                            )
+                            _mem_manager = MemoryManager(agent_id, _mem_config)
+
+                            # Check if compression needed
+                            _current_tokens = estimate_messages_tokens(conversation)
+                            if _mem_manager.should_compress(conversation):
+                                logger.info(
+                                    f"[Memory] Compression triggered: "
+                                    f"{_current_tokens} tokens >= {_mem_config.trigger_tokens}"
+                                )
+
+                                # Create LLM client for compression
+                                from app.services.llm_client import create_llm_client
+                                _compress_client = create_llm_client(
+                                    llm_model.provider,
+                                    llm_model.api_key_encrypted,  # Already decrypted
+                                    llm_model.model,
+                                    llm_model.base_url,
+                                )
+
+                                # Perform compression
+                                _summary, _remaining = await _mem_manager.compress_messages(
+                                    conversation,
+                                    _compress_client,
+                                    llm_model.model,
+                                    db=_mem_db,
+                                    session_id=conv_id,
+                                )
+
+                                if _summary:
+                                    _memory_summary = _summary
+                                    # Inject summary as context, keep recent messages
+                                    conversation.clear()
+                                    conversation.insert(0, {
+                                        "role": "user",
+                                        "content": f"[以下是之前对话的自动摘要]\n{_summary}\n[摘要结束，请基于以上上下文继续对话]"
+                                    })
+                                    conversation.insert(1, {
+                                        "role": "assistant",
+                                        "content": "好的，我已了解之前的对话内容，请继续。"
+                                    })
+                                    conversation.extend(_remaining)
+                                    logger.info(
+                                        f"[Memory] Compressed to {len(conversation)} messages "
+                                        f"(summary + {len(_remaining)} recent)"
+                                    )
+
+                                    # Notify user about compression
+                                    await websocket.send_json({
+                                        "type": "info",
+                                        "content": "📋 已自动压缩对话历史以保持上下文窗口"
+                                    })
+                    except Exception as _mem_err:
+                        logger.warning(f"[Memory] Compression check failed: {_mem_err}")
+
                     logger.info(f"[WS] Calling LLM {llm_model.model} (streaming)...")
                     
                     # Accumulate partial content for abort handling

@@ -1009,6 +1009,38 @@
         "Pacific/Auckland": "太平洋/奥克兰 (新西兰时间, UTC+12/+13)"
       }
     },
+    "memory": {
+      "title": "对话记忆配置",
+      "description": "基于 Token 的自动压缩：当对话达到上下文窗口的阈值时，自动压缩历史消息生成摘要。",
+      "contextWindowSize": "上下文窗口大小",
+      "contextWindowHint": "模型的上下文窗口大小，决定最大 Token 容量",
+      "localModels": "本地模型",
+      "compressThreshold": "压缩触发阈值",
+      "compressThresholdHint": "当 Token 使用率达到此比例时触发压缩",
+      "preserveRatio": "保留最近比例",
+      "preserveRatioHint": "压缩时保留最近此比例的消息",
+      "configPreview": "配置预览",
+      "contextWindowLabel": "上下文窗口：",
+      "compressTriggerLabel": "触发压缩：",
+      "preserveMessagesLabel": "保留消息：",
+      "howItWorks": "工作原理",
+      "contextWindow": "上下文窗口",
+      "compressTrigger": "压缩触发",
+      "preserveRecent": "保留最近消息",
+      "toolChain": "工具调用",
+      "contextWindowDesc": "模型的 Token 容量（如 Claude 200k，GPT-4o 128k）",
+      "compressTriggerDesc": "当对话达到 75% 容量时，自动压缩历史消息",
+      "preserveRecentDesc": "保留最近 25% 的消息，压缩剩余部分为摘要",
+      "toolChainDesc": "长链路工具调用会自动保持上下文，压缩后继续执行",
+      "tokens": "tokens",
+      "messages": "条",
+      "64k": "64k（本地模型）",
+      "128k": "128k（GPT-4o / Kimi）",
+      "200k": "200k（Claude / GLM / MiniMax）",
+      "256k": "256k（Qwen 3.5）",
+      "1m": "1M（Gemini / Qwen-Long）",
+      "localModels": "本地模型"
+    },
     "systemEmail": {
       "title": "系统邮件配置",
       "description": "配置 SMTP 设置以发送系统邮件，如密码重置和通知。",
@@ -1065,7 +1097,8 @@
       "quotas": "配额",
       "users": "用户",
       "invites": "邀请码",
-      "identity": "OA管理"
+      "identity": "OA管理",
+      "memory": "对话记忆"
     },
     "invites": {
       "pageTitle": "邀请码",
