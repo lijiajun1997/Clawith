@@ -5381,6 +5381,10 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         safe_env["WORKSPACE_DIR"] = str(workspace_dir)
         safe_env["AGENT_ROOT"] = str(agent_root)
 
+        # Ensure pip user-installed scripts are on PATH
+        _user_local_bin = str(workspace_dir / ".local" / "bin")
+        safe_env["PATH"] = f"{_user_local_bin}{os.pathsep}{safe_env.get('PATH', '')}"
+
         # Inject shared dependency paths (consistent with sandbox backends)
         _shared_deps = os.environ.get("SHARED_DEPS_DIR", "/data/shared-deps")
         _path_sep = os.pathsep  # ';' on Windows, ':' on Linux
