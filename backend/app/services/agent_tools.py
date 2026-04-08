@@ -5392,6 +5392,10 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         existing_pp = safe_env.get("PYTHONPATH", "")
         safe_env["PYTHONPATH"] = f"{pip_deps}{_path_sep}{existing_pp}" if existing_pp else pip_deps
         safe_env["NODE_PATH"] = f"{_shared_deps}/node_modules"
+        # Point pip temp dir to same filesystem as --target to avoid cross-device rename errors
+        _pip_tmp = Path(pip_deps) / ".tmp"
+        _pip_tmp.mkdir(parents=True, exist_ok=True)
+        safe_env["TMPDIR"] = str(_pip_tmp)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd_prefix, str(script_path),
