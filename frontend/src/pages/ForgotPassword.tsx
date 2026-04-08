@@ -14,7 +14,7 @@ export default function ForgotPassword() {
     const [hintResult, setHintResult] = useState('');
 
     useEffect(() => {
-        document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.removeAttribute('data-theme');
     }, []);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -58,7 +58,7 @@ export default function ForgotPassword() {
                     <div className="login-form-header">
                         <div className="login-form-logo">
                             <img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />
-                            Clawith
+                            {t('app.name', 'Proud Copilot')}
                         </div>
                         <h2 className="login-form-title">{t('auth.forgotPasswordTitle', 'Forgot password')}</h2>
                         <p className="login-form-subtitle">

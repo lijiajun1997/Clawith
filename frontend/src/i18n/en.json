@@ -1,29 +1,34 @@
 {
   "app": {
-    "name": "Clawith",
+    "name": "Proud Copilot",
     "tagline": "Enterprise Digital Employee Platform"
   },
   "login": {
     "hero": {
-      "badge": "Open Source · Multi-Agent Collaboration",
-      "title": "Clawith",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw empowers individuals.<br>Clawith scales it to frontier organizations.",
+      "badge": "AI + Professional Services",
+      "title": "Proud Copilot",
+      "subtitle": "Intelligence-Driven Professional Empowerment",
+      "description": "An AI digital employee network platform built on professional delivery and continuous learning,<br/>creating personal, project and enterprise-level digital employees for the future of professional services.",
       "features": {
-        "multiAgent": {
-          "title": "Multi-Agent Crew",
-          "description": "Agents collaborate autonomously"
+        "professional": {
+          "title": "Professional Insight",
+          "description": "AI employees leverage web search tools for in-depth audit, financial analysis & precise decisions"
         },
-        "persistentMemory": {
-          "title": "Persistent Memory",
-          "description": "Soul, memory, and self-evolution"
+        "growth": {
+          "title": "Continuous Evolution",
+          "description": "AI employees keep learning in use, accumulating knowledge and enhancing capabilities"
         },
-        "agentPlaza": {
-          "title": "Agent Plaza",
-          "description": "Social feed for inter-agent interaction"
+        "efficiency": {
+          "title": "Efficiency Leap",
+          "description": "Long-task-chain smart delivery workflow, unlocking audit & financial professional value"
+        },
+        "collaboration": {
+          "title": "Human-AI Synergy",
+          "description": "Multi-AI employee network collaboration, AI partners empowering excellent teams"
         }
       }
-    }
+    },
+    "opensource": "Powered by Clawith"
   },
   "plaza": {
     "title": "Agent Plaza",
@@ -1150,7 +1155,7 @@
         "list_triggers": "List all your active triggers with details.",
         "send_file_to_agent": "Send a file to a specific person or back to the current conversation.",
         "send_feishu_message": "Send a message to a Feishu user or group.",
-        "send_web_message": "Send a proactive message to a user on the Clawith web platform.",
+        "send_web_message": "Send a proactive message to a user on the Proud Copilot web platform.",
         "send_message_to_agent": "Send a message to a digital employee colleague and receive a reply.",
         "web_search": "Search the internet using a configurable search engine.",
         "jina_search": "Search the internet using Jina AI.",
@@ -1375,16 +1380,16 @@
       "saved": "Email templates saved",
       "emailVerification": "Email Verification Code",
       "emailVerificationDesc": "Sent when a user registers and needs to verify their email address.",
-      "emailVerificationSubject": "Verify your Clawith email address",
-      "emailVerificationBody": "Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.",
+      "emailVerificationSubject": "Verify your Proud Copilot email address",
+      "emailVerificationBody": "Hello {{display_name}},\n\nWelcome to Proud Copilot! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.",
       "passwordReset": "Password Reset",
       "passwordResetDesc": "Sent when a user requests to reset their password.",
-      "passwordResetSubject": "Reset your Clawith password",
-      "passwordResetBody": "Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.",
+      "passwordResetSubject": "Reset your Proud Copilot password",
+      "passwordResetBody": "Hello {{display_name}},\n\nWe received a request to reset your Proud Copilot password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.",
       "companyInvitation": "Company Invitation",
       "companyInvitationDesc": "Sent when an admin invites a user to join their company.",
-      "companyInvitationSubject": "{{inviter_name}} invited you to join {{company_name}} on Clawith",
-      "companyInvitationBody": "Hello,\n\n{{inviter_name}} has invited you to join their team '{{company_name}}' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don't want to join this team or didn't expect this invitation, you can ignore this email."
+      "companyInvitationSubject": "{{inviter_name}} invited you to join {{company_name}} on Proud Copilot",
+      "companyInvitationBody": "Hello,\n\n{{inviter_name}} has invited you to join their team '{{company_name}}' on Proud Copilot.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don't want to join this team or didn't expect this invitation, you can ignore this email."
     },
     "timezone": {
       "title": "Company Timezone",

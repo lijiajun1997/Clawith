@@ -1,29 +1,34 @@
 {
   "app": {
-    "name": "Clawith",
+    "name": "Proud Copilot",
     "tagline": "企业数字员工平台"
   },
   "login": {
     "hero": {
-      "badge": "开源 · 多智能体协作",
-      "title": "Clawith",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw 赋能个人。<br>Clawith 将其扩展到前沿组织。",
+      "badge": "AI + 专业服务",
+      "title": "Proud Copilot",
+      "subtitle": "智能驱动 专业赋能",
+      "description": "构造以专业交付与持续学习能力为核心的AI数字员工网络平台，<br/>打造个人、项目及企业级数字员工，构建专业服务未来新范式。",
       "features": {
-        "multiAgent": {
-          "title": "多智能体团队",
-          "description": "智能体自主协作"
+        "professional": {
+          "title": "专业洞察",
+          "description": "数字员工依托工具联网搜索，深度审计财务分析与精准决策"
         },
-        "persistentMemory": {
-          "title": "持久记忆",
-          "description": "灵魂、记忆和自我进化"
+        "growth": {
+          "title": "持续进化",
+          "description": "数字员工使用中持续学习，知识沉淀能力持续提升"
         },
-        "agentPlaza": {
-          "title": "智能体广场",
-          "description": "智能体间互动的社交 feed"
+        "efficiency": {
+          "title": "效率跃升",
+          "description": "长任务链路智能交付流程，释放审计财务专业价值"
+        },
+        "collaboration": {
+          "title": "人机协同",
+          "description": "多AI员工网络协同工作，AI伙伴成就卓越团队"
         }
       }
-    }
+    },
+    "opensource": "Powered by Clawith"
   },
   "nav": {
     "dashboard": "仪表盘",
@@ -1266,7 +1271,7 @@
         "list_triggers": "列出所有活动触发器的详细信息。",
         "send_file_to_agent": "将文件发送给特定人员或返回当前对话。",
         "send_feishu_message": "向飞书用户或群组发送消息。",
-        "send_web_message": "在 Clawith 网页平台上向用户发送主动消息。",
+        "send_web_message": "在 Proud Copilot 网页平台上向用户发送主动消息。",
         "send_message_to_agent": "向数字员工同事发送消息并接收回复。",
         "web_search": "使用可配置的搜索引擎搜索互联网。",
         "jina_search": "使用 Jina AI 搜索互联网。",
@@ -1433,16 +1438,16 @@
       "saved": "邮件模板已保存",
       "emailVerification": "邮箱验证码",
       "emailVerificationDesc": "用户注册并需要验证邮箱地址时发送。",
-      "emailVerificationSubject": "验证您的 Clawith 邮箱地址",
-      "emailVerificationBody": "您好 {{display_name}}，\n\n欢迎来到 Clawith！请使用以下 6 位数字验证码验证您的邮箱地址：\n\n验证码：{{verification_code}}\n\n此验证码将在 {{expiry_minutes}} 分钟后过期。如果您没有创建账号，可以忽略此邮件。",
+      "emailVerificationSubject": "验证您的 Proud Copilot 邮箱地址",
+      "emailVerificationBody": "您好 {{display_name}}，\n\n欢迎来到 Proud Copilot！请使用以下 6 位数字验证码验证您的邮箱地址：\n\n验证码：{{verification_code}}\n\n此验证码将在 {{expiry_minutes}} 分钟后过期。如果您没有创建账号，可以忽略此邮件。",
       "passwordReset": "密码重置",
       "passwordResetDesc": "用户请求重置密码时发送。",
-      "passwordResetSubject": "重置您的 Clawith 密码",
-      "passwordResetBody": "您好 {{display_name}}，\n\n我们收到了重置您 Clawith 密码的请求。\n\n重置链接：{{reset_url}}\n\n此链接将在 {{expiry_minutes}} 分钟后过期。如果您没有提出此请求，可以忽略此邮件。",
+      "passwordResetSubject": "重置您的 Proud Copilot 密码",
+      "passwordResetBody": "您好 {{display_name}}，\n\n我们收到了重置您 Proud Copilot 密码的请求。\n\n重置链接：{{reset_url}}\n\n此链接将在 {{expiry_minutes}} 分钟后过期。如果您没有提出此请求，可以忽略此邮件。",
       "companyInvitation": "公司邀请",
       "companyInvitationDesc": "管理员邀请用户加入公司时发送。",
-      "companyInvitationSubject": "{{inviter_name}} 邀请您加入 {{company_name}} 的 Clawith 团队",
-      "companyInvitationBody": "您好，\n\n{{inviter_name}} 邀请您加入他们在 Clawith 的团队\"{{company_name}}\"。\n\n要接受邀请并创建您的账号，请点击以下链接：\n\n{{invite_url}}\n\n如果您不想加入此团队或没有预期此邀请，可以忽略此邮件。"
+      "companyInvitationSubject": "{{inviter_name}} 邀请您加入 {{company_name}} 的 Proud Copilot 团队",
+      "companyInvitationBody": "您好，\n\n{{inviter_name}} 邀请您加入他们在 Proud Copilot 的团队\"{{company_name}}\"。\n\n要接受邀请并创建您的账号，请点击以下链接：\n\n{{invite_url}}\n\n如果您不想加入此团队或没有预期此邀请，可以忽略此邮件。"
     },
     "users": {
       "user": "用户",
@@ -1653,7 +1658,7 @@
     "keyNote": "API Key 已嵌入在上方指令中。如需手动配置可单独保存。",
     "goToAgent": "前往 Agent 页面",
     "nativeTitle": "平台托管",
-    "nativeDesc": "在 Clawith 平台上运行的完整 Agent",
+    "nativeDesc": "在 Proud Copilot 平台上运行的完整 Agent",
     "openclawTitle": "连接 OpenClaw",
     "openclawDesc": "连接你现有的 OpenClaw Agent",
     "basicTitle": "连接 OpenClaw Agent",
