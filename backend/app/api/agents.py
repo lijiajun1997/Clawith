@@ -214,6 +214,15 @@ async def create_agent(
     if current_user.role in ("platform_admin", "org_admin") and data.tenant_id:
         target_tenant_id = data.tenant_id
 
+    # Load template if specified
+    template = None
+    if data.template_id:
+        from app.models.agent import AgentTemplate
+        template_result = await db.execute(
+            select(AgentTemplate).where(AgentTemplate.id == data.template_id)
+        )
+        template = template_result.scalar_one_or_none()
+
     # Get default limits from target tenant
     max_llm_calls = 100
     default_max_triggers = 20
@@ -256,6 +265,8 @@ async def create_agent(
     )
     if data.autonomy_policy:
         agent.autonomy_policy = data.autonomy_policy
+    elif template and template.default_autonomy_policy:
+        agent.autonomy_policy = template.default_autonomy_policy
 
     db.add(agent)
     await db.flush()
@@ -300,6 +311,7 @@ async def create_agent(
         db, agent,
         personality=data.personality,
         boundaries=data.boundaries,
+        soul_template=template.soul_template if template else None,
     )
 
     # Copy selected skills + mandatory default skills into agent workspace
