@@ -117,8 +117,9 @@ class BaseSandboxBackend(ABC):
         """Get the capabilities of this sandbox backend."""
         pass
 
+    @staticmethod
     def _format_result(
-        self, result: ExecutionResult, work_dir: str | None = None
+        result: ExecutionResult, work_dir: str | None = None
     ) -> str:
         """Format execution result for user display.
 

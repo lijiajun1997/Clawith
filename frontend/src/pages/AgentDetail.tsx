@@ -1016,6 +1016,8 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     const [search, setSearch] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [adding, setAdding] = useState<any>(null);
+    const [addingHuman, setAddingHuman] = useState(false);
+    const [selectedMemberId, setSelectedMemberId] = useState('');
     const [relation, setRelation] = useState('collaborator');
     const [description, setDescription] = useState('');
     // Agent relationships state
@@ -1045,22 +1047,31 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
         queryKey: ['agents-for-rel'],
         queryFn: () => fetchAuth<any[]>(`/agents/`),
     });
+    const { data: allMembers = [] } = useQuery({
+        queryKey: ['org-members'],
+        queryFn: () => fetchAuth<any[]>('/enterprise/org/members'),
+    });
     const availableAgents = allAgents.filter((a: any) => a.id !== agentId);
 
     useEffect(() => {
-        if (!search || search.length < 1) { setSearchResults([]); return; }
         const t = setTimeout(() => {
-            fetchAuth<any[]>(`/enterprise/org/members?search=${encodeURIComponent(search)}`).then(setSearchResults);
-        }, 300);
+            if (!search || search.length < 1) {
+                // When search is empty, fetch all members
+                fetchAuth<any[]>('/enterprise/org/members').then(setSearchResults);
+            } else {
+                fetchAuth<any[]>(`/enterprise/org/members?search=${encodeURIComponent(search)}`).then(setSearchResults);
+            }
+        }, search ? 300 : 0); // No delay for initial load, 300ms debounce for search
         return () => clearTimeout(t);
     }, [search]);
 
     const addRelationship = async () => {
-        if (!adding) return;
+        if (!adding && !selectedMemberId) return;
+        const memberId = adding?.id || selectedMemberId;
         const existing = relationships.map((r: any) => ({ member_id: r.member_id, relation: r.relation, description: r.description }));
-        existing.push({ member_id: adding.id, relation, description });
+        existing.push({ member_id: memberId, relation, description });
         await fetchAuth(`/agents/${agentId}/relationships/`, { method: 'PUT', body: JSON.stringify({ relationships: existing }) });
-        setAdding(null); setSearch(''); setRelation('collaborator'); setDescription('');
+        setAdding(null); setAddingHuman(false); setSelectedMemberId(''); setSearch(''); setRelation('collaborator'); setDescription('');
         refetch();
     };
     const removeRelationship = async (relId: string) => {
@@ -1189,44 +1200,35 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                         ))}
                     </div>
                 )}
-                {!readOnly && !adding && (
-                    <div style={{ position: 'relative' }}>
-                        <input className="input" placeholder={t("agent.detail.searchMembers")} value={search} onChange={e => setSearch(e.target.value)} style={{ fontSize: '13px' }} />
-                        {searchResults.length > 0 && (
-                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginTop: '4px', maxHeight: '200px', overflowY: 'auto', zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
-                                {searchResults.map((m: any) => (
-                                    <div key={m.id} style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '13px', borderBottom: '1px solid var(--border-subtle)' }}
-                                        onClick={() => { setAdding(m); setSearch(''); setSearchResults([]); }}
-                                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-elevated)')}
-                                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                        <div style={{ fontWeight: 500 }}>{m.name}</div>
-                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                            {m.provider_name && <span style={{ color: 'var(--accent-color)', fontWeight: 500, marginRight: '6px' }}>[{m.provider_name}]</span>}
-                                            {m.department_path} · {m.email}
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                {!readOnly && !addingHuman && !adding && (
+                    <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setAddingHuman(true)}>+ {t('agent.detail.addRelationship')}</button>
                 )}
-                {!readOnly && adding && (
+                {!readOnly && (addingHuman || adding) && (
                     <div style={{ border: '1px solid var(--accent-primary)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
-                        <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '8px' }}>
-                            {t('agent.detail.addRelationship')}: {adding.name}
-                            <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
-                                ({adding.provider_name ? `[${adding.provider_name}] ` : ''}{adding.department_path} · {adding.email})
-                            </span>
-                        </div>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                            <select className="input" value={relation} onChange={e => setRelation(e.target.value)} style={{ width: '140px', fontSize: '12px' }}>
+                            <select
+                                className="input"
+                                value={adding?.id || selectedMemberId}
+                                onChange={e => {
+                                    const selected = allMembers.find((m: any) => m.id === e.target.value);
+                                    setAdding(selected || null);
+                                    setSelectedMemberId(e.target.value);
+                                }}
+                                style={{ flex: 1, minWidth: 0, fontSize: '12px' }}
+                            >
+                                <option value="">— {t('agent.detail.searchMembers', 'Search organization members...')} —</option>
+                                {(allMembers || []).map((m: any) => (
+                                    <option key={m.id} value={m.id}>{m.name} — {m.department_path || ''} · {m.email}</option>
+                                ))}
+                            </select>
+                            <select className="input" value={relation} onChange={e => setRelation(e.target.value)} style={{ width: '140px', flexShrink: 0, fontSize: '12px' }}>
                                 {getRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
                             </select>
                         </div>
                         <textarea className="input" placeholder="" value={description} onChange={e => setDescription(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px' }} />
                         <div style={{ display: 'flex', gap: '8px' }}>
-                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addRelationship}>{t('common.confirm')}</button>
-                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAdding(null); setDescription(''); }}>{t('common.cancel')}</button>
+                            <button className="btn btn-primary" style={{ fontSize: '12px' }} onClick={addRelationship} disabled={!adding && !selectedMemberId}>{t('common.confirm')}</button>
+                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => { setAddingHuman(false); setAdding(null); setSelectedMemberId(''); setDescription(''); }}>{t('common.cancel')}</button>
                         </div>
                     </div>
                 )}
@@ -2553,8 +2555,17 @@ function AgentDetailInner() {
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
         queryFn: () => fetchAuth<any>(`/agents/${id}/permissions`),
-        enabled: !!id && activeTab === 'settings',
+        enabled: !!id,
     });
+
+    // Determine if user can view workspace tab
+    // - Admins can always view and edit
+    // - Creator can always view and edit
+    // - Team/department/user scope: all members with access can view and edit
+    // - Company-wide agents: only admin/creator can view (others cannot see the tab)
+    const isCreator = agent && currentUser && (agent as any).creator_id === currentUser.id;
+    const isCompanyWide = permData?.scope_type === 'company' && !permData?.is_team;
+    const canViewWorkspace = isAdmin || isCreator || !isCompanyWide;
 
     // Team member selection state for permission management
     const [teamSearchRes, setTeamSearchRes] = useState<any[]>([]);
@@ -2782,6 +2793,8 @@ function AgentDetailInner() {
                 {/* Tabs */}
                 <div className="tabs">
                     {TABS.filter(tab => {
+                        // Workspace tab: only show if user has permission
+                        if (tab === 'workspace' && !canViewWorkspace) return false;
                         // 'use' access: hide settings and approvals tabs
                         if ((agent as any)?.access_level === 'use') {
                             if (tab === 'settings' || tab === 'approvals') return false;
@@ -3971,7 +3984,7 @@ function AgentDetailInner() {
 
                 {/* ── Workspace Tab ── */}
                 {
-                    activeTab === 'workspace' && (() => {
+                    activeTab === 'workspace' && canViewWorkspace && (() => {
                         const adapter: FileBrowserApi = {
                             list: (p) => fileApi.list(id!, p),
                             read: (p) => fileApi.read(id!, p),
@@ -3980,6 +3993,7 @@ function AgentDetailInner() {
                             upload: (file, path, onProgress) => fileApi.upload(id!, file, path + '/', onProgress),
                             downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
+                        // Users who can view workspace can also edit it
                         return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} />;
                     })()
                 }
