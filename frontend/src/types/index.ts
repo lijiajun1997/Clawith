@@ -23,6 +23,7 @@ export interface Agent {
     bio?: string;
     status: 'creating' | 'running' | 'idle' | 'stopped' | 'error';
     creator_id: string;
+    creator_username?: string;
     primary_model_id?: string;
     fallback_model_id?: string;
     autonomy_policy: Record<string, string>;

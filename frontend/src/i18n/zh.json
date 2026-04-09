@@ -168,6 +168,7 @@
     },
     "table": {
       "agent": "员工",
+      "owner": "创建者",
       "latestActivity": "最新动态",
       "token": "Token",
       "active": "活跃"
