@@ -105,6 +105,28 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
     return changed
 
 
+async def _enrich_agents_with_creator(agents: list[Agent], db: AsyncSession) -> list[AgentOut]:
+    """Batch fetch creator usernames and return enriched AgentOut list."""
+    if not agents:
+        return []
+
+    # Batch fetch creators
+    creator_ids = {a.creator_id for a in agents if a.creator_id}
+    users = {}
+    if creator_ids:
+        user_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
+        users = {u.id: u for u in user_result.scalars().all()}
+
+    # Build response with creator_username
+    result = []
+    for a in agents:
+        agent_out = AgentOut.model_validate(a)
+        creator = users.get(a.creator_id)
+        agent_out.creator_username = (creator.display_name or creator.username) if creator else None
+        result.append(agent_out)
+    return result
+
+
 @router.get("/templates")
 async def list_templates(
     current_user: User = Depends(get_current_user),
@@ -153,7 +175,8 @@ async def list_agents(
                 needs_flush = True
         if needs_flush:
             await db.commit()
-        return [AgentOut.model_validate(a) for a in agents]
+        # Batch fetch creator usernames
+        return await _enrich_agents_with_creator(agents, db)
 
     # agent_admin sees their own created agents + permitted
     # member sees only permitted
@@ -188,7 +211,8 @@ async def list_agents(
             needs_flush = True
     if needs_flush:
         await db.commit()
-    return [AgentOut.model_validate(a) for a in agents]
+    # Batch fetch creator usernames
+    return await _enrich_agents_with_creator(agents, db)
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)

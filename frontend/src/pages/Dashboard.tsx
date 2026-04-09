@@ -181,7 +181,7 @@ function AgentRow({ agent, tasks, recentActivity }: {
             onClick={() => navigate(`/agents/${agent.id}`)}
             style={{
                 display: 'grid',
-                gridTemplateColumns: '220px 1fr 150px 100px',
+                gridTemplateColumns: '200px 100px 1fr 130px 90px',
                 alignItems: 'center', gap: '16px',
                 padding: '12px 16px',
                 borderRadius: 'var(--radius-md)',
@@ -226,6 +226,11 @@ function AgentRow({ agent, tasks, recentActivity }: {
                         {agent.role_description || '-'}
                     </div>
                 </div>
+            </div>
+
+            {/* Owner */}
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {(agent as any).creator_username || '-'}
             </div>
 
             {/* Latest Activity / Tasks */}
@@ -463,13 +468,14 @@ export default function Dashboard() {
                         {/* Agent List Header */}
                         <div style={{
                             display: 'grid',
-                            gridTemplateColumns: '220px 1fr 150px 100px',
+                            gridTemplateColumns: '200px 100px 1fr 130px 90px',
                             padding: '10px 16px',
                             fontSize: '11px', color: 'var(--text-tertiary)', fontWeight: 500,
                             textTransform: 'uppercase' as const, letterSpacing: '0.05em',
                             borderBottom: '1px solid var(--border-subtle)',
                         }}>
                             <span>{t('dashboard.table.agent')}</span>
+                            <span>{t('dashboard.table.owner')}</span>
                             <span>{t('dashboard.table.latestActivity')}</span>
                             <span>Token</span>
                             <span style={{ textAlign: 'right' }}>{t('dashboard.table.active')}</span>

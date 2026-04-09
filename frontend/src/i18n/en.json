@@ -156,6 +156,7 @@
     },
     "table": {
       "agent": "Agent",
+      "owner": "Owner",
       "latestActivity": "Latest Activity",
       "token": "Token",
       "active": "Active"
