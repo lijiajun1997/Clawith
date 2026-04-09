@@ -1,5 +1,6 @@
 """WebSocket chat endpoint for real-time agent conversations."""
 
+import asyncio
 import json
 import uuid
 
