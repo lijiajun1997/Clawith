@@ -123,42 +123,14 @@ async def lifespan(app: FastAPI):
     # Seed default company (Tenant) — required before users can register
     try:
         from app.models.tenant import Tenant
-        from app.models.user import User, Identity
-        from app.core.security import hash_password
         from app.database import async_session as _session
         from sqlalchemy import select as _select
         async with _session() as _db:
-            # Create default tenant
             _existing = await _db.execute(_select(Tenant).where(Tenant.slug == "default"))
-            _tenant = _existing.scalar_one_or_none()
-            if not _tenant:
-                _tenant = Tenant(name="Default", slug="default", im_provider="web_only")
-                _db.add(_tenant)
-                await _db.flush()
-                logger.info("[startup] Default company created")
-
-            # Create default platform admin (for development/demo)
-            _admin_existing = await _db.execute(_select(User).where(User.role == "platform_admin"))
-            if not _admin_existing.scalar_one_or_none():
-                # Create Identity first (stores email/password)
-                _identity = Identity(
-                    email="admin@example.com",
-                    password_hash=hash_password("admin123"),
-                    is_platform_admin=True,
-                )
-                _db.add(_identity)
-                await _db.flush()
-
-                # Create User (tenant-specific profile)
-                _admin = User(
-                    display_name="Admin",
-                    role="platform_admin",
-                    tenant_id=_tenant.id,
-                    identity_id=_identity.id,
-                )
-                _db.add(_admin)
+            if not _existing.scalar_one_or_none():
+                _db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
                 await _db.commit()
-                logger.info("[startup] Default admin user created (email: admin@example.com, password: admin123)")
+                logger.info("[startup] Default company created")
     except Exception as e:
         logger.warning(f"[startup] Default company seed failed: {e}")
 
