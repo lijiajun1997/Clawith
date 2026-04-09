@@ -2553,8 +2553,17 @@ function AgentDetailInner() {
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
         queryFn: () => fetchAuth<any>(`/agents/${id}/permissions`),
-        enabled: !!id && activeTab === 'settings',
+        enabled: !!id,
     });
+
+    // Determine if user can view workspace tab
+    // - Admins can always view and edit
+    // - Creator can always view and edit
+    // - Team/department/user scope: all members with access can view and edit
+    // - Company-wide agents: only admin/creator can view (others cannot see the tab)
+    const isCreator = agent && currentUser && (agent as any).creator_id === currentUser.id;
+    const isCompanyWide = permData?.scope_type === 'company' && !permData?.is_team;
+    const canViewWorkspace = isAdmin || isCreator || !isCompanyWide;
 
     // Team member selection state for permission management
     const [teamSearchRes, setTeamSearchRes] = useState<any[]>([]);
@@ -2782,6 +2791,8 @@ function AgentDetailInner() {
                 {/* Tabs */}
                 <div className="tabs">
                     {TABS.filter(tab => {
+                        // Workspace tab: only show if user has permission
+                        if (tab === 'workspace' && !canViewWorkspace) return false;
                         // 'use' access: hide settings and approvals tabs
                         if ((agent as any)?.access_level === 'use') {
                             if (tab === 'settings' || tab === 'approvals') return false;
@@ -3971,7 +3982,7 @@ function AgentDetailInner() {
 
                 {/* ── Workspace Tab ── */}
                 {
-                    activeTab === 'workspace' && (() => {
+                    activeTab === 'workspace' && canViewWorkspace && (() => {
                         const adapter: FileBrowserApi = {
                             list: (p) => fileApi.list(id!, p),
                             read: (p) => fileApi.read(id!, p),
@@ -3980,6 +3991,7 @@ function AgentDetailInner() {
                             upload: (file, path, onProgress) => fileApi.upload(id!, file, path + '/', onProgress),
                             downloadUrl: (p) => fileApi.downloadUrl(id!, p),
                         };
+                        // Users who can view workspace can also edit it
                         return <FileBrowser api={adapter} rootPath="workspace" features={{ upload: true, newFile: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} />;
                     })()
                 }
