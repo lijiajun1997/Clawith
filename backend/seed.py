@@ -1,15 +1,14 @@
-"""Seed data script — creates initial admin user and built-in templates."""
+"""Seed data script — creates built-in templates (run once for new deployments)."""
 
 import asyncio
 import sys
 sys.path.insert(0, ".")
 
 from app.config import get_settings
-from app.core.security import hash_password
 from app.database import Base, engine, async_session
 # Import ALL models so Base.metadata.create_all can resolve all FKs
 from app.models.tenant import Tenant  # noqa: F401 — must be before user
-from app.models.user import User
+from app.models.user import User  # noqa: F401
 from app.models.agent import AgentTemplate  # noqa: F401
 from app.models.llm import LLMModel  # noqa: F401
 from app.models.task import Task  # noqa: F401
@@ -27,7 +26,11 @@ from app.models.invitation_code import InvitationCode  # noqa: F401
 
 
 async def seed():
-    """Create tables and seed initial data."""
+    """Create tables and seed initial data.
+
+    Note: Default admin user is created in app/main.py on startup.
+    This script only creates built-in agent templates.
+    """
     settings = get_settings()
 
     # Create all tables
@@ -36,33 +39,16 @@ async def seed():
     print("✅ Database tables created")
 
     async with async_session() as db:
-        from sqlalchemy import select, func
+        from sqlalchemy import select
 
         # 1. Default company (tenant)
         existing_tenant = await db.execute(select(Tenant).where(Tenant.slug == "default"))
-        tenant = existing_tenant.scalar_one_or_none()
-        if not tenant:
-            tenant = Tenant(name="Default", slug="default", im_provider="web_only")
-            db.add(tenant)
-            await db.flush()
+        if not existing_tenant.scalar_one_or_none():
+            db.add(Tenant(name="Default", slug="default", im_provider="web_only"))
+            await db.commit()
             print("✅ Default company created")
 
-        # 2. Default platform admin user (for development/demo)
-        admin_result = await db.execute(select(User).where(User.role == "platform_admin"))
-        admin = admin_result.scalar_one_or_none()
-        if not admin:
-            admin = User(
-                email="admin@example.com",
-                name="Admin",
-                role="platform_admin",
-                tenant_id=tenant.id,
-                hashed_password=hash_password("admin123"),
-            )
-            db.add(admin)
-            await db.flush()
-            print("✅ Default admin user created (email: admin@example.com, password: admin123)")
-
-        # 3. Built-in agent templates (for quick agent creation)
+        # 2. Built-in agent templates (for quick agent creation)
         templates = [
             {
                 "name": "研究助手",
