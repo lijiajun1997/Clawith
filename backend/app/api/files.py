@@ -1,11 +1,14 @@
 """File management API routes for agent workspaces."""
 
 import io
+import logging
 import os
 import re
 import uuid
 import zipfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,6 +26,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
+
+# Skill import limits
+MAX_SKILL_ZIP_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_SINGLE_FILE_SIZE = 1024 * 1024    # 1 MB
+
+
+def _parse_skill_frontmatter(content: str) -> tuple[bool, bool]:
+    """Parse SKILL.md frontmatter. Returns (has_name, has_description)."""
+    has_name = False
+    has_description = False
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.lower().startswith("name:"):
+            if line[5:].strip().strip('"').strip("'"):
+                has_name = True
+        elif line.lower().startswith("description:"):
+            if line[12:].strip().strip('"').strip("'"):
+                has_description = True
+    return has_name, has_description
 
 
 class FileInfo(BaseModel):
@@ -286,7 +308,7 @@ async def import_skill_zip(
 
     # Read ZIP content
     content = await file.read()
-    if len(content) > 5 * 1024 * 1024:
+    if len(content) > MAX_SKILL_ZIP_SIZE:
         raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 5MB")
 
     try:
@@ -326,19 +348,7 @@ async def import_skill_zip(
 
             # Validate SKILL.md content
             skill_md_content = zf.read(skill_md_name).decode("utf-8", errors="replace")
-            has_name = False
-            has_description = False
-            for line in skill_md_content.split("\n"):
-                line = line.strip()
-                if line.lower().startswith("name:"):
-                    name_val = line[5:].strip().strip('"').strip("'")
-                    if name_val:
-                        has_name = True
-                elif line.lower().startswith("description:"):
-                    desc_val = line[12:].strip().strip('"').strip("'")
-                    if desc_val:
-                        has_description = True
-
+            has_name, has_description = _parse_skill_frontmatter(skill_md_content)
             if not has_name or not has_description:
                 raise HTTPException(
                     status_code=400,
@@ -366,22 +376,23 @@ async def import_skill_zip(
 
                 target_path = skill_dir / rel_path
 
-                # Safety check
-                if not str(target_path.resolve()).startswith(str(base.resolve())):
+                # Safety check - skip files outside skill directory
+                if not str(target_path.resolve()).startswith(str(skill_dir.resolve())):
+                    logger.warning(f"[SkillImport] Skipping file outside skill dir: {rel_path}")
                     continue
 
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 file_content = zf.read(name)
 
-                # Check individual file size (max 1MB per file)
-                if len(file_content) > 1024 * 1024:
+                # Check individual file size
+                if len(file_content) > MAX_SINGLE_FILE_SIZE:
                     raise HTTPException(
                         status_code=400,
                         detail=f"单个文件大小不能超过 1MB: {rel_path}"
                     )
 
                 total_size += len(file_content)
-                if total_size > 5 * 1024 * 1024:
+                if total_size > MAX_SKILL_ZIP_SIZE:
                     raise HTTPException(status_code=413, detail="技能总大小不能超过 5MB")
 
                 target_path.write_bytes(file_content)
