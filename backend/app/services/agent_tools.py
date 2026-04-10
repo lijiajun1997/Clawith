@@ -5262,7 +5262,7 @@ async def _execute_code(
     language = arguments.get("language", "python")
     code = arguments.get("code", "")
     # Timeout: read max from sandbox config (default 300), agent can specify up to that limit
-    timeout = arguments.get("timeout", 60)
+    timeout = arguments.get("timeout")  # None means use sandbox_config.default_timeout
 
     if not code.strip():
         return "❌ No code provided"
@@ -5298,7 +5298,11 @@ async def _execute_code(
 
         backend = get_sandbox_backend(sandbox_config)
         # Apply configurable max_timeout from sandbox config (default 300)
-        timeout = min(timeout, sandbox_config.max_timeout)
+        # If timeout not specified by caller, use default_timeout from config
+        if timeout is None:
+            timeout = sandbox_config.default_timeout
+        else:
+            timeout = min(timeout, sandbox_config.max_timeout)
         logger.info(f"[Sandbox] Executing code with backend: {backend.__class__.__name__} (tool={tool_name}, timeout={timeout}s)")
         result = await backend.execute(
             code=code,
