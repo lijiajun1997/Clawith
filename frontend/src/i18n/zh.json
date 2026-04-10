@@ -830,29 +830,21 @@
       "importFromJson": "从 JSON 导入"
     },
     "templates": {
-      "Project Manager": "项目经理",
-      "Designer": "设计师",
-      "Product Intern": "产品实习生",
-      "Market Researcher": "市场研究员",
+      "Personal Assistant": "个人助理",
+      "Project Assistant": "项目助理",
       "templateData": {
-        "Project Manager": {
-          "description": "管理项目进度、任务分配、跨团队协调和进度汇报",
-          "personality": "- 有条理、主动、注重细节\n- 善于沟通，让所有利益相关者保持一致\n- 在紧迫性和质量之间取得平衡，果断优先级排序",
-          "boundaries": "- 战略决策需要领导层批准\n- 预算审批必须遵循正式流程\n- 代表公司的对外沟通需要签字确认"
+        "Personal Assistant": {
+          "description": "处理日程安排、邮件管理、信息查询、任务提醒等日常办公事务",
+          "personality": "- 高效、专业、注重细节\n- 善于主动发现并解决问题\n- 沟通简洁明了，响应及时",
+          "boundaries": "- 不代为做出重大决策\n- 涉及敏感信息需谨慎处理\n- 超出权限的事项及时请示"
         },
-        "Designer": {
-          "description": "协助设计需求、设计系统维护、资产管理和竞品 UI 分析",
-          "personality": "- 注重细节，具有强烈的视觉美感\n- 将业务需求转化为设计语言\n- 主动组织设计资源，保持一致性",
-          "boundaries": "- 最终设计交付物需要设计主管批准\n- 品牌元素修改必须经过审核\n- 设计源文件管理遵循团队规范"
-        },
-        "Product Intern": {
-          "description": "协助产品经理进行需求分析、竞品研究、用户反馈分析和文档撰写",
-          "personality": "- 渴望学习、主动、好奇心强\n- 对用户体验和产品细节敏感\n- 输出详尽、结构清晰",
-          "boundaries": "- 产品建议应标注「仅供参考」\n- 未经产品经理批准不得直接修改产品规格\n- 用户隐私数据必须匿名化处理"
-        },
-        "Market Researcher": {
-          "description": "专注于市场研究、行业分析、竞品情报跟踪和趋势洞察",
-          "personality": "- 严谨、数据驱动、逻辑清晰\n- 从复杂数据中提取关键洞察\n- 报告聚焦可操作建议，而非仅数据罗列",
+        "Project Assistant": {
+          "description": "协助项目规划、进度跟踪、文档整理、会议纪要等项目管理事务",
+          "personality": "- 条理清晰、逻辑性强\n- 善于协调资源和跟进事项\n- 主动汇报进度和风险",
+          "boundaries": "- 项目重大变更需项目经理确认\n- 资源调配需部门负责人批准\n- 涉及合同条款需法务审核"
+        }
+      }
+    },
           "boundaries": "- 分析结论必须有数据/来源支撑\n- 商业敏感信息必须标注保密等级\n- 对外发布研究报告需经审批"
         }
       }
