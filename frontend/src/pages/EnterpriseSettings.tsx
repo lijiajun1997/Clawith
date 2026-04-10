@@ -1037,6 +1037,9 @@ function SkillsTab() {
     const [refreshKey, setRefreshKey] = useState(0);
     const [showClawhubModal, setShowClawhubModal] = useState(false);
     const [showUrlModal, setShowUrlModal] = useState(false);
+    const [showZipModal, setShowZipModal] = useState(false);
+    const [zipImporting, setZipImporting] = useState(false);
+    const [zipError, setZipError] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<any[]>([]);
     const [searching, setSearching] = useState(false);
@@ -1173,6 +1176,13 @@ function SkillsTab() {
                         onClick={() => { setShowUrlModal(true); setUrlInput(''); setUrlPreview(null); }}
                     >
                         {t('enterprise.tools.importFromUrl')}
+                    </button>
+                    <button
+                        className="btn btn-secondary"
+                        style={{ fontSize: '13px' }}
+                        onClick={() => { setShowZipModal(true); setZipError(null); }}
+                    >
+                        {t('enterprise.tools.importZip', 'Import ZIP')}
                     </button>
                     <button
                         className="btn btn-primary"
@@ -1502,6 +1512,72 @@ function SkillsTab() {
                                 </div>
                             </div>
                         )}
+                    </div>
+                </div>
+            )}
+
+            {/* Import ZIP Modal */}
+            {showZipModal && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)',
+                    zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }} onClick={() => setShowZipModal(false)}>
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: '12px', width: '480px',
+                        border: '1px solid var(--border-default)', boxShadow: '0 16px 48px rgba(0,0,0,0.2)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                <h3 style={{ margin: 0, fontSize: '16px' }}>{t('enterprise.tools.importZip', 'Import Skill from ZIP')}</h3>
+                                <button className="btn btn-ghost" onClick={() => setShowZipModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
+                            </div>
+                            <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: '0 0 16px' }}>
+                                {t('enterprise.tools.importZipDesc', 'Upload a ZIP file containing a skill. Max size: 5MB')}
+                            </p>
+                            <div style={{ marginBottom: '16px' }}>
+                                <input
+                                    type="file"
+                                    accept=".zip"
+                                    style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border-default)', background: 'var(--bg-secondary)', fontSize: '13px' }}
+                                    onChange={async (e) => {
+                                        const file = e.target.files?.[0];
+                                        if (!file) return;
+                                        if (!file.name.toLowerCase().endsWith('.zip')) {
+                                            setZipError('只支持 ZIP 格式文件');
+                                            return;
+                                        }
+                                        if (file.size > 5 * 1024 * 1024) {
+                                            setZipError('ZIP 文件大小不能超过 5MB');
+                                            return;
+                                        }
+                                        setZipError(null);
+                                        setZipImporting(true);
+                                        try {
+                                            const res = await skillApi.importZip(file);
+                                            setToast({ message: `✅ 成功导入 "${res.name}" (${res.files?.length || 0} 个文件)`, type: 'success' });
+                                            setShowZipModal(false);
+                                            setRefreshKey(k => k + 1);
+                                        } catch (err: any) {
+                                            setZipError(err?.data?.detail || err?.message || '导入失败');
+                                        } finally {
+                                            setZipImporting(false);
+                                        }
+                                    }}
+                                />
+                            </div>
+                            {zipError && (
+                                <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: 'var(--error)', fontSize: '13px', marginBottom: '12px' }}>
+                                    {zipError}
+                                </div>
+                            )}
+                            <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                <strong>{t('enterprise.tools.zipFormat', 'ZIP Format:')}</strong><br />
+                                • ZIP must contain a folder with SKILL.md<br />
+                                • SKILL.md requires name and description<br />
+                                • Folder name: alphanumeric, dash, underscore only<br />
+                                • Max total: 5MB
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}

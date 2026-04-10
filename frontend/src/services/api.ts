@@ -455,6 +455,12 @@ export const skillApi = {
         setClawhubKey: (clawhub_key: string) =>
             request<any>('/skills/settings/token', { method: 'PUT', body: JSON.stringify({ clawhub_key }) }),
     },
+    // Import skill ZIP to global registry
+    importZip: (file: File) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        return request<any>('/skills/import-zip', { method: 'POST', body: formData });
+    },
     // Agent-level import (writes to agent workspace)
     agentImport: {
         fromClawhub: (agentId: string, slug: string) =>
