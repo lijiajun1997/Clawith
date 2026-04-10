@@ -28,7 +28,7 @@ settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 
 # Skill import limits
-MAX_SKILL_ZIP_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_SKILL_ZIP_SIZE = 30 * 1024 * 1024  # 30 MB  # 5 MB
 MAX_SINGLE_FILE_SIZE = 1024 * 1024    # 1 MB
 
 
@@ -304,7 +304,7 @@ async def import_skill_zip(
     Validation:
     - ZIP must contain SKILL.md or skill.md
     - Folder name must be alphanumeric + dash/underscore only
-    - Total extracted size must not exceed 5MB
+    - Total extracted size must not exceed 30MB
     """
     await check_agent_access(db, current_user, agent_id)
 
@@ -316,7 +316,7 @@ async def import_skill_zip(
     # Read ZIP content
     content = await file.read()
     if len(content) > MAX_SKILL_ZIP_SIZE:
-        raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 5MB")
+        raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 30MB")
 
     try:
         with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
@@ -400,7 +400,7 @@ async def import_skill_zip(
 
                 total_size += len(file_content)
                 if total_size > MAX_SKILL_ZIP_SIZE:
-                    raise HTTPException(status_code=413, detail="技能总大小不能超过 5MB")
+                    raise HTTPException(status_code=413, detail="技能总大小不能超过 30MB")
 
                 target_path.write_bytes(file_content)
                 written.append(rel_path)

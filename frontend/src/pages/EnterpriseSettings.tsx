@@ -1532,7 +1532,7 @@ function SkillsTab() {
                                 <button className="btn btn-ghost" onClick={() => setShowZipModal(false)} style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
                             </div>
                             <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', margin: '0 0 16px' }}>
-                                {t('enterprise.tools.importZipDesc', 'Upload a ZIP file containing a skill. Max size: 5MB')}
+                                {t('enterprise.tools.importZipDesc', 'Upload a ZIP file containing a skill. Max size: 30MB')}
                             </p>
                             <div style={{ marginBottom: '16px' }}>
                                 <input
@@ -1546,8 +1546,8 @@ function SkillsTab() {
                                             setZipError('只支持 ZIP 格式文件');
                                             return;
                                         }
-                                        if (file.size > 5 * 1024 * 1024) {
-                                            setZipError('ZIP 文件大小不能超过 5MB');
+                                        if (file.size > 30 * 1024 * 1024) {
+                                            setZipError('ZIP 文件大小不能超过 30MB');
                                             return;
                                         }
                                         setZipError(null);
@@ -1575,7 +1575,7 @@ function SkillsTab() {
                                 • ZIP must contain a folder with SKILL.md<br />
                                 • SKILL.md requires name and description<br />
                                 • Folder name: alphanumeric, dash, underscore only<br />
-                                • Max total: 5MB
+                                • Max total: 30MB
                             </div>
                         </div>
                     </div>

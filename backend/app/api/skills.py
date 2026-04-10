@@ -24,7 +24,7 @@ CLAWHUB_BASE = "https://clawhub.ai/api"
 GITHUB_API = "https://api.github.com"
 
 MAX_SKILL_SIZE = 5_242_880  # 5 MB total limit per skill
-MAX_SKILL_ZIP_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_SKILL_ZIP_SIZE = 30 * 1024 * 1024  # 30 MB  # 5 MB
 MAX_SINGLE_FILE_SIZE = 1024 * 1024  # 1 MB
 
 
@@ -221,7 +221,7 @@ async def _fetch_github_directory(
                 size = item.get("size", 0)
                 total_size += size
                 if total_size > MAX_SKILL_SIZE:
-                    raise HTTPException(413, f"Skill exceeds size limit (5MB)")
+                    raise HTTPException(413, f"Skill exceeds size limit (30MB)")
                 # Download file content
                 async with httpx.AsyncClient(timeout=30, headers=headers) as client:
                     dl_resp = await client.get(item["url"])
@@ -458,7 +458,7 @@ async def import_skill_zip(
 
     content = await file.read()
     if len(content) > MAX_SKILL_ZIP_SIZE:
-        raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 5MB")
+        raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 30MB")
 
     try:
         with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
@@ -529,7 +529,7 @@ async def import_skill_zip(
 
                 total_size += len(file_content)
                 if total_size > MAX_SKILL_ZIP_SIZE:
-                    raise HTTPException(status_code=413, detail="技能总大小不能超过 5MB")
+                    raise HTTPException(status_code=413, detail="技能总大小不能超过 30MB")
 
                 files.append({
                     "path": rel_path,

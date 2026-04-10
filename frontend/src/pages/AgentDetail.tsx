@@ -3998,7 +3998,7 @@ function AgentDetailInner() {
 
                                             <div style={{ marginBottom: '16px' }}>
                                                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                                                    {t('agent.skills.zipFile', 'ZIP File')} (max 5MB)
+                                                    {t('agent.skills.zipFile', 'ZIP File')} (max 30MB)
                                                 </label>
                                                 <input
                                                     type="file"
@@ -4011,8 +4011,8 @@ function AgentDetailInner() {
                                                             setZipError('只支持 ZIP 格式文件');
                                                             return;
                                                         }
-                                                        if (file.size > 5 * 1024 * 1024) {
-                                                            setZipError('ZIP 文件大小不能超过 5MB');
+                                                        if (file.size > 30 * 1024 * 1024) {
+                                                            setZipError('ZIP 文件大小不能超过 30MB');
                                                             return;
                                                         }
                                                         setZipError(null);
@@ -4048,7 +4048,7 @@ function AgentDetailInner() {
                                                 • ZIP must contain a folder with SKILL.md at root<br />
                                                 • SKILL.md requires <code>name:</code> and <code>description:</code> in frontmatter<br />
                                                 • Folder name: alphanumeric, dash, underscore only<br />
-                                                • Max total size: 5MB, single file: 1MB
+                                                • Max total size: 30MB, single file: 1MB
                                             </div>
                                         </div>
                                     </div>
