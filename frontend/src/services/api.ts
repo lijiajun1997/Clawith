@@ -6,7 +6,11 @@ const API_BASE = '/api';
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     const token = localStorage.getItem('token');
-    const headers: Record<string, string> = {
+    // Don't set Content-Type for FormData - browser will set it with boundary
+    const isFormData = options.body instanceof FormData;
+    const headers: Record<string, string> = isFormData ? {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    } : {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
