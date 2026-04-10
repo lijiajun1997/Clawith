@@ -470,28 +470,50 @@ async def import_skill_zip(
                     raise HTTPException(status_code=400, detail="ZIP 文件包含非法路径")
 
             # Find SKILL.md and determine skill structure
-            skill_md_name = None
-            skill_md_path_prefix = None  # For flat structure, store the prefix (empty string or "folder/")
+            # Strategy: find all SKILL.md at the shallowest depth, use their
+            # common parent directory as the package root (handles mono-repo ZIPs
+            # with multiple nested sub-skills like "0-INFRASTRUCTURE/sub-skill/SKILL.md")
+            skill_md_candidates = []
             for name in names:
                 name_lower = name.lower()
-                # folder/SKILL.md or folder/skill.md
                 if name_lower.endswith("/skill.md"):
-                    parts = name.split("/")
-                    if len(parts) >= 2:
-                        skill_md_name = name
-                        skill_md_path_prefix = name.rsplit("/", 1)[0] + "/"
-                        logger.info(f"[SkillImport] Found SKILL.md in folder: {name}")
-                        break
-                # SKILL.md at root level (flat structure)
-                elif name_lower == "skill.md":
-                    skill_md_name = name
-                    skill_md_path_prefix = ""  # Empty prefix for flat structure
-                    logger.info(f"[SkillImport] Found SKILL.md at root (flat structure)")
-                    break
+                    depth = name.rstrip("/").count("/")
+                    skill_md_candidates.append((depth, name))
 
-            if not skill_md_name:
+            if not skill_md_candidates:
+                # Also check for root-level SKILL.md (flat structure)
+                for name in names:
+                    if name.lower() == "skill.md":
+                        skill_md_candidates.append((1, name))
+                        break
+
+            if not skill_md_candidates:
                 logger.warning(f"[SkillImport] No SKILL.md found. Files in ZIP: {names[:20]}")
                 raise HTTPException(status_code=400, detail="ZIP 必须包含 SKILL.md 文件")
+
+            # Use all SKILL.md at the shallowest depth
+            min_depth = min(d for d, _ in skill_md_candidates)
+            shallowest_skills = [n for d, n in skill_md_candidates if d == min_depth]
+            logger.info(f"[SkillImport] Shallowest SKILL.md files at depth={min_depth}: {shallowest_skills}")
+
+            # Determine common parent prefix
+            if len(shallowest_skills) == 1:
+                # Single skill: use its immediate parent as root
+                skill_md_name = shallowest_skills[0]
+                skill_md_path_prefix = shallowest_skills[0].rsplit("/", 2)[0] + "/"
+            else:
+                # Multiple skills at same depth: find common prefix
+                parts_list = [s.split("/") for s in shallowest_skills]
+                common_parts = []
+                for parts in zip(*parts_list):
+                    if len(set(parts)) == 1:
+                        common_parts.append(parts[0])
+                    else:
+                        break
+                skill_md_path_prefix = "/".join(common_parts) + "/"
+                # Use first SKILL.md for name/description
+                skill_md_name = shallowest_skills[0]
+                logger.info(f"[SkillImport] Common prefix (root): {skill_md_path_prefix}")
 
             # Parse frontmatter
             skill_md_content = zf.read(skill_md_name).decode("utf-8", errors="replace")

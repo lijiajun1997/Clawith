@@ -328,18 +328,40 @@ async def import_skill_zip(
                     raise HTTPException(status_code=400, detail="ZIP 文件包含非法路径")
 
             # Find SKILL.md or skill.md
-            skill_md_name = None
-            skill_root = None
+            # Strategy: find all SKILL.md at the shallowest depth, use their
+            # common parent directory as the package root (handles mono-repo ZIPs
+            # with multiple nested sub-skills)
+            skill_md_candidates = []
             for name in names:
                 if name.lower().endswith("/skill.md"):
-                    parts = name.split("/")
-                    if len(parts) >= 2:
-                        skill_root = parts[0]
-                        skill_md_name = name
-                        break
+                    depth = name.rstrip("/").count("/")
+                    skill_md_candidates.append((depth, name))
 
-            if not skill_md_name:
+            if not skill_md_candidates:
                 raise HTTPException(status_code=400, detail="ZIP 必须包含 SKILL.md 文件")
+
+            # Use all SKILL.md at the shallowest depth
+            min_depth = min(d for d, _ in skill_md_candidates)
+            shallowest_skills = [n for d, n in skill_md_candidates if d == min_depth]
+
+            # Determine common parent prefix
+            if len(shallowest_skills) == 1:
+                # Single skill: use its immediate parent as root
+                skill_md_name = shallowest_skills[0]
+                skill_root = shallowest_skills[0].rsplit("/", 2)[0]
+            else:
+                # Multiple skills at same depth: find common prefix
+                parts_list = [s.split("/") for s in shallowest_skills]
+                common_parts = []
+                for parts in zip(*parts_list):
+                    if len(set(parts)) == 1:
+                        common_parts.append(parts[0])
+                    else:
+                        break
+                skill_root = "/".join(common_parts)
+                skill_md_name = shallowest_skills[0]
+
+            logger.info(f"[SkillImport] Root: {skill_root}, SKILL.md: {skill_md_name}")
 
             # Parse skill name from frontmatter
             skill_name = body.folder_name if body and body.folder_name else skill_root
