@@ -2458,6 +2458,11 @@ function AgentDetailInner() {
         queryFn: () => skillApi.list(),
         enabled: showImportSkillModal,
     });
+    // Import skill from ZIP
+    const [showImportSkillZip, setShowImportSkillZip] = useState(false);
+    const [importingZip, setImportingZip] = useState(false);
+    const [zipError, setZipError] = useState<string | null>(null);
+    const [zipSuccess, setZipSuccess] = useState<string | null>(null);
     // Agent-level import from ClawHub / URL
     const [showAgentClawhub, setShowAgentClawhub] = useState(false);
     const [agentClawhubQuery, setAgentClawhubQuery] = useState('');
@@ -3765,6 +3770,13 @@ function AgentDetailInner() {
                                                 Browse ClawHub
                                             </button>
                                             <button
+                                                className="btn btn-secondary"
+                                                style={{ fontSize: '13px' }}
+                                                onClick={() => { setShowImportSkillZip(true); setZipError(null); setZipSuccess(null); }}
+                                            >
+                                                Import ZIP
+                                            </button>
+                                            <button
                                                 className="btn btn-primary"
                                                 style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
                                                 onClick={() => setShowImportSkillModal(true)}
@@ -3966,6 +3978,77 @@ function AgentDetailInner() {
                                                         </div>
                                                     ))
                                                 )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Import from ZIP Modal */}
+                                {showImportSkillZip && (
+                                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillZip(false)}>
+                                        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '520px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                                <h3>{t('agent.skills.importZip', 'Import from ZIP')}</h3>
+                                                <button onClick={() => setShowImportSkillZip(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
+                                            </div>
+
+                                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
+                                                {t('agent.skills.importZipDesc', 'Upload a ZIP file containing a skill. The ZIP must include SKILL.md with name and description in the frontmatter.')}
+                                            </p>
+
+                                            <div style={{ marginBottom: '16px' }}>
+                                                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                                    {t('agent.skills.zipFile', 'ZIP File')} (max 5MB)
+                                                </label>
+                                                <input
+                                                    type="file"
+                                                    accept=".zip"
+                                                    style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border-default)', background: 'var(--bg-secondary)', fontSize: '13px' }}
+                                                    onChange={async (e) => {
+                                                        const file = e.target.files?.[0];
+                                                        if (!file) return;
+                                                        if (!file.name.toLowerCase().endsWith('.zip')) {
+                                                            setZipError('只支持 ZIP 格式文件');
+                                                            return;
+                                                        }
+                                                        if (file.size > 5 * 1024 * 1024) {
+                                                            setZipError('ZIP 文件大小不能超过 5MB');
+                                                            return;
+                                                        }
+                                                        setZipError(null);
+                                                        setImportingZip(true);
+                                                        try {
+                                                            const res = await fileApi.importSkillZip(id!, file);
+                                                            setZipSuccess(`✅ 成功导入 "${res.skill_name}" (${res.files_written} 个文件)`);
+                                                            queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
+                                                            setTimeout(() => setShowImportSkillZip(false), 1500);
+                                                        } catch (err: any) {
+                                                            setZipError(err?.data?.detail || err?.message || '导入失败');
+                                                        } finally {
+                                                            setImportingZip(false);
+                                                        }
+                                                    }}
+                                                />
+                                            </div>
+
+                                            {zipError && (
+                                                <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: 'var(--error)', fontSize: '13px', marginBottom: '12px' }}>
+                                                    {zipError}
+                                                </div>
+                                            )}
+
+                                            {zipSuccess && (
+                                                <div style={{ padding: '10px 12px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '6px', color: '#10b981', fontSize: '13px', marginBottom: '12px' }}>
+                                                    {zipSuccess}
+                                                </div>
+                                            )}
+
+                                            <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                                                <strong>{t('agent.skills.zipFormat', 'ZIP Format Requirements:')}</strong><br />
+                                                • ZIP must contain a folder with SKILL.md at root<br />
+                                                • SKILL.md requires <code>name:</code> and <code>description:</code> in frontmatter<br />
+                                                • Folder name: alphanumeric, dash, underscore only<br />
+                                                • Max total size: 5MB, single file: 1MB
                                             </div>
                                         </div>
                                     </div>
