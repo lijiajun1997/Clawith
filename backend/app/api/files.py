@@ -273,6 +273,13 @@ async def import_skill_to_agent(
     }
 
 
+# Separate router for file uploads (binary) since we need UploadFile
+from fastapi import File as FastFile, UploadFile as UploadFileType
+
+
+upload_router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
+
+
 class ImportSkillZipBody(BaseModel):
     folder_name: str = ""  # Optional custom folder name, auto-detected if empty
 
@@ -408,13 +415,6 @@ async def import_skill_zip(
         "files_written": len(written),
         "files": written,
     }
-
-
-# Separate router for file uploads (binary) since we need UploadFile
-from fastapi import File as FastFile, UploadFile as UploadFileType
-
-
-upload_router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 
 
 @upload_router.post("/upload")
