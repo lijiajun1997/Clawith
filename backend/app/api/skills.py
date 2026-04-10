@@ -21,7 +21,7 @@ router = APIRouter(prefix="/skills", tags=["skills"])
 CLAWHUB_BASE = "https://clawhub.ai/api"
 GITHUB_API = "https://api.github.com"
 
-MAX_SKILL_SIZE = 512_000  # 500 KB total limit per skill
+MAX_SKILL_SIZE = 5_242_880  # 5 MB total limit per skill
 
 
 async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
@@ -217,7 +217,7 @@ async def _fetch_github_directory(
                 size = item.get("size", 0)
                 total_size += size
                 if total_size > MAX_SKILL_SIZE:
-                    raise HTTPException(413, f"Skill exceeds size limit ({MAX_SKILL_SIZE // 1024}KB)")
+                    raise HTTPException(413, f"Skill exceeds size limit (5MB)")
                 # Download file content
                 async with httpx.AsyncClient(timeout=30, headers=headers) as client:
                     dl_resp = await client.get(item["url"])
