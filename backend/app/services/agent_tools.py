@@ -642,18 +642,18 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_code",
-            "description": "Execute code (Python, Bash, or Node.js) in a local sandboxed subprocess within the agent's root directory. Useful for data processing, calculations, file transformations, and automation scripts. Code runs with the agent root as the working directory, so you can access skills/, workspace/, memory/ etc. directly. Security restrictions apply: no network access commands, no system-level operations, 30-second timeout.",
+            "description": "本地沙箱执行Python/Bash/Node.js。工作目录为Agent根目录，路径：workspace/ 工作区，skills/ 技能目录，memory/ 记忆目录。示例：cp -r skills/xxx/templates workspace/yyy/",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "language": {
                         "type": "string",
                         "enum": ["python", "bash", "node"],
-                        "description": "Programming language to execute",
+                        "description": "语言：python/bash/node",
                     },
                     "code": {
                         "type": "string",
-                        "description": "Code to execute. For Python, you can import standard libraries (json, csv, math, re, collections, etc.). Working directory is the agent root (skills/, workspace/, memory/ are accessible).",
+                        "description": "要执行的代码。",
                     },
                     "timeout": {
                         "type": "integer",
@@ -668,18 +668,18 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "execute_code_e2b",
-            "description": "Execute code (Python, Bash, or Node.js) in a secure E2B cloud sandbox. The sandbox has full network access and is fully isolated from the server. Use this when local execution is insufficient or when network access is required inside the code.",
+            "description": "云端沙箱执行Python/Bash/Node.js，支持完整网络访问，完全隔离。用于本地无法执行或需要网络访问的场景。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "language": {
                         "type": "string",
                         "enum": ["python", "bash", "node"],
-                        "description": "Programming language to execute",
+                        "description": "语言：python/bash/node",
                     },
                     "code": {
                         "type": "string",
-                        "description": "Code to execute in the E2B cloud sandbox.",
+                        "description": "要执行的代码。",
                     },
                     "timeout": {
                         "type": "integer",
