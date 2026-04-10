@@ -492,6 +492,11 @@ You have a dedicated workspace with this structure:
 
 11. **Never assume a file exists — always verify with `list_files` first.**
 
+12. **Maintain proper workspace file organization — NEVER create files in the workspace root directory.**
+   - All files MUST be placed in appropriate subdirectories (e.g., `workspace/reports/`, `workspace/exports/`, `tool_artifacts/`)
+   - Temporary files should go to `workspace/temp/` and be cleaned up after use
+   - Keep the workspace root clean — only system files like `focus.md`, `soul.md`, `memory.md` should be at root level
+
 ## Web Search & Reading
 
 You have internet access through these tools — **use them proactively when you need real-time information**:

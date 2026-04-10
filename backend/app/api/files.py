@@ -1,8 +1,14 @@
 """File management API routes for agent workspaces."""
 
+import io
+import logging
 import os
+import re
 import uuid
+import zipfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -20,6 +26,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 settings = get_settings()
 router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
+
+# Skill import limits
+MAX_SKILL_ZIP_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_SINGLE_FILE_SIZE = 1024 * 1024    # 1 MB
+
+
+def _parse_skill_frontmatter(content: str) -> tuple[bool, bool]:
+    """Parse SKILL.md frontmatter. Returns (has_name, has_description)."""
+    has_name = False
+    has_description = False
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.lower().startswith("name:"):
+            if line[5:].strip().strip('"').strip("'"):
+                has_name = True
+        elif line.lower().startswith("description:"):
+            if line[12:].strip().strip('"').strip("'"):
+                has_description = True
+    return has_name, has_description
 
 
 class FileInfo(BaseModel):
@@ -253,6 +278,143 @@ from fastapi import File as FastFile, UploadFile as UploadFileType
 
 
 upload_router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
+
+
+class ImportSkillZipBody(BaseModel):
+    folder_name: str = ""  # Optional custom folder name, auto-detected if empty
+
+
+@upload_router.post("/import-skill-zip")
+async def import_skill_zip(
+    agent_id: uuid.UUID,
+    file: UploadFileType = FastFile(...),
+    body: ImportSkillZipBody | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Import a skill from a ZIP file into the agent's skills/ workspace.
+
+    ZIP structure expected:
+    - skill-name/
+      - SKILL.md (required, contains name and description in frontmatter)
+      - scripts/ (optional)
+      - references/ (optional)
+      - other skill files
+
+    Validation:
+    - ZIP must contain SKILL.md or skill.md
+    - Folder name must be alphanumeric + dash/underscore only
+    - Total extracted size must not exceed 5MB
+    """
+    await check_agent_access(db, current_user, agent_id)
+
+    # Check file extension
+    filename = file.filename or ""
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="只支持 ZIP 格式文件")
+
+    # Read ZIP content
+    content = await file.read()
+    if len(content) > MAX_SKILL_ZIP_SIZE:
+        raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 5MB")
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+            names = zf.namelist()
+
+            # Check for malicious paths (path traversal)
+            for name in names:
+                if name.startswith("/") or ".." in name:
+                    raise HTTPException(status_code=400, detail="ZIP 文件包含非法路径")
+
+            # Find SKILL.md or skill.md
+            skill_md_name = None
+            skill_root = None
+            for name in names:
+                if name.lower().endswith("/skill.md"):
+                    parts = name.split("/")
+                    if len(parts) >= 2:
+                        skill_root = parts[0]
+                        skill_md_name = name
+                        break
+
+            if not skill_md_name:
+                raise HTTPException(status_code=400, detail="ZIP 必须包含 SKILL.md 文件")
+
+            # Parse skill name from frontmatter
+            skill_name = body.folder_name if body and body.folder_name else skill_root
+            if not skill_name:
+                raise HTTPException(status_code=400, detail="无法确定技能文件夹名称")
+
+            # Validate folder name (alphanumeric, dash, underscore only)
+            if not re.match(r"^[a-zA-Z0-9_-]+$", skill_name):
+                raise HTTPException(
+                    status_code=400,
+                    detail="技能文件夹名称只能包含字母、数字、短横线和下划线"
+                )
+
+            # Validate SKILL.md content
+            skill_md_content = zf.read(skill_md_name).decode("utf-8", errors="replace")
+            has_name, has_description = _parse_skill_frontmatter(skill_md_content)
+            if not has_name or not has_description:
+                raise HTTPException(
+                    status_code=400,
+                    detail="SKILL.md 必须包含 name 和 description 字段"
+                )
+
+            # Extract files
+            base = _agent_base_dir(agent_id)
+            skill_dir = base / "skills" / skill_name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+
+            written = []
+            total_size = 0
+            for name in names:
+                if name.endswith("/"):
+                    continue  # Skip directories
+
+                # Extract relative to skill root
+                if not name.startswith(skill_root + "/"):
+                    continue
+
+                rel_path = name[len(skill_root) + 1:]
+                if not rel_path:
+                    continue
+
+                target_path = skill_dir / rel_path
+
+                # Safety check - skip files outside skill directory
+                if not str(target_path.resolve()).startswith(str(skill_dir.resolve())):
+                    logger.warning(f"[SkillImport] Skipping file outside skill dir: {rel_path}")
+                    continue
+
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                file_content = zf.read(name)
+
+                # Check individual file size
+                if len(file_content) > MAX_SINGLE_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"单个文件大小不能超过 1MB: {rel_path}"
+                    )
+
+                total_size += len(file_content)
+                if total_size > MAX_SKILL_ZIP_SIZE:
+                    raise HTTPException(status_code=413, detail="技能总大小不能超过 5MB")
+
+                target_path.write_bytes(file_content)
+                written.append(rel_path)
+
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="无效的 ZIP 文件")
+
+    return {
+        "status": "ok",
+        "skill_name": skill_name,
+        "folder_name": skill_name,
+        "files_written": len(written),
+        "files": written,
+    }
 
 
 @upload_router.post("/upload")

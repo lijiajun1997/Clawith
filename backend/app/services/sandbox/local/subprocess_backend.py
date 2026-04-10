@@ -175,18 +175,16 @@ class SubprocessBackend(BaseSandboxBackend):
                 error=f"❌ {safety_error}"
             )
 
-        # Determine work directory: prefer workspace/ subdir, fallback to agent root
+        # Determine work directory: use agent root (not workspace/) so that
+        # Agent's code can use natural paths like "workspace/", "skills/", "memory/"
         if work_dir:
-            work_path = Path(work_dir) / "workspace"
-            if not work_path.exists():
-                # No workspace subdir — use agent root directly
-                work_path = Path(work_dir)
+            agent_root = Path(work_dir)
         else:
-            work_path = Path.cwd() / "workspace"
-        work_path.mkdir(parents=True, exist_ok=True)
+            agent_root = Path.cwd()
 
-        # Agent root (contains workspace/, skills/, memory/)
-        agent_root = work_path.parent if work_path.name == "workspace" else work_path
+        # Use agent_root as work_dir so relative paths work intuitively
+        work_path = agent_root
+        work_path.mkdir(parents=True, exist_ok=True)
 
         # Determine command and file extension
         if language == "python":

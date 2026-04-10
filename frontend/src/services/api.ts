@@ -6,7 +6,11 @@ const API_BASE = '/api';
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     const token = localStorage.getItem('token');
-    const headers: Record<string, string> = {
+    // Don't set Content-Type for FormData - browser will set it with boundary
+    const isFormData = options.body instanceof FormData;
+    const headers: Record<string, string> = isFormData ? {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    } : {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
@@ -310,6 +314,18 @@ export const fileApi = {
             body: JSON.stringify({ skill_id: skillId }),
         }),
 
+    importSkillZip: (agentId: string, file: File, folderName?: string) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        if (folderName) {
+            formData.append('folder_name', folderName);
+        }
+        return request<any>(`/agents/${agentId}/files/import-skill-zip`, {
+            method: 'POST',
+            body: formData,
+        });
+    },
+
     downloadUrl: (agentId: string, path: string) => {
         const token = localStorage.getItem('token');
         return `${API_BASE}/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
@@ -442,6 +458,12 @@ export const skillApi = {
             request<any>('/skills/settings/token', { method: 'PUT', body: JSON.stringify({ github_token }) }),
         setClawhubKey: (clawhub_key: string) =>
             request<any>('/skills/settings/token', { method: 'PUT', body: JSON.stringify({ clawhub_key }) }),
+    },
+    // Import skill ZIP to global registry
+    importZip: (file: File) => {
+        const formData = new FormData();
+        formData.append('file', file);
+        return request<any>('/skills/import-zip', { method: 'POST', body: formData });
     },
     // Agent-level import (writes to agent workspace)
     agentImport: {

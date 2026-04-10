@@ -4,6 +4,16 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import { authApi, tenantApi, fetchJson } from '../services/api';
 import type { TokenResponse } from '../types';
+import {
+    IconShieldCheck,
+    IconChartLine,
+    IconBolt,
+    IconUsers,
+    IconBrain,
+    IconTargetArrow,
+    IconSettingsAutomation,
+    IconHeartHandshake,
+} from '@tabler/icons-react';
 
 export default function Login() {
     const { t, i18n } = useTranslation();
@@ -32,7 +42,8 @@ export default function Login() {
     });
 
     useEffect(() => {
-        document.documentElement.setAttribute('data-theme', 'dark');
+        // Login page always uses light theme for the financial-tech design
+        document.documentElement.removeAttribute('data-theme');
 
         // If arriving via invitation link with email, check whether the email is already registered
         // to decide whether to show login or register form.
@@ -269,37 +280,65 @@ export default function Login() {
             {/* ── Left: Branding Panel ── */}
             <div className="login-hero">
                 <div className="login-hero-bg" />
+
+                {/* Minimal decorative lines */}
+                <div className="login-hero-decoration">
+                    <div className="geo-line-h" style={{ top: '20%', left: '10%', width: '80px' }} />
+                    <div className="geo-line-h" style={{ bottom: '25%', right: '8%', width: '60px' }} />
+                    <div className="geo-line-v" style={{ left: '15%', top: '35%', height: '100px' }} />
+                    <div className="geo-line-v" style={{ right: '20%', bottom: '15%', height: '80px' }} />
+                    <div className="geo-dot" style={{ top: '15%', right: '25%' }} />
+                    <div className="geo-dot" style={{ bottom: '30%', left: '18%' }} />
+                    <div className="geo-dot" style={{ top: '50%', right: '12%' }} />
+                </div>
+
                 <div className="login-hero-content">
                     <div className="login-hero-badge">
-                        <span className="login-hero-badge-dot" />
                         {t('login.hero.badge')}
                     </div>
                     <h1 className="login-hero-title">
-                        {t('login.hero.title')}<br />
-                        <span style={{ fontSize: '0.65em', fontWeight: 600, opacity: 0.85 }}>{t('login.hero.subtitle')}</span>
+                        {t('login.hero.title')}
                     </h1>
+                    <p className="login-hero-subtitle">{t('login.hero.subtitle')}</p>
                     <p className="login-hero-desc" dangerouslySetInnerHTML={{ __html: t('login.hero.description') }} />
-                    <div className="login-hero-features">
-                        <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🤖</span>
-                            <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.multiAgent.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.multiAgent.description')}</div>
+
+                    {/* Two-column feature cards */}
+                    <div className="login-hero-grid">
+                        <div className="login-card">
+                            <div className="login-card-header">
+                                <div className="login-card-icon icon-blue">
+                                    <IconShieldCheck size={20} stroke={1.5} />
+                                </div>
+                                <div className="login-card-title">{t('login.hero.features.professional.title')}</div>
                             </div>
+                            <div className="login-card-desc">{t('login.hero.features.professional.description')}</div>
                         </div>
-                        <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🧠</span>
-                            <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.persistentMemory.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.persistentMemory.description')}</div>
+                        <div className="login-card">
+                            <div className="login-card-header">
+                                <div className="login-card-icon icon-purple">
+                                    <IconChartLine size={20} stroke={1.5} />
+                                </div>
+                                <div className="login-card-title">{t('login.hero.features.growth.title')}</div>
                             </div>
+                            <div className="login-card-desc">{t('login.hero.features.growth.description')}</div>
                         </div>
-                        <div className="login-hero-feature">
-                            <span className="login-hero-feature-icon">🏛️</span>
-                            <div>
-                                <div className="login-hero-feature-title">{t('login.hero.features.agentPlaza.title')}</div>
-                                <div className="login-hero-feature-desc">{t('login.hero.features.agentPlaza.description')}</div>
+                        <div className="login-card">
+                            <div className="login-card-header">
+                                <div className="login-card-icon icon-amber">
+                                    <IconBolt size={20} stroke={1.5} />
+                                </div>
+                                <div className="login-card-title">{t('login.hero.features.efficiency.title')}</div>
                             </div>
+                            <div className="login-card-desc">{t('login.hero.features.efficiency.description')}</div>
+                        </div>
+                        <div className="login-card">
+                            <div className="login-card-header">
+                                <div className="login-card-icon icon-teal">
+                                    <IconUsers size={20} stroke={1.5} />
+                                </div>
+                                <div className="login-card-title">{t('login.hero.features.collaboration.title')}</div>
+                            </div>
+                            <div className="login-card-desc">{t('login.hero.features.collaboration.description')}</div>
                         </div>
                     </div>
                 </div>
@@ -308,15 +347,8 @@ export default function Login() {
             {/* ── Right: Form Panel ── */}
             <div className="login-form-panel">
                 {/* Language Switcher */}
-                <div style={{
-                    position: 'absolute', top: '16px', right: '16px',
-                    cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)',
-                    display: 'flex', alignItems: 'center', gap: '4px',
-                    padding: '6px 12px', borderRadius: '8px',
-                    background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)',
-                    zIndex: 101,
-                }} onClick={toggleLang}>
-                    🌐
+                <div className="login-lang-switch" onClick={toggleLang}>
+                    {i18n.language === 'zh' ? 'EN' : '中文'}
                 </div>
 
                 <div className="login-form-wrapper">
@@ -331,7 +363,7 @@ export default function Login() {
                     ) : (
                     <>
                     <div className="login-form-header">
-                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />Clawith</div>
+                        <div className="login-form-logo"><img src="/logo-black.png" className="login-logo-img" alt="" style={{ width: 28, height: 28, marginRight: 8, verticalAlign: 'middle' }} />{t('app.name', 'Proud Copilot')}</div>
                         <h2 className="login-form-title">
                             {isRegister ? t('auth.register') : t('auth.login')}
                         </h2>
@@ -486,7 +518,7 @@ export default function Login() {
                         <div style={{
                             position: 'fixed',
                             top: 0, left: 0, right: 0, bottom: 0,
-                            background: 'rgba(5, 5, 8, 0.82)',
+                            background: 'rgba(0, 0, 0, 0.4)',
                             backdropFilter: 'blur(8px)',
                             WebkitBackdropFilter: 'blur(8px)',
                             display: 'flex',
@@ -494,20 +526,19 @@ export default function Login() {
                             justifyContent: 'center',
                             zIndex: 2000,
                         }}>
-                            {/* Dark glass card — stands out via border + shadow, not color inversion */}
                             <div style={{
-                                background: '#161620',
+                                background: '#ffffff',
                                 borderRadius: '16px',
                                 padding: '32px',
                                 maxWidth: '400px',
                                 width: '90%',
-                                border: '1px solid rgba(255, 255, 255, 0.12)',
-                                boxShadow: '0 0 0 1px rgba(255,255,255,0.04), 0 32px 80px rgba(0,0,0,0.7)',
+                                border: '1px solid #e2e8f0',
+                                boxShadow: '0 32px 80px rgba(0,0,0,0.15)',
                             }}>
-                                <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: 'rgba(255,255,255,0.95)' }}>
+                                <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: '#1e293b' }}>
                                     {t('auth.selectOrganization', '选择公司')}
                                 </h3>
-                                <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.42)', marginBottom: '20px', lineHeight: '1.5' }}>
+                                <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '20px', lineHeight: '1.5' }}>
                                     {t('auth.multiTenantPrompt', '该邮箱对应多个公司，请选择要登录的公司：')}
                                 </p>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -518,9 +549,9 @@ export default function Login() {
                                             style={{
                                                 padding: '12px 16px',
                                                 borderRadius: '10px',
-                                                border: '1px solid rgba(255,255,255,0.09)',
-                                                background: 'rgba(255,255,255,0.05)',
-                                                color: 'rgba(255,255,255,0.88)',
+                                                border: '1px solid #e2e8f0',
+                                                background: '#f8fafc',
+                                                color: '#1e293b',
                                                 fontSize: '14px',
                                                 fontWeight: 500,
                                                 cursor: 'pointer',
@@ -528,12 +559,12 @@ export default function Login() {
                                                 transition: 'background 0.15s, border-color 0.15s',
                                             }}
                                             onMouseEnter={e => {
-                                                (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.10)';
-                                                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.20)';
+                                                (e.currentTarget as HTMLButtonElement).style.background = '#e2e8f0';
+                                                (e.currentTarget as HTMLButtonElement).style.borderColor = '#cbd5e1';
                                             }}
                                             onMouseLeave={e => {
-                                                (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.05)';
-                                                (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.09)';
+                                                (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc';
+                                                (e.currentTarget as HTMLButtonElement).style.borderColor = '#e2e8f0';
                                             }}
                                         >
                                             {tenant.tenant_name} {tenant.tenant_slug && `(${tenant.tenant_slug})`}
@@ -565,21 +596,21 @@ export default function Login() {
                                         style={{
                                             padding: '12px 16px',
                                             borderRadius: '10px',
-                                            border: '1px dashed rgba(255,255,255,0.15)',
+                                            border: '1px dashed #cbd5e1',
                                             background: 'transparent',
-                                            color: 'rgba(255,255,255,0.38)',
+                                            color: '#94a3b8',
                                             fontSize: '14px',
                                             cursor: 'pointer',
                                             textAlign: 'left',
                                             transition: 'border-color 0.15s, color 0.15s',
                                         }}
                                         onMouseEnter={e => {
-                                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.28)';
-                                            (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.6)';
+                                            (e.currentTarget as HTMLButtonElement).style.borderColor = '#94a3b8';
+                                            (e.currentTarget as HTMLButtonElement).style.color = '#475569';
                                         }}
                                         onMouseLeave={e => {
-                                            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.15)';
-                                            (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.38)';
+                                            (e.currentTarget as HTMLButtonElement).style.borderColor = '#cbd5e1';
+                                            (e.currentTarget as HTMLButtonElement).style.color = '#94a3b8';
                                         }}
                                     >
                                         {t('auth.createOrJoinOrganization', 'Create or Join Organization')}
@@ -591,9 +622,9 @@ export default function Login() {
                                         marginTop: '16px',
                                         padding: '10px 16px',
                                         borderRadius: '10px',
-                                        border: '1px solid rgba(255,255,255,0.07)',
-                                        background: 'rgba(255,255,255,0.04)',
-                                        color: 'rgba(255,255,255,0.5)',
+                                        border: '1px solid #e2e8f0',
+                                        background: '#f8fafc',
+                                        color: '#64748b',
                                         fontSize: '14px',
                                         fontWeight: 500,
                                         cursor: 'pointer',
@@ -601,12 +632,12 @@ export default function Login() {
                                         transition: 'background 0.15s, color 0.15s',
                                     }}
                                     onMouseEnter={e => {
-                                        (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.08)';
-                                        (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.7)';
+                                        (e.currentTarget as HTMLButtonElement).style.background = '#e2e8f0';
+                                        (e.currentTarget as HTMLButtonElement).style.color = '#1e293b';
                                     }}
                                     onMouseLeave={e => {
-                                        (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.04)';
-                                        (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.5)';
+                                        (e.currentTarget as HTMLButtonElement).style.background = '#f8fafc';
+                                        (e.currentTarget as HTMLButtonElement).style.color = '#64748b';
                                     }}
                                 >
                                     {t('common.cancel', 'Cancel')}
@@ -624,6 +655,15 @@ export default function Login() {
                     </>
                     )}
                 </div>
+            </div>
+
+            {/* Floating orbs for decoration */}
+            <div className="login-orb login-orb-1" />
+            <div className="login-orb login-orb-2" />
+
+            {/* Open source attribution - page bottom left */}
+            <div className="login-opensource-corner">
+                {t('login.opensource', 'Based on open-source project Clawith')}
             </div>
         </div>
     );

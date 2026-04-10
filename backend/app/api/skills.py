@@ -2,10 +2,12 @@
 
 import asyncio
 import base64
+import io
 import re
+import zipfile
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIUploadFile, File as FastAPIFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -21,7 +23,9 @@ router = APIRouter(prefix="/skills", tags=["skills"])
 CLAWHUB_BASE = "https://clawhub.ai/api"
 GITHUB_API = "https://api.github.com"
 
-MAX_SKILL_SIZE = 512_000  # 500 KB total limit per skill
+MAX_SKILL_SIZE = 5_242_880  # 5 MB total limit per skill
+MAX_SKILL_ZIP_SIZE = 5 * 1024 * 1024  # 5 MB
+MAX_SINGLE_FILE_SIZE = 1024 * 1024  # 1 MB
 
 
 async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
@@ -217,7 +221,7 @@ async def _fetch_github_directory(
                 size = item.get("size", 0)
                 total_size += size
                 if total_size > MAX_SKILL_SIZE:
-                    raise HTTPException(413, f"Skill exceeds size limit ({MAX_SKILL_SIZE // 1024}KB)")
+                    raise HTTPException(413, f"Skill exceeds size limit (5MB)")
                 # Download file content
                 async with httpx.AsyncClient(timeout=30, headers=headers) as client:
                     dl_resp = await client.get(item["url"])
@@ -421,6 +425,135 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
     result["file_count"] = len(files)
     result["source"] = "clawhub"
     return result
+
+
+def _parse_zip_skill_frontmatter(content: str) -> tuple[str | None, str | None]:
+    """Parse SKILL.md frontmatter. Returns (name, description)."""
+    name = None
+    description = None
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.lower().startswith("name:"):
+            val = line[5:].strip().strip('"').strip("'")
+            if val:
+                name = val
+        elif line.lower().startswith("description:"):
+            val = line[12:].strip().strip('"').strip("'")
+            if val:
+                description = val
+    return name, description
+
+
+@router.post("/import-zip")
+async def import_skill_zip(
+    file: FastAPIUploadFile = FastAPIFile(..., alias="file"),
+    current_user: User = Depends(get_current_user),
+):
+    """Import a skill from a ZIP file into the global registry."""
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+
+    filename = file.filename or ""
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="只支持 ZIP 格式文件")
+
+    content = await file.read()
+    if len(content) > MAX_SKILL_ZIP_SIZE:
+        raise HTTPException(status_code=413, detail="ZIP 文件大小不能超过 5MB")
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content), "r") as zf:
+            names = zf.namelist()
+
+            # Check for malicious paths
+            for name in names:
+                if name.startswith("/") or ".." in name:
+                    raise HTTPException(status_code=400, detail="ZIP 文件包含非法路径")
+
+            # Find SKILL.md and determine skill structure
+            skill_md_name = None
+            skill_md_path_prefix = None  # For flat structure, store the prefix (empty string or "folder/")
+            for name in names:
+                name_lower = name.lower()
+                # folder/SKILL.md or folder/skill.md
+                if name_lower.endswith("/skill.md"):
+                    parts = name.split("/")
+                    if len(parts) >= 2:
+                        skill_md_name = name
+                        skill_md_path_prefix = name.rsplit("/", 1)[0] + "/"
+                        logger.info(f"[SkillImport] Found SKILL.md in folder: {name}")
+                        break
+                # SKILL.md at root level (flat structure)
+                elif name_lower == "skill.md":
+                    skill_md_name = name
+                    skill_md_path_prefix = ""  # Empty prefix for flat structure
+                    logger.info(f"[SkillImport] Found SKILL.md at root (flat structure)")
+                    break
+
+            if not skill_md_name:
+                logger.warning(f"[SkillImport] No SKILL.md found. Files in ZIP: {names[:20]}")
+                raise HTTPException(status_code=400, detail="ZIP 必须包含 SKILL.md 文件")
+
+            # Parse frontmatter
+            skill_md_content = zf.read(skill_md_name).decode("utf-8", errors="replace")
+            skill_name, skill_desc = _parse_zip_skill_frontmatter(skill_md_content)
+            if not skill_name or not skill_desc:
+                raise HTTPException(status_code=400, detail="SKILL.md 必须包含 name 和 description 字段")
+
+            # Generate safe folder name from skill name
+            folder_name = re.sub(r'[^a-zA-Z0-9\u4e00-\u9fff_-]', '-', skill_name)
+            folder_name = re.sub(r'-+', '-', folder_name).strip('-').lower()[:50]
+            if not folder_name:
+                folder_name = "imported-skill"
+
+            logger.info(f"[SkillImport] Skill name: {skill_name}, folder: {folder_name}")
+
+            # Read all files
+            files = []
+            total_size = 0
+            prefix = skill_md_path_prefix  # "" for flat, "folder/" for nested
+            for zip_entry in names:
+                if zip_entry.endswith("/"):
+                    continue
+                # Skip files not under the skill folder
+                if prefix and not zip_entry.startswith(prefix):
+                    continue
+
+                # Extract path relative to skill folder
+                rel_path = zip_entry[len(prefix):] if prefix else zip_entry
+                if not rel_path:
+                    continue
+
+                file_content = zf.read(zip_entry)
+                if len(file_content) > MAX_SINGLE_FILE_SIZE:
+                    raise HTTPException(status_code=400, detail=f"单个文件大小不能超过 1MB: {rel_path}")
+
+                total_size += len(file_content)
+                if total_size > MAX_SKILL_ZIP_SIZE:
+                    raise HTTPException(status_code=413, detail="技能总大小不能超过 5MB")
+
+                files.append({
+                    "path": rel_path,
+                    "content": file_content.decode("utf-8", errors="replace"),
+                })
+
+            logger.info(f"[SkillImport] Extracted {len(files)} files")
+
+            # Save to DB
+            result = await _save_skill_to_db(
+                folder_name=folder_name,
+                name=skill_name,
+                description=skill_desc,
+                category="imported",
+                icon="",
+                files=files,
+                source_url="",
+                tenant_id=tenant_id,
+            )
+            result["files"] = [f["path"] for f in files]
+            return result
+
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="无效的 ZIP 文件")
 
 
 @router.post("/import-from-url")

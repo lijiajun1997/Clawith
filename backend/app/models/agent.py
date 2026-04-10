@@ -99,6 +99,8 @@ class Agent(Base):
 
     # Template
     template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_templates.id"))
+    # is_template: True for template agents (PA, PeA), False for firm-wide agents (BD, QC, Admin)
+    is_template: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Heartbeat (proactive agent awareness)
     heartbeat_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -588,6 +588,28 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 id_part = f" (ID: {sender_user_id_feishu})" if sender_user_id_feishu else ""
                 llm_user_text = f"[发送者: {sender_name}{id_part}] {user_text}"
 
+            # Load chat history for group messages
+            if chat_type == "group" and chat_id:
+                try:
+                    chat_history = await feishu_service.get_chat_history(
+                        config.app_id, config.app_secret, chat_id, page_size=10
+                    )
+                    if chat_history:
+                        history_parts = []
+                        for h in chat_history[:5]:  # Only use last 5 messages for context
+                            sender_type = h.get("sender_type", "User")
+                            msg_text = h.get("text", "") or f"[{h.get('type', 'message')}]"
+                            if msg_text and h.get("sender") != sender_open_id:  # Skip current user's message
+                                history_parts.append(f"{sender_type}: {msg_text[:200]}")
+                        if history_parts:
+                            llm_user_text = (
+                                "[群聊最近消息上下文]\n" + "\n".join(history_parts) + "\n\n"
+                                + llm_user_text
+                            )
+                            logger.info(f"[Feishu] Loaded {len(history_parts)} history messages for group {chat_id[:8]}")
+                except Exception as e:
+                    logger.warning(f"[Feishu] Failed to load chat history: {e}")
+
             # ── Inject recent uploaded file context ──────────────────────────
             # Check the uploads directory for recently modified files (within 30 min).
             # This is more reliable than scanning DB history, because the file save

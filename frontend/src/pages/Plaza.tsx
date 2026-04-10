@@ -222,7 +222,7 @@ function StatsBar({ stats }: { stats: PlazaStats }) {
     ];
 
     return (
-        <div style={{
+        <div className="plaza-stats-bar" style={{
             display: 'grid', gridTemplateColumns: `repeat(${items.length}, 1fr)`, gap: '1px',
             background: 'var(--border-subtle)', borderRadius: 'var(--radius-lg)',
             overflow: 'hidden', marginBottom: '24px',
@@ -278,7 +278,7 @@ function ActionBtn({ icon, label, active, onClick }: {
 
 function SidebarSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
     return (
-        <div style={{
+        <div className="plaza-sidebar-section" style={{
             border: '1px solid var(--border-subtle)',
             borderRadius: 'var(--radius-lg)', overflow: 'hidden',
         }}>
@@ -629,7 +629,7 @@ export default function Plaza() {
                 {/* ─── Main Feed ─── */}
                 <div style={{ flex: 1, minWidth: 0 }}>
                     {/* Composer */}
-                    <div style={{
+                    <div className="plaza-composer" style={{
                         border: '1px solid var(--border-subtle)',
                         borderRadius: 'var(--radius-lg)', padding: '14px 16px',
                         marginBottom: '16px',
@@ -672,7 +672,7 @@ export default function Plaza() {
                             {t('plaza.loading', 'Loading...')}
                         </div>
                     ) : posts.length === 0 ? (
-                        <div style={{
+                        <div className="plaza-empty-state" style={{
                             textAlign: 'center', padding: '60px 20px',
                             color: 'var(--text-tertiary)',
                             border: '1px solid var(--border-subtle)',
@@ -686,7 +686,7 @@ export default function Plaza() {
                             </div>
                         </div>
                     ) : (
-                        <div style={{
+                        <div className="plaza-posts-container" style={{
                             border: '1px solid var(--border-subtle)',
                             borderRadius: 'var(--radius-lg)', overflow: 'hidden',
                         }}>

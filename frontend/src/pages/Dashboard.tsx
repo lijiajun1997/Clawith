@@ -131,7 +131,7 @@ function StatsBar({ agents, allTasks }: { agents: Agent[]; allTasks: Task[] }) {
     ];
 
     return (
-        <div style={{
+        <div className="plaza-stats-bar" style={{
             display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1px',
             background: 'var(--border-subtle)', borderRadius: 'var(--radius-lg)',
             overflow: 'hidden', marginBottom: '24px',
@@ -459,7 +459,7 @@ export default function Dashboard() {
                     <StatsBar agents={agents} allTasks={allTasks} />
 
                     {/* Agent List Card */}
-                    <div style={{
+                    <div className="plaza-posts-container" style={{
                         border: '1px solid var(--border-subtle)',
                         borderRadius: 'var(--radius-lg)',
                         overflow: 'hidden',

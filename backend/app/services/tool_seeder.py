@@ -484,12 +484,16 @@ BUILTIN_TOOLS = [
         "name": "execute_code",
         "display_name": "Code Executor",
         "description": (
-            "Execute Python, Bash, or Node.js code. CWD is the agent workspace directory.\n"
+            "Execute Python, Bash, or Node.js code.\n"
+            "CWD is the agent root directory. Available subdirectories:\n"
+            "  workspace/  — agent's working files (use relative paths like 'fdd_slides/file.txt')\n"
+            "  skills/     — agent's skills\n"
+            "  memory/     — agent's memory\n"
             "Key rules:\n"
-            "1. File paths: use relative paths directly — open('file.txt') reads/writes in workspace.\n"
+            "1. File paths: use relative paths from agent root — e.g. 'workspace/data.csv', not 'workspace/workspace/data.csv'.\n"
             "2. Install packages: bash `pip install --target /data/shared-deps/pip <pkg>` (globally persisted).\n"
             "3. Run script files: bash `python3 script.py` (script must be in workspace dir).\n"
-            "4. Timeout: default 60s, max 300s.\n"
+            "4. Timeout: configurable via company settings (default/max from tool config).\n"
             "5. Large output auto-saved to workspace/; use read_file to view full content."
         ),
         "category": "code",
@@ -500,7 +504,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
                 "code": {"type": "string", "description": "Code to execute"},
-                "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 60, max 300)"},
+                "timeout": {"type": "integer", "description": "Execution timeout in seconds (defaults to company setting)"},
             },
             "required": ["language", "code"],
         },
@@ -563,7 +567,7 @@ BUILTIN_TOOLS = [
             "Rules:\n"
             "1. File paths: use absolute paths or resolve from the script's own directory.\n"
             "2. Install packages: `pip install <package>` (E2B sandbox is ephemeral, packages not persisted).\n"
-            "3. Timeout: default 60s, max 300s."
+            "3. Timeout: configurable via company settings (default/max from tool config)."
         ),
         "category": "code",
         "icon": "☁️",
@@ -573,7 +577,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "language": {"type": "string", "enum": ["python", "bash", "node"], "description": "Programming language"},
                 "code": {"type": "string", "description": "Code to execute"},
-                "timeout": {"type": "integer", "description": "Execution timeout in seconds (default 60, max 300)"},
+                "timeout": {"type": "integer", "description": "Execution timeout in seconds (defaults to company setting)"},
             },
             "required": ["language", "code"],
         },

@@ -1,29 +1,34 @@
 {
   "app": {
-    "name": "Clawith",
+    "name": "Proud Copilot",
     "tagline": "Enterprise Digital Employee Platform"
   },
   "login": {
     "hero": {
-      "badge": "Open Source · Multi-Agent Collaboration",
-      "title": "Clawith",
-      "subtitle": "OpenClaw for Teams",
-      "description": "OpenClaw empowers individuals.<br>Clawith scales it to frontier organizations.",
+      "badge": "AI + Professional Services",
+      "title": "Proud Copilot",
+      "subtitle": "Intelligence-Driven Professional Empowerment",
+      "description": "An AI digital employee network platform built on professional delivery and continuous learning,<br/>creating personal, project and enterprise-level digital employees for the future of professional services.",
       "features": {
-        "multiAgent": {
-          "title": "Multi-Agent Crew",
-          "description": "Agents collaborate autonomously"
+        "professional": {
+          "title": "Professional Insight",
+          "description": "AI employees leverage web search tools for in-depth audit, financial analysis & precise decisions"
         },
-        "persistentMemory": {
-          "title": "Persistent Memory",
-          "description": "Soul, memory, and self-evolution"
+        "growth": {
+          "title": "Continuous Evolution",
+          "description": "AI employees keep learning in use, accumulating knowledge and enhancing capabilities"
         },
-        "agentPlaza": {
-          "title": "Agent Plaza",
-          "description": "Social feed for inter-agent interaction"
+        "efficiency": {
+          "title": "Efficiency Leap",
+          "description": "Long-task-chain smart delivery workflow, unlocking audit & financial professional value"
+        },
+        "collaboration": {
+          "title": "Human-AI Synergy",
+          "description": "Multi-AI employee network collaboration, AI partners empowering excellent teams"
         }
       }
-    }
+    },
+    "opensource": "Powered by Clawith"
   },
   "plaza": {
     "title": "Agent Plaza",
@@ -840,30 +845,18 @@
       "modelRequired": "Please select a primary model"
     },
     "templates": {
-      "Project Manager": "Project Manager",
-      "Designer": "Designer",
-      "Product Intern": "Product Intern",
-      "Market Researcher": "Market Researcher",
+      "Personal Assistant": "Personal Assistant",
+      "Project Assistant": "Project Assistant",
       "templateData": {
-        "Project Manager": {
-          "description": "Manages project timelines, task delegation, cross-team coordination, and progress reporting",
-          "personality": "- Organized, proactive, and detail-oriented\n- Strong communicator who keeps all stakeholders aligned\n- Balances urgency with quality, prioritizes ruthlessly",
-          "boundaries": "- Strategic decisions require leadership approval\n- Budget approvals must follow formal process\n- External communications on behalf of the company need sign-off"
+        "Personal Assistant": {
+          "description": "Handles daily office tasks including scheduling, email management, information lookup, and task reminders",
+          "personality": "- Efficient, professional, and detail-oriented\n- Proactively identifies and resolves issues\n- Communicates clearly and responds promptly",
+          "boundaries": "- Does not make major decisions on behalf of others\n- Handles sensitive information with discretion\n- Escalates matters beyond authority in a timely manner"
         },
-        "Designer": {
-          "description": "Assists with design requirements, design system maintenance, asset management, and competitive UI analysis",
-          "personality": "- Detail-oriented with strong visual aesthetics\n- Translates business requirements into design language\n- Proactively organizes design resources and maintains consistency",
-          "boundaries": "- Final design deliverables require design lead approval\n- Brand element modifications must go through review\n- Design source file management follows team conventions"
-        },
-        "Product Intern": {
-          "description": "Supports product managers with requirements analysis, competitive research, user feedback analysis, and documentation",
-          "personality": "- Eager learner, proactive, and inquisitive\n- Sensitive to user experience and product details\n- Thorough and well-structured in output",
-          "boundaries": "- Product recommendations should be labeled \"for reference only\"\n- Does not directly modify product specs without PM approval\n- User privacy data must be anonymized"
-        },
-        "Market Researcher": {
-          "description": "Focuses on market research, industry analysis, competitive intelligence tracking, and trend insights",
-          "personality": "- Rigorous, data-driven, and logically clear\n- Extracts key insights from complex data sets\n- Reports focus on actionable recommendations, not just data",
-          "boundaries": "- Analysis conclusions must be supported by data/sources\n- Commercially sensitive information must be labeled with confidentiality level\n- External research reports require approval before distribution"
+        "Project Assistant": {
+          "description": "Supports project planning, progress tracking, documentation, meeting notes, and other project management tasks",
+          "personality": "- Well-organized and logical\n- Skilled at coordinating resources and following up\n- Proactively reports progress and risks",
+          "boundaries": "- Major project changes require project manager approval\n- Resource allocation needs department head authorization\n- Contract-related matters require legal review"
         }
       }
     }
@@ -1151,7 +1144,7 @@
         "list_triggers": "List all your active triggers with details.",
         "send_file_to_agent": "Send a file to a specific person or back to the current conversation.",
         "send_feishu_message": "Send a message to a Feishu user or group.",
-        "send_web_message": "Send a proactive message to a user on the Clawith web platform.",
+        "send_web_message": "Send a proactive message to a user on the Proud Copilot web platform.",
         "send_message_to_agent": "Send a message to a digital employee colleague and receive a reply.",
         "web_search": "Search the internet using a configurable search engine.",
         "jina_search": "Search the internet using Jina AI.",
@@ -1376,16 +1369,16 @@
       "saved": "Email templates saved",
       "emailVerification": "Email Verification Code",
       "emailVerificationDesc": "Sent when a user registers and needs to verify their email address.",
-      "emailVerificationSubject": "Verify your Clawith email address",
-      "emailVerificationBody": "Hello {{display_name}},\n\nWelcome to Clawith! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.",
+      "emailVerificationSubject": "Verify your Proud Copilot email address",
+      "emailVerificationBody": "Hello {{display_name}},\n\nWelcome to Proud Copilot! Please use the following 6-digit code to verify your email address:\n\nVerification code: {{verification_code}}\n\nThis code expires in {{expiry_minutes}} minutes. If you did not create an account, you can ignore this email.",
       "passwordReset": "Password Reset",
       "passwordResetDesc": "Sent when a user requests to reset their password.",
-      "passwordResetSubject": "Reset your Clawith password",
-      "passwordResetBody": "Hello {{display_name}},\n\nWe received a request to reset your Clawith password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.",
+      "passwordResetSubject": "Reset your Proud Copilot password",
+      "passwordResetBody": "Hello {{display_name}},\n\nWe received a request to reset your Proud Copilot password.\n\nReset link: {{reset_url}}\n\nThis link expires in {{expiry_minutes}} minutes. If you did not request this, you can ignore this email.",
       "companyInvitation": "Company Invitation",
       "companyInvitationDesc": "Sent when an admin invites a user to join their company.",
-      "companyInvitationSubject": "{{inviter_name}} invited you to join {{company_name}} on Clawith",
-      "companyInvitationBody": "Hello,\n\n{{inviter_name}} has invited you to join their team '{{company_name}}' on Clawith.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don't want to join this team or didn't expect this invitation, you can ignore this email."
+      "companyInvitationSubject": "{{inviter_name}} invited you to join {{company_name}} on Proud Copilot",
+      "companyInvitationBody": "Hello,\n\n{{inviter_name}} has invited you to join their team '{{company_name}}' on Proud Copilot.\n\nTo accept the invitation and create your account, please click the link below:\n\n{{invite_url}}\n\nIf you don't want to join this team or didn't expect this invitation, you can ignore this email."
     },
     "timezone": {
       "title": "Company Timezone",

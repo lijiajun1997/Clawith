@@ -36,7 +36,8 @@ class AgentManager:
         return Path(settings.AGENT_TEMPLATE_DIR)
 
     async def initialize_agent_files(self, db: AsyncSession, agent: Agent,
-                                      personality: str = "", boundaries: str = "") -> None:
+                                      personality: str = "", boundaries: str = "",
+                                      soul_template: str | None = None) -> None:
         """Copy template files and customize for this agent."""
         agent_dir = self._agent_dir(agent.id)
         template_dir = self._template_dir()
@@ -66,13 +67,22 @@ class AgentManager:
         creator = result.scalar_one_or_none()
         creator_name = creator.display_name if creator else "Unknown"
 
-        soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
-        if soul_path.exists():
+        # Determine base soul content
+        if soul_template:
+            # Use the provided soul_template from database AgentTemplate
+            soul_content = soul_template.replace("{name}", agent.name)
+            soul_content = soul_content.replace("{{agent_name}}", agent.name)
+            soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
+            soul_content = soul_content.replace("{{creator_name}}", creator_name)
+            soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        elif soul_path.exists():
             template_content = soul_path.read_text()
             soul_content = template_content.replace("{{agent_name}}", agent.name)
             soul_content = soul_content.replace("{{role_description}}", agent.role_description or "通用助手")
             soul_content = soul_content.replace("{{creator_name}}", creator_name)
             soul_content = soul_content.replace("{{created_at}}", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        else:
+            soul_content = f"# Personality\n\nI'm {agent.name}, {agent.role_description or 'a digital assistant'}.\n"
 
         # Helper function to replace or append sections
         def replace_or_append_section(content: str, section_name: str, section_content: str) -> str:
@@ -105,8 +115,11 @@ class AgentManager:
             return content + f"\n## {section_name}\n{section_content}\n"
 
         # Use the helper to replace or append Personality and Boundaries
-        soul_content = replace_or_append_section(soul_content, "Personality", personality)
-        soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
+        # Only replace if user explicitly provided content (non-empty strings)
+        if personality:
+            soul_content = replace_or_append_section(soul_content, "Personality", personality)
+        if boundaries:
+            soul_content = replace_or_append_section(soul_content, "Boundaries", boundaries)
 
         soul_path.write_text(soul_content, encoding="utf-8")
 

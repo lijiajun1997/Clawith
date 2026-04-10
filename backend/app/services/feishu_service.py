@@ -438,6 +438,61 @@ class FeishuService:
         })
         return await self.send_message(app_id, app_secret, creator_open_id, "text", text_content)
 
+    async def get_chat_history(self, app_id: str, app_secret: str,
+                               chat_id: str, page_size: int = 20) -> list[dict]:
+        """Get recent messages from a Feishu chat.
+
+        Args:
+            chat_id: The chat ID to fetch history from
+            page_size: Number of messages to fetch (max 200)
+        Returns list of message dicts with id, msg_type, content, create_time, sender.
+        """
+        async with httpx.AsyncClient(timeout=30) as client:
+            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
+                "app_id": app_id,
+                "app_secret": app_secret,
+            })
+            app_token = token_resp.json().get("app_access_token", "")
+            resp = await client.get(
+                "https://open.feishu.cn/open-apis/im/v1/messages",
+                params={
+                    "container_id_type": "chat",
+                    "container_id": chat_id,
+                    "sort_type": "ByCreateTimeDesc",
+                    "page_size": min(page_size, 200),
+                },
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning(f"[Feishu] get_chat_history failed: {data.get('msg')}")
+                return []
+            items = data.get("data", {}).get("items", [])
+            # Parse and simplify messages
+            messages = []
+            for item in items:
+                msg_type = item.get("msg_type", "text")
+                content = item.get("body", {}).get("content", "")
+                sender = item.get("sender", {}).get("sender_id", {}).get("open_id", "")
+                sender_name = item.get("sender", {}).get("sender_type", "")
+                create_time = item.get("create_time", "")
+                # Parse content for text messages
+                text = content
+                if msg_type == "text":
+                    try:
+                        text = json.loads(content).get("text", content)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                messages.append({
+                    "id": item.get("message_id", ""),
+                    "type": msg_type,
+                    "text": text,
+                    "sender": sender,
+                    "sender_type": sender_name,
+                    "time": create_time,
+                })
+            return messages
+
     async def download_message_resource(self, app_id: str, app_secret: str,
                                          message_id: str, file_key: str,
                                          resource_type: str = "file") -> bytes:
