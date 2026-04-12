@@ -1,6 +1,7 @@
 """Feishu OAuth and Channel API routes."""
 
 import asyncio
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -21,26 +22,9 @@ from app.services.feishu_service import feishu_service
 
 router = APIRouter(tags=["feishu"])
 
-# Default LLM timeout for Feishu channel (fallback when model has no request_timeout set).
-# The per-model request_timeout field takes precedence — see _get_llm_timeout().
-_LLM_TIMEOUT_SECONDS_DEFAULT = 180.0
-
 # Number of tool status lines to keep visible in the Feishu card.
 # Shows the last N non-running lines plus any active "running" entry.
 _TOOL_STATUS_KEEP_LINES = 20
-
-
-def _get_llm_timeout(model) -> float:
-    """Get effective LLM timeout for the Feishu channel.
-
-    Prefer the model-level request_timeout so each model can have its own
-    budget (local vLLM may need 300 s, cloud APIs often need only 60 s).
-    Falls back to _LLM_TIMEOUT_SECONDS_DEFAULT when the field is absent or zero.
-    """
-    timeout = getattr(model, "request_timeout", None)
-    if timeout and float(timeout) > 0:
-        return float(timeout)
-    return _LLM_TIMEOUT_SECONDS_DEFAULT
 
 
 class _SerialPatchQueue:
@@ -65,6 +49,28 @@ class _SerialPatchQueue:
     async def drain(self) -> None:
         if self._tail:
             await self._tail
+
+
+async def _save_bot_open_id(agent_id: uuid.UUID, bot_open_id: str) -> None:
+    """Persist the bot's open_id to the channel config in the database."""
+    try:
+        from app.database import async_session as _async_session
+        async with _async_session() as db:
+            result = await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "feishu",
+                )
+            )
+            config = result.scalar_one_or_none()
+            if config:
+                extra = dict(config.extra_config or {})
+                extra["bot_open_id"] = bot_open_id
+                config.extra_config = extra
+                await db.commit()
+                logger.info(f"[Feishu] Persisted bot_open_id={bot_open_id} for agent {agent_id}")
+    except Exception as e:
+        logger.exception(f"[Feishu] Failed to persist bot_open_id: {e}")
 
 
 # ─── OAuth ──────────────────────────────────────────────
@@ -183,15 +189,26 @@ async def configure_channel(
         ChannelConfig.channel_type == "feishu",
     ))
     existing = result.scalar_one_or_none()
+
+    # Fetch bot open_id from Feishu API and store in extra_config
+    extra = data.extra_config.copy() if data.extra_config else {}
+    if data.app_id and data.app_secret:
+        bot_open_id = await feishu_service.fetch_bot_open_id(data.app_id, data.app_secret)
+        if bot_open_id:
+            extra["bot_open_id"] = bot_open_id
+            logger.info(f"[Feishu] Saved bot_open_id={bot_open_id} for app_id={data.app_id}")
+        else:
+            logger.warning(f"[Feishu] bot_open_id unavailable from API (normal for bots); will auto-capture from first @mention")
+
     if existing:
         existing.app_id = data.app_id
         existing.app_secret = data.app_secret
         existing.encrypt_key = data.encrypt_key
         existing.verification_token = data.verification_token
-        existing.extra_config = data.extra_config or {}
+        existing.extra_config = extra
         existing.is_configured = True
         await db.flush()
-        
+
         # Start/Stop WS client in background
         from app.services.feishu_ws import feishu_ws_manager
         import asyncio
@@ -200,7 +217,7 @@ async def configure_channel(
             asyncio.create_task(feishu_ws_manager.start_client(agent_id, existing.app_id, existing.app_secret))
         else:
             asyncio.create_task(feishu_ws_manager.stop_client(agent_id))
-        
+
         return ChannelConfigOut.model_validate(existing)
 
     config = ChannelConfig(
@@ -210,7 +227,7 @@ async def configure_channel(
         app_secret=data.app_secret,
         encrypt_key=data.encrypt_key,
         verification_token=data.verification_token,
-        extra_config=data.extra_config or {},
+        extra_config=extra,
         is_configured=True,
     )
     db.add(config)
@@ -413,9 +430,67 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
         if msg_type == "text":
             import json
-            import re
             content = json.loads(message.get("content", "{}"))
             user_text = content.get("text", "")
+
+            # Determine conversation_id early (needed for group session creation)
+            if chat_type == "group" and chat_id:
+                conv_id = f"feishu_group_{chat_id}"
+            else:
+                conv_id = f"feishu_p2p_{sender_user_id_from_event or sender_open_id}"
+
+            # Load agent info early (needed for group session user_id and context settings)
+            from app.models.agent import Agent as AgentModel
+            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+            agent_obj = agent_r.scalar_one_or_none()
+            creator_id = agent_obj.creator_id if agent_obj else agent_id
+
+            # For group chats: ALWAYS create/resolve session first to preserve conversation history
+            # The mention check below only decides whether to respond, not whether to record
+            _is_group = (chat_type == "group")
+            if _is_group:
+                from app.services.channel_session import find_or_create_channel_session
+                _sess = await find_or_create_channel_session(
+                    db=db,
+                    agent_id=agent_id,
+                    user_id=creator_id,
+                    external_conv_id=conv_id,
+                    source_channel="feishu",
+                    first_message_title=user_text[:40] if user_text else "Group message",
+                    is_group=True,
+                    group_name=f"Feishu Group {chat_id[:8]}" if chat_id else None,
+                )
+                session_conv_id = str(_sess.id)
+
+            # Check if bot was mentioned in group messages when mention_only mode is enabled
+            if chat_type == "group" and config.extra_config.get("mention_only", True):
+                mentions = message.get("mentions", [])
+                bot_open_id = config.extra_config.get("bot_open_id", "")
+
+                # Auto-capture bot_open_id from first @mention if not yet stored
+                if not bot_open_id:
+                    for m in mentions:
+                        if m.get("mentioned_type") == "bot":
+                            candidate = m.get("id", {}).get("open_id", "")
+                            if candidate:
+                                bot_open_id = candidate
+                                # Persist to DB asynchronously
+                                asyncio.create_task(_save_bot_open_id(agent_id, bot_open_id))
+                                logger.info(f"[Feishu] Auto-captured bot_open_id={bot_open_id} from mention, saved to config")
+                                break
+
+                # Check if OUR bot was mentioned by open_id
+                is_bot_mentioned = any(
+                    m.get("id", {}).get("open_id") == bot_open_id
+                    for m in mentions
+                )
+
+                # Also check for @_all (所有人)
+                has_all_mention = bool(re.search(r'@_all', user_text))
+
+                if not is_bot_mentioned and not has_all_mention:
+                    logger.info(f"[Feishu] Bot not mentioned (bot_open_id={bot_open_id}), ignoring")
+                    return {"code": 0, "msg": "bot not mentioned"}
 
             # Strip @mention tags (e.g. @_user_1) from group messages
             user_text = re.sub(r'@_user_\d+', '', user_text).strip()
@@ -429,35 +504,17 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 user_text, re.IGNORECASE
             )
 
-            # Determine conversation_id for history isolation
-            # Group chats: use chat_id; P2P chats: prefer user_id (tenant-stable)
-            if chat_type == "group" and chat_id:
-                conv_id = f"feishu_group_{chat_id}"
-            else:
-                conv_id = f"feishu_p2p_{sender_user_id_from_event or sender_open_id}"
+            # For P2P chats: session_conv_id will be set later (after user resolution)
+            # Group chat session was already created above (before mention check)
+            _session_for_history = session_conv_id if _is_group else conv_id
 
-            # Load recent conversation history via session (session UUID may already exist)
+            # Load chat history for context
             from app.models.audit import ChatMessage
-            from app.models.agent import Agent as AgentModel
-            from app.services.channel_session import find_or_create_channel_session
-            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            agent_obj = agent_r.scalar_one_or_none()
-            creator_id = agent_obj.creator_id if agent_obj else agent_id
             from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
             ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
-
-            # Pre-resolve session so history lookup uses the UUID  (session created later if new)
-            _pre_sess_r = await db.execute(
-                select(__import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession).where(
-                    __import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession.agent_id == agent_id,
-                    __import__('app.models.chat_session', fromlist=['ChatSession']).ChatSession.external_conv_id == conv_id,
-                )
-            )
-            _pre_sess = _pre_sess_r.scalar_one_or_none()
-            _history_conv_id = str(_pre_sess.id) if _pre_sess else conv_id
             history_result = await db.execute(
                 select(ChatMessage)
-                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _history_conv_id)
+                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _session_for_history)
                 .order_by(ChatMessage.created_at.desc())
                 .limit(ctx_size)
             )
@@ -1529,30 +1586,21 @@ async def _call_agent_llm(
     # Use actual user_id so the system prompt knows who it's chatting with
     effective_user_id = user_id or agent_id
 
-    # Determine effective timeout: prefer model-level setting, else use module default.
-    _timeout = _get_llm_timeout(model)
-
     try:
-        reply = await asyncio.wait_for(
-            call_llm(
-                model,
-                messages,
-                agent.name,
-                agent.role_description or "",
-                agent_id=agent_id,
-                user_id=effective_user_id,
-                supports_vision=getattr(model, 'supports_vision', False),
-                on_chunk=on_chunk,
-                on_thinking=on_thinking,
-                on_tool_call=on_tool_call,
-                fallback_model=fallback_model,
-            ),
-            timeout=_timeout,
+        reply = await call_llm(
+            model,
+            messages,
+            agent.name,
+            agent.role_description or "",
+            agent_id=agent_id,
+            user_id=effective_user_id,
+            supports_vision=getattr(model, 'supports_vision', False),
+            on_chunk=on_chunk,
+            on_thinking=on_thinking,
+            on_tool_call=on_tool_call,
+            fallback_model=fallback_model,
         )
         return reply
-    except asyncio.TimeoutError:
-        logger.error(f"[LLM] Call timed out after {_timeout}s (agent_id={agent_id})")
-        return f"⚠️ Model response timed out (>{int(_timeout)}s). Please retry or shorten your request."
     except Exception as e:
         import traceback
         traceback.print_exc()

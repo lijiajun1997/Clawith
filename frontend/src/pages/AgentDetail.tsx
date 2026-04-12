@@ -1526,6 +1526,8 @@ function AgentDetailInner() {
         return allSessions.filter((s: any) => {
             // Always show agent-to-agent sessions in the "Other users" tab
             if (String(s.source_channel || '').toLowerCase() === 'agent') return true;
+            // Always show group sessions (Feishu groups, Slack channels, etc.)
+            if (s.is_group) return true;
             const su = sessionUserIdStr(s);
             if (vu && su === vu) return false;
             return true;

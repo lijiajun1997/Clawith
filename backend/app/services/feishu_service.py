@@ -103,6 +103,40 @@ class FeishuService:
                 
             return token
 
+    async def fetch_bot_open_id(self, app_id: str, app_secret: str) -> str | None:
+        """Fetch the bot's open_id from Feishu /bot/v3/info API.
+
+        Called once at channel config time and stored in extra_config.
+        Returns the bot's open_id or None on failure.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
+                    "app_id": app_id,
+                    "app_secret": app_secret,
+                })
+                app_token = token_resp.json().get("app_access_token", "")
+                if not app_token:
+                    logger.warning(f"[Feishu] fetch_bot_open_id: failed to get app_token for {app_id}")
+                    return None
+
+                resp = await client.get(
+                    "https://open.feishu.cn/open-apis/bot/v3/info",
+                    headers={"Authorization": f"Bearer {app_token}"},
+                )
+                data = resp.json()
+                if data.get("code") != 0:
+                    logger.warning(f"[Feishu] fetch_bot_open_id: API error code={data.get('code')}, msg={data.get('msg')}")
+                    return None
+                open_id = data.get("data", {}).get("open_id")
+                logger.info(f"[Feishu] fetch_bot_open_id: success open_id={open_id}")
+                return open_id
+        except Exception as e:
+            logger.exception(f"[Feishu] fetch_bot_open_id error: {e}")
+            return None
+        except Exception:
+            return None
+
     async def exchange_code_for_user(self, code: str) -> dict:
         """Exchange OAuth authorization code for user info.
 
