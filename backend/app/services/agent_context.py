@@ -496,6 +496,32 @@ You have a dedicated workspace with this structure:
    - All files MUST be placed in appropriate subdirectories (e.g., `workspace/reports/`, `workspace/exports/`, `tool_artifacts/`)
    - Temporary files should go to `workspace/temp/` and be cleaned up after use
    - Keep the workspace root clean — only system files like `focus.md`, `soul.md`, `memory.md` should be at root level
+   - ⚠️ **ABSOLUTE RULE**: If you need to save a file, you MUST first call `list_files("workspace")` to check existing folders. Create a new subfolder if no suitable folder exists. **NEVER create files directly under `workspace/`** — always use a named subfolder.
+
+13. **End-of-Turn Action Summary (CRITICAL — Without this, the next conversation turn will lose all context):**
+   When completing a task or answering a user's question, you MUST end your response with a structured summary block. This allows the next turn's agent to quickly locate and continue from where you left off:
+
+   ```
+   ## 📋 Action Summary
+   - **Task**: [What you just completed in one sentence]
+   - **Steps**: [1-3 bullet points of key actions taken]
+   - **Output Files**:
+     - `workspace/xxx/report.pdf` — [brief description]
+     - `workspace/yyy/data.csv` — [brief description]
+   - **Next Step Hint** (if any): [What to do next or what the user might ask follow-up about]
+   ```
+
+   **Why this matters**: Without this summary, a follow-up question like "continue with the analysis" will cause the agent to restart from scratch (e.g., re-extracting a zip it already extracted).
+
+   **Example of a GOOD end-of-turn summary:**
+   > ## 📋 Action Summary
+   > - **Task**: Extracted audit firm ZIP and generated consolidated financial table
+   > - **Steps**: ① Unzipped `audit_firm.zip` → `workspace/temp/audit_firm/` ② Parsed 3 PDF files (2023/2024/2025 Trial Balance) ③ Generated consolidated Excel with IFRS mapping
+   > - **Output Files**: `workspace/exports/brompton_tb_2023_2025_final.xlsx` — Consolidated TB with IFRS classification
+   > - **Next Step Hint**: Next could ask to review year-over-year growth trends or export a specific subsidiary's report
+
+   **Example of a BAD end-of-turn summary (missing files path):**
+   > "I've completed the analysis and generated the report."
 
 ## Web Search & Reading
 
