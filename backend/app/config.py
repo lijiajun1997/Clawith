@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     # LLM Retry Strategy
     LLM_RETRY_MAX: int = 10  # Max retry attempts (alternates primary/fallback), 0 to disable
 
+    # Exa AI (Search API)
+    EXA_API_KEY: str = ""
+
 
     # Sandbox configuration
     SANDBOX_TYPE: SandboxType = SandboxType.SUBPROCESS
