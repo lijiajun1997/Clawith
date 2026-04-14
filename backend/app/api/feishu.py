@@ -19,6 +19,7 @@ from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
+from app.services.channel_session import find_or_create_channel_session
 
 router = APIRouter(tags=["feishu"])
 
@@ -439,17 +440,17 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             else:
                 conv_id = f"feishu_p2p_{sender_user_id_from_event or sender_open_id}"
 
+            _is_group = (chat_type == "group")
+
             # Load agent info early (needed for group session user_id and context settings)
             from app.models.agent import Agent as AgentModel
             agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent_obj = agent_r.scalar_one_or_none()
             creator_id = agent_obj.creator_id if agent_obj else agent_id
 
-            # For group chats: ALWAYS create/resolve session first to preserve conversation history
-            # The mention check below only decides whether to respond, not whether to record
-            _is_group = (chat_type == "group")
+            # For group chats: ALWAYS create/resolve session first to preserve conversation history.
+            # The mention check below only decides whether to respond, not whether to record.
             if _is_group:
-                from app.services.channel_session import find_or_create_channel_session
                 _sess = await find_or_create_channel_session(
                     db=db,
                     agent_id=agent_id,
@@ -1170,7 +1171,6 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
     from app.models.audit import ChatMessage
     from app.models.agent import Agent as AgentModel
     from app.models.user import User as UserModel
-    from app.services.channel_session import find_or_create_channel_session
     from app.core.security import hash_password
     from app.database import async_session as _async_session
     from datetime import datetime as _dt, timezone as _tz
