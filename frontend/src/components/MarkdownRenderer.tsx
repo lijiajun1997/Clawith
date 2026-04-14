@@ -53,6 +53,52 @@ function renderInline(text: string): string {
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
 }
 
+function injectToken(url: string): string {
+    if (url.startsWith('/api/agents/')) {
+        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+        if (token && !url.includes('token=')) {
+            url += (url.includes('?') ? '&' : '?') + `token=${token}`;
+        }
+    }
+    return url;
+}
+
+function getFileIcon(fileName: string): string {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    if (ext === 'pdf') return '📄';
+    if (['csv', 'xlsx', 'xls'].includes(ext)) return '📊';
+    if (['docx', 'doc'].includes(ext)) return '📝';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) return '🖼️';
+    if (['zip', 'tar', 'gz', 'rar'].includes(ext)) return '📦';
+    return '📎';
+}
+
+function renderFileReadyBlock(line: string): string | null {
+    // Match: File ready: [filename](url) or File ready: [filename](url)\noptional message
+    const match = line.match(/^File ready:\s*\[([^\]]+)\]\(([^)]+)\)(.*)$/);
+    if (!match) return null;
+    const [, fileName, rawUrl, restContent] = match;
+    const url = injectToken(rawUrl);
+    const icon = getFileIcon(fileName);
+    const fileSize = ''; // Size not available in this format
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes((fileName.split('.').pop() || '').toLowerCase());
+    const displayContent = restContent ? restContent.trim() : '';
+    let html = `<div style="display:inline-flex;align-items:center;gap:8px;background:var(--bg-secondary);border:1px solid var(--border-default);border-radius:8px;padding:8px 12px;margin:6px 0">`;
+    if (isImage) {
+        html += `<img src="${url}" alt="${fileName}" style="width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid var(--border-subtle)" loading="lazy"/>`;
+    } else {
+        html += `<span style="font-size:24px">${icon}</span>`;
+    }
+    html += `<div style="flex:1;min-width:0">`;
+    html += `<div style="font-weight:500;color:var(--text-primary);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">${fileName}</div>`;
+    html += `<a href="${url}" download="${fileName}" style="font-size:11px;color:var(--accent-primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px">下载</a>`;
+    html += `</div></div>`;
+    if (displayContent) {
+        return html + `<p style="margin:4px 0">${displayContent}</p>`;
+    }
+    return html + '</div>';
+}
+
 function markdownToHtml(md: string): string {
     const lines = md.split('\n');
     let html = '';
@@ -177,6 +223,12 @@ function markdownToHtml(md: string): string {
 
         // Regular paragraph
         flushList(); flushBlockquote(); flushTable();
+        // Check for "File ready:" special format first
+        const fileReadyHtml = renderFileReadyBlock(line.trim());
+        if (fileReadyHtml) {
+            html += fileReadyHtml;
+            continue;
+        }
         html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line)}</p>`;
     }
 
