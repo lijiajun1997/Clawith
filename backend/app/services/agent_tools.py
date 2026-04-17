@@ -1674,6 +1674,53 @@ async def _get_computer_os_type(agent_id: uuid.UUID) -> str:
         return "windows"
 
 
+async def _patch_call_model_description(tools: list[dict], agent_id: uuid.UUID) -> list[dict]:
+    """动态更新call_model工具的描述，注入最新的模型列表配置"""
+    import copy
+
+    patched = []
+    for tool in tools:
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        if name == "call_model":
+            # 读取最新配置
+            try:
+                config = await _get_tool_config(agent_id, "call_model")
+                if config and "models" in config:
+                    # 解析模型列表
+                    models = []
+                    model_names = []
+                    for line in config["models"].strip().split("\n"):
+                        line = line.strip()
+                        if not line or "," not in line:
+                            continue
+                        name_part, desc = line.split(",", 1)
+                        clean_name = name_part.strip()
+                        clean_desc = desc.strip()
+                        models.append(f"- {clean_name}: {clean_desc}")
+                        model_names.append(clean_name)
+
+                    # 构建新描述
+                    if models:
+                        models_list_str = "\n".join(models)
+                        new_desc = (
+                            f"调用自定义配置的大模型，支持OpenAI原生多模态格式。"
+                            f"文本文件引用使用{{{{file:/path/to/file.md}}}}，"
+                            f"图片使用images参数数组支持本地路径/URL/base64。"
+                            f"调用结果自动保存为MD文件。可用模型：\n{models_list_str}"
+                        )
+                        # 更新描述和参数提示
+                        tool = copy.deepcopy(tool)
+                        tool["function"]["description"] = new_desc
+                        props = tool["function"].get("parameters", {}).get("properties", {})
+                        if "model_name" in props:
+                            model_names_str = ", ".join(model_names)
+                            props["model_name"]["description"] = f"要调用的模型名称，可选值：{model_names_str}"
+            except Exception:
+                pass
+        patched.append(tool)
+    return patched
+
 def _patch_computer_tool_descriptions(tools: list[dict], os_type: str) -> list[dict]:
     """Rewrite path examples in agentbay_file_transfer to match the agent's OS.
 
@@ -1930,6 +1977,8 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                         result.append(t)
                 # Inject OS-aware paths into computer-related tool descriptions
                 result = _patch_computer_tool_descriptions(result, computer_os_type)
+                # 动态更新call_model工具的描述，注入最新的模型列表
+                result = await _patch_call_model_description(result, agent_id)
                 # Strip msg_type from send_message_to_agent when async A2A is disabled
                 if not _a2a_async:
                     result = _strip_a2a_msg_type(result)
@@ -2121,6 +2170,8 @@ async def _execute_tool_direct(
             result = await _google_search_tool(arguments, agent_id)
         elif tool_name == "bing_search":
             result = await _bing_search_tool(arguments, agent_id)
+        elif tool_name == "call_model":
+            result = await _call_model_tool(arguments, agent_id)
         elif tool_name == "send_feishu_message":
             result = await _send_feishu_message(agent_id, arguments)
         elif tool_name == "send_message_to_agent":
@@ -2284,6 +2335,8 @@ async def execute_tool(
             result = await _jina_search(arguments, agent_id=agent_id)
         elif tool_name == "bing_search":
             result = await _jina_search(arguments, agent_id=agent_id)  # redirect legacy to jina
+        elif tool_name == "call_model":
+            result = await _call_model_tool(arguments, agent_id)
         elif tool_name == "exa_search":
             result = await _exa_search(arguments, agent_id)
         elif tool_name == "duckduckgo_search":
@@ -5899,10 +5952,11 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
     if safety_error:
         return safety_error
 
-    # Working directory: use workspace/ subdir as CWD for code execution
-    # This matches write_file/read_file behavior (relative paths = workspace/)
+    # Working directory: use agent root as CWD for code execution
+    # This matches agent's path perception: workspace/ is directly under root
     agent_root = ws.resolve()
-    workspace_dir = agent_root / "workspace"
+    # 工作目录直接设置为agent根目录，这样workspace/temp路径就正确了
+    workspace_dir = agent_root  # 改为直接使用agent根目录
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine command and file extension
@@ -5912,6 +5966,12 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
     elif language == "bash":
         ext = ".sh"
         cmd_prefix = ["bash"]
+        # 自动处理pip安装命令：将pip install转换为python -m pip install
+        # 支持两种格式：`pip install` 或 `!pip install`（Jupyter风格）
+        import re
+        if re.search(r'^\s*!?\s*pip\s+install', code, re.MULTILINE | re.IGNORECASE):
+            code = re.sub(r'^\s*!?\s*pip\s+', 'python3 -m pip install ', code, count=1, flags=re.MULTILINE | re.IGNORECASE)
+            logger.info(f"[execute_code] Auto-converted pip command to: {code.strip()}")
     elif language == "node":
         ext = ".js"
         cmd_prefix = ["node"]
@@ -5930,21 +5990,44 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         safe_env["WORKSPACE_DIR"] = str(workspace_dir)
         safe_env["AGENT_ROOT"] = str(agent_root)
 
-        # Ensure pip user-installed scripts are on PATH
-        _user_local_bin = str(workspace_dir / ".local" / "bin")
-        safe_env["PATH"] = f"{_user_local_bin}{os.pathsep}{safe_env.get('PATH', '')}"
-
         # Inject shared dependency paths (consistent with sandbox backends)
-        _shared_deps = os.environ.get("SHARED_DEPS_DIR", "/data/shared-deps")
+        from app.config import get_settings
+        settings = get_settings()
+        _shared_deps = settings.SHARED_DEPS_DIR
         _path_sep = os.pathsep  # ';' on Windows, ':' on Linux
         pip_deps = f"{_shared_deps}/pip"
-        existing_pp = safe_env.get("PYTHONPATH", "")
-        safe_env["PYTHONPATH"] = f"{pip_deps}{_path_sep}{existing_pp}" if existing_pp else pip_deps
+
+        # 关键修复：确保共享依赖目录在PYTHONPATH中最优先
+        # 同时保留系统Python路径作为后备
+        _system_python_paths = ["/usr/local/lib/python3.12/site-packages", "/usr/local/lib/python3.12"]
+        _python_paths = [pip_deps] + _system_python_paths
+        safe_env["PYTHONPATH"] = _path_sep.join(_python_paths)
+
         safe_env["NODE_PATH"] = f"{_shared_deps}/node_modules"
         # Point pip temp dir to same filesystem as --target to avoid cross-device rename errors
         _pip_tmp = Path(pip_deps) / ".tmp"
         _pip_tmp.mkdir(parents=True, exist_ok=True)
         safe_env["TMPDIR"] = str(_pip_tmp)
+
+        # 确保共享依赖目录存在
+        Path(_shared_deps).mkdir(parents=True, exist_ok=True)
+        Path(pip_deps).mkdir(parents=True, exist_ok=True)
+        Path(f"{_shared_deps}/node_modules").mkdir(parents=True, exist_ok=True)
+
+        # 关键修复：确保PATH包含所有必要的系统目录，特别是/usr/local/bin（pip所在位置）
+        _user_local_bin = str(workspace_dir / ".local" / "bin")
+        _system_paths = ["/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
+        system_path_entries = [p for p in _system_paths if Path(p).exists()]
+
+        # 构建完整的PATH：用户本地bin -> 系统路径 -> 原有PATH
+        _full_path_entries = [_user_local_bin] + system_path_entries + [safe_env.get('PATH', '')]
+        safe_env["PATH"] = _path_sep.join([p for p in _full_path_entries if p])
+
+        # 设置PIP环境变量，确保pip使用共享依赖目录
+        safe_env["PIP_CONFIG"] = ""
+        safe_env["PIP_TARGET"] = pip_deps
+        safe_env["PIP_CACHE_DIR"] = f"{pip_deps}/cache"
+        safe_env["PIP_LOG_FILE"] = f"{pip_deps}/pip.log"
 
         proc = await asyncio.create_subprocess_exec(
             *cmd_prefix, str(script_path),
@@ -9903,4 +9986,140 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
         return f"{str(e)}"
     except Exception as e:
         logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
-        return f"File transfer failed: {str(e)[:200]}"
+
+async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """调用自定义模型工具 - 使用流式请求增强稳定性"""
+    from app.services.model_call.config import ModelConfig
+    from app.services.model_call.streaming_handler import StreamingRequestHandler
+    from app.services.model_call.session_manager import SessionManager
+    from app.services.model_call.result_handler import ResultHandler
+
+    try:
+        model_name = arguments.get("model_name")
+        prompt = arguments.get("prompt")
+        session_id = arguments.get("session_id")
+        images = arguments.get("images", [])
+
+        if not model_name or not prompt:
+            return json.dumps({
+                "success": False,
+                "error": "model_name and prompt are required parameters"
+            }, ensure_ascii=False)
+
+        # 读取工具配置
+        config = await _get_tool_config(agent_id, "call_model")
+        if not config or "base_url" not in config or "api_key" not in config or "models" not in config:
+            return json.dumps({
+                "success": False,
+                "error": "call_model tool not configured, please fill base_url, api_key and models in admin panel"
+            }, ensure_ascii=False)
+
+        # 直接构造模型配置
+        model_config = ModelConfig(
+            name=model_name,
+            base_url=config["base_url"],
+            api_key=config["api_key"],
+            description=""
+        )
+
+        # 自动生成session_id
+        if not session_id:
+            import uuid, random, string
+            session_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
+        # 构建OpenAI多模态格式消息
+        if images:
+            # 有图片：构建content数组
+            from app.services.model_call.multimodal_handler import MultimodalHandler
+            content_array = [{"type": "text", "text": prompt}]
+
+            # 处理每个图片
+            for image_source in images:
+                try:
+                    image_content = MultimodalHandler.resolve_image_reference(image_source, agent_id)
+                    content_array.append(image_content)
+                except Exception as e:
+                    logger.warning(f"图片处理失败: {image_source}, 错误: {str(e)}")
+
+            current_message = {"role": "user", "content": content_array}
+        else:
+            # 纯文本消息
+            current_message = {"role": "user", "content": prompt}
+
+        # 构建上下文消息
+        context_messages = SessionManager.build_context_messages(session_id, [current_message])
+
+        # 构建请求体
+        request_body = {
+            "messages": context_messages,
+            "temperature": 0.7,
+            "model": model_name
+        }
+
+        # 使用新的流式处理器（带重试和详细状态）
+        handler = StreamingRequestHandler(model_config)
+        result = await handler.stream_chat_completion(
+            request_body=request_body,
+            timeout=180,
+            agent_id=str(agent_id),
+            max_retries=30  # 最多重试30次，增强网络稳定性
+        )
+
+        # 保存会话记录（需要转换格式）
+        if result["success"]:
+            # 构造假的完整响应用于会话保存
+            mock_response = {
+                "choices": [{
+                    "message": {"role": "assistant", "content": result["content"]},
+                    "finish_reason": result["finish_reason"]
+                }],
+                "model": model_name,
+                "usage": {"total_tokens": len(result["content"]) // 4}  # 估算token数
+            }
+            SessionManager.save_interaction(session_id, context_messages, mock_response)
+
+            # 保存结果为MD文件
+            from app.services.model_call.result_handler import ResultHandler
+            result_handler = ResultHandler(agent_id=str(agent_id))
+            md_file_path = result_handler.save_result_as_md(mock_response, model_name)
+
+            # 构建成功响应
+            response_data = {
+                "success": True,
+                "content": result["content"],
+                "model": model_name,
+                "session_id": session_id,
+                "finish_reason": result["finish_reason"],
+                "duration": f"{result['duration']:.2f}s",
+                "retry_count": result["retry_count"],
+                "md_file_path": md_file_path
+            }
+
+            # 添加性能指标（如果有）
+            if result.get("first_byte_time"):
+                response_data["first_byte_time"] = f"{result['first_byte_time']:.2f}s"
+            if result.get("chunk_count"):
+                response_data["chunk_count"] = result["chunk_count"]
+
+            return json.dumps(response_data, ensure_ascii=False, indent=2)
+
+        else:
+            # 失败响应
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "error_type": result.get("error_type"),
+                "error_category": result.get("error_category"),
+                "suggestion": result.get("suggestion"),
+                "retry_count": result.get("retry_count", 0)
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        # 捕获意外错误
+        logger.exception(f"[call_model] 意外错误: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "suggestion": "意外错误，请检查配置和网络连接"
+        }, ensure_ascii=False)

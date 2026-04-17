@@ -672,7 +672,7 @@ BUILTIN_TOOLS = [
             "  memory/     — agent's memory\n"
             "Key rules:\n"
             "1. File paths: use relative paths from agent root — e.g. 'workspace/data.csv', not 'workspace/workspace/data.csv'.\n"
-            "2. Install packages: bash `pip install --target /data/shared-deps/pip <pkg>` (globally persisted).\n"
+            "2. Install packages: bash `pip install <pkg>` or `pip3 install <pkg>` (automatically persisted to shared deps).\n"
             "3. Run script files: bash `python3 script.py` (script must be in workspace dir).\n"
             "4. Timeout: configurable via company settings (default/max from tool config).\n"
             "5. Large output auto-saved to workspace/; use read_file to view full content."
@@ -2094,6 +2094,54 @@ AGENTBAY_TOOLS = [
         },
         "config": {},
         "config_schema": {},
+    },
+    {
+        "name": "call_model",
+        "display_name": "调用自定义模型",
+        "description": "调用自定义配置的大模型，支持联网搜索、长文本推理、多模态识图，自动保存结果为MD文件，支持上下文会话。支持OpenAI原生多模态格式：文本prompt+images数组，自动转换图片为base64格式发送给模型。",
+        "category": "media",
+        "icon": "🤖",
+        "is_default": False,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "model_name": {"type": "string", "description": "要调用的模型名称，可选值：grok-4.1/gemini-3-pro/gemini-3-flash"},
+                "prompt": {"type": "string", "description": "用户输入的问题/指令，支持包含文件引用:{{file:/path/to/file.md}}，系统自动处理文本文件内容"},
+                "images": {"type": "array", "items": {"type": "string"}, "description": "可选的图片列表，支持：本地路径(workspace/image.png)、URL(http://...)、base64(data:image/...)。系统自动转换为OpenAI格式并发送给模型"},
+                "session_id": {"type": "string", "description": "可选会话ID，传入则拼接历史上下文继续对话，不传自动创建新会话"}
+            },
+            "required": ["model_name", "prompt"],
+        },
+        "config": {
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-1234567890abcdefghijklmnopqrstuvwxyz",
+            "models": "grok-4.1,默认模型，支持联网搜索\ngemini-3-pro,长文本推理/知识库，1M上下文\ngemini-3-flash,多模态识图专用"
+        },
+        "config_schema": {
+            "fields": [
+                {
+                    "key": "base_url",
+                    "label": "API基础地址",
+                    "type": "text",
+                    "default": "",
+                    "placeholder": "例如：https://你的中转服务地址/v1"
+                },
+                {
+                    "key": "api_key",
+                    "label": "API密钥",
+                    "type": "password",
+                    "default": "",
+                    "placeholder": "你的API Key"
+                },
+                {
+                    "key": "models",
+                    "label": "模型列表（每行一个，格式：模型名称,模型描述）",
+                    "type": "textarea",
+                    "default": "grok-4.1,默认模型，支持联网搜索\ngemini-3-pro,长文本推理/知识库，1M上下文\ngemini-3-flash,多模态识图专用",
+                    "placeholder": "每行一个模型，格式：模型名称,模型描述\n例如：\ngpt-4o,多模态大模型\nclaude-3-opus,长上下文推理"
+                },
+            ]
+        },
     },
 ]
 

@@ -109,16 +109,18 @@ class Settings(BaseSettings):
     # Exa AI (Search API)
     EXA_API_KEY: str = ""
 
-
     # Sandbox configuration
     SANDBOX_TYPE: SandboxType = SandboxType.SUBPROCESS
     SANDBOX_API_KEY: str = ""
     SANDBOX_API_URL: str = ""
     SANDBOX_CPU_LIMIT: str = "0.5"
     SANDBOX_MEMORY_LIMIT: str = "256m"
-    SANDBOX_ALLOW_NETWORK: bool = False
+    SANDBOX_ALLOW_NETWORK: bool = True  # 允许网络访问，支持pip install
     SANDBOX_DEFAULT_TIMEOUT: int = 60
     SANDBOX_MAX_TIMEOUT: int = 300
+
+    # 共享依赖目录，所有agent共享pip安装的Python包
+    SHARED_DEPS_DIR: str = "/data/shared-deps"
 
     model_config = {
         "env_file": [".env", "../.env"],

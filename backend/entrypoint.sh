@@ -134,5 +134,13 @@ else
     echo "[entrypoint] Alembic migrations completed successfully."
 fi
 
-echo "[entrypoint] Step 3: Starting uvicorn..."
+echo "[entrypoint] Step 3: Syncing shared Python dependencies..."
+# 自动同步系统Python包到共享依赖目录，确保agent代码执行环境可以访问
+if [ -f "/app/scripts/sync_shared_deps.py" ]; then
+    python /app/scripts/sync_shared_deps.py || echo "[entrypoint] Warning: Dependency sync failed, but continuing..."
+else
+    echo "[entrypoint] Warning: sync_shared_deps.py not found, skipping dependency sync"
+fi
+
+echo "[entrypoint] Step 4: Starting uvicorn..."
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000

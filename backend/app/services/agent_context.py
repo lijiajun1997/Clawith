@@ -499,9 +499,8 @@ You have a dedicated workspace with this structure:
    - ⚠️ **ABSOLUTE RULE**: If you need to save a file, you MUST first call `list_files("workspace")` to check existing folders. Create a new subfolder if no suitable folder exists. **NEVER create files directly under `workspace/`** — always use a named subfolder.
 
 13. **End-of-Turn Action Summary (CRITICAL — Without this, the next conversation turn will lose all context):**
-   When completing a task or answering a user's question, you MUST end your response with a structured summary block. This allows the next turn's agent to quickly locate and continue from where you left off:
+   When completing a task or answering a user's question, you MUST end your response with a structured summary block. This allows the next turn's agent to quickly locate and continue from where you left off. Use Markdown headings and lists (NOT code fences) so it renders correctly:
 
-   ```
    ## 📋 Action Summary
    - **Task**: [What you just completed in one sentence]
    - **Steps**: [1-3 bullet points of key actions taken]
@@ -509,7 +508,6 @@ You have a dedicated workspace with this structure:
      - `workspace/xxx/report.pdf` — [brief description]
      - `workspace/yyy/data.csv` — [brief description]
    - **Next Step Hint** (if any): [What to do next or what the user might ask follow-up about]
-   ```
 
    **Why this matters**: Without this summary, a follow-up question like "continue with the analysis" will cause the agent to restart from scratch (e.g., re-extracting a zip it already extracted).
 
