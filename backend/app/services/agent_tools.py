@@ -2301,7 +2301,7 @@ async def execute_tool(
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for find_files"
-            result = _find_files(
+            result = await _find_files_async(
                 ws,
                 pattern,
                 path=arguments.get("path", "."),
@@ -3971,7 +3971,7 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
 
 
 def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
-    """Find files matching glob patterns.
+    """Find files matching glob patterns (optimized version).
 
     Args:
         ws: Workspace root path
@@ -3982,6 +3982,10 @@ def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None =
     Returns:
         List of matching files with sizes
     """
+    import os
+    import fnmatch
+    from pathlib import Path
+
     # Handle enterprise_info/ as shared directory (tenant-scoped)
     if path and path.startswith("enterprise_info"):
         if tenant_id:
@@ -4002,37 +4006,110 @@ def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None =
     if not search_path.exists():
         return f"Directory not found: {path}"
 
+    # Convert glob pattern to fnmatch pattern
+    is_recursive = "**" in pattern
+    max_depth = 3 if is_recursive else 1  # Reduced from 5 to 3 for better performance
+    max_results = 200  # Process up to 200 results, then stop
+
     try:
-        matches = list(search_path.glob(pattern))
-    except Exception as e:
-        return f"Invalid glob pattern: {e}"
+        matches = []
+        dir_count = 0
+        file_count = 0
 
-    if not matches:
-        return f"No files matching pattern: {pattern}"
+        # Use os.walk for better performance
+        for root, dirs, files in os.walk(search_path):
+            # Early exit if we have enough results
+            if len(matches) >= max_results:
+                break
 
-    # Sort by modification time (most recent first)
-    matches.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
+            # Check depth limit for recursive searches
+            if is_recursive:
+                try:
+                    rel_depth = len(Path(root).relative_to(search_path).parts)
+                    if rel_depth > max_depth:
+                        # Don't descend deeper
+                        dirs[:] = []
+                        continue
+                except ValueError:
+                    continue
 
-    results = []
-    dir_count = 0
-    file_count = 0
+            # Match files
+            for filename in files:
+                # Early exit
+                if len(matches) >= max_results:
+                    break
 
-    for m in matches[:100]:  # Limit to 100 results
-        rel_path = m.relative_to(ws_for_relative)
-        if m.is_dir():
-            dir_count += 1
-            results.append(f"📁 {rel_path}/")
-        else:
-            file_count += 1
-            try:
-                size = m.stat().st_size
+                # Simplified pattern matching
+                search_pattern = pattern.replace("**/", "").replace("**", "")
+                if fnmatch.fnmatch(filename, search_pattern):
+                    full_path = Path(root) / filename
+                    try:
+                        # Get all metadata in one stat call
+                        stat_info = full_path.stat()
+                        rel_path = full_path.relative_to(ws_for_relative)
+
+                        # Store as tuple: (path, is_dir, size, mtime)
+                        matches.append((str(rel_path), False, stat_info.st_size, stat_info.st_mtime))
+                        file_count += 1
+                    except (OSError, ValueError):
+                        pass
+
+            # Match directories (only in top level)
+            if not is_recursive or root == str(search_path):
+                for dirname in dirs:
+                    if len(matches) >= max_results:
+                        break
+                    search_pattern = pattern.replace("**/", "").replace("**", "")
+                    if fnmatch.fnmatch(dirname, search_pattern):
+                        full_path = Path(root) / dirname
+                        try:
+                            rel_path = full_path.relative_to(ws_for_relative)
+                            matches.append((str(rel_path), True, 0, 0))
+                            dir_count += 1
+                        except (OSError, ValueError):
+                            pass
+
+            # For non-recursive search, only search current directory
+            if not is_recursive:
+                break
+
+        if not matches:
+            return f"No files matching pattern: {pattern}"
+
+        # Sort by modification time (most recent first) - using cached mtime
+        matches.sort(key=lambda x: x[3], reverse=True)
+
+        # Format results (limited to 100 for display)
+        results = []
+        display_count = min(100, len(matches))
+        for rel_path, is_dir, size, mtime in matches[:display_count]:
+            if is_dir:
+                results.append(f"📁 {rel_path}/")
+            else:
                 size_str = f"{size//1024}KB" if size > 1024 else f"{size}B"
                 results.append(f"📄 {rel_path} ({size_str})")
-            except Exception:
-                results.append(f"📄 {rel_path}")
 
-    header = f"📂 Found {len(matches)} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}':\n"
-    return header + "\n".join(results)
+        total_found = len(matches)
+        has_more = total_found > display_count
+        header = f"📂 Found {total_found} item(s) ({dir_count} dirs, {file_count} files) matching '{pattern}'"
+        if has_more:
+            header += f" (showing first {display_count})"
+
+        return header + ":\n" + "\n".join(results)
+
+    except Exception as e:
+        logger.exception(f"[find_files] Error: {str(e)}")
+        return f"Error searching for files: {str(e)}"
+
+
+async def _find_files_async(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
+    """Async version of find_files for better performance.
+
+    This version runs the file system operations in a thread pool to avoid
+    blocking the event loop during large directory scans.
+    """
+    import asyncio
+    return await asyncio.to_thread(_find_files, ws, pattern, path, tenant_id)
 
 
 async def _manage_tasks(
