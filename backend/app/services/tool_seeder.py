@@ -1876,6 +1876,69 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    # ── SEC EDGAR Advanced Tool ───────────────────────────────────────────────────
+    {
+        "name": "sec_edgar_advanced",
+        "display_name": "SEC: EDGAR Database",
+        "description": "Query SEC EDGAR database for company filings and financial data. Access US Securities and Exchange Commission filings including 10-K annual reports, 10-Q quarterly reports, 8-K current reports, and insider trading data. Search by company ticker, get company information, and retrieve financial metrics.",
+        "category": "finance",
+        "icon": "📊",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "get_cik_by_ticker",
+                        "get_company_info",
+                        "search_companies",
+                        "get_recent_filings",
+                        "get_company_facts",
+                        "get_filings_summary"
+                    ],
+                    "description": "Operation to perform"
+                },
+                # get_cik_by_ticker
+                "ticker": {
+                    "type": "string",
+                    "description": "Stock ticker symbol (e.g., AAPL, NVDA, MSFT)"
+                },
+                # get_company_info
+                "identifier": {
+                    "type": "string",
+                    "description": "Company ticker symbol or CIK number"
+                },
+                # search_companies
+                "query": {
+                    "type": "string",
+                    "description": "Company name search query"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results to return (default: 10)",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 100
+                },
+                # get_recent_filings
+                "form_type": {
+                    "type": "string",
+                    "description": "Filter by form type (e.g., 10-K, 10-Q, 8-K, 4)"
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Number of days to look back (default: 30)",
+                    "default": 30,
+                    "minimum": 1,
+                    "maximum": 365
+                },
+            },
+            "required": ["action"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 # ── AgentBay Tools ──────────────────────────────────────────────────────────

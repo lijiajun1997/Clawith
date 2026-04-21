@@ -2487,6 +2487,9 @@ async def execute_tool(
         # ── Unified Fetch Advanced Tool ──
         elif tool_name == "fetch_advanced":
             result = await fetch_advanced(arguments, agent_id, user_id)
+        # ── SEC EDGAR Advanced Tool ──
+        elif tool_name == "sec_edgar_advanced":
+            result = await sec_edgar_advanced(arguments, agent_id, user_id)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -10730,6 +10733,119 @@ async def fetch_advanced(arguments: dict, agent_id: uuid.UUID | None = None, cre
 
     except Exception as e:
         logger.exception(f"[fetch_advanced] Error: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }, ensure_ascii=False, indent=2)
+
+
+async def sec_edgar_advanced(arguments: dict, agent_id: uuid.UUID | None = None, creator_id: uuid.UUID | None = None) -> str:
+    """统一 SEC EDGAR 工具 - 查询美国证券交易委员会数据"""
+    from app.services.sec_edgar_server.sec_tools import SECEdgarTools
+
+    try:
+        action = arguments.get("action")
+
+        if not action:
+            return json.dumps({
+                "success": False,
+                "error": "action is required"
+            }, ensure_ascii=False)
+
+        # Initialize SEC EDGAR tools
+        try:
+            sec_tools = SECEdgarTools()
+        except ImportError as e:
+            return json.dumps({
+                "success": False,
+                "error": "edgartools library not available",
+                "message": "Please install edgartools: pip install edgartools"
+            }, ensure_ascii=False, indent=2)
+
+        # Company tools
+        if action == "get_cik_by_ticker":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                return json.dumps({
+                    "success": False,
+                    "error": "ticker is required"
+                }, ensure_ascii=False)
+
+            result = sec_tools.get_cik_by_ticker(ticker)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "get_company_info":
+            identifier = arguments.get("identifier")
+            if not identifier:
+                return json.dumps({
+                    "success": False,
+                    "error": "identifier (ticker or CIK) is required"
+                }, ensure_ascii=False)
+
+            result = sec_tools.get_company_info(identifier)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "search_companies":
+            query = arguments.get("query")
+            if not query:
+                return json.dumps({
+                    "success": False,
+                    "error": "query is required"
+                }, ensure_ascii=False)
+
+            limit = arguments.get("limit", 10)
+            result = sec_tools.search_companies(query, limit)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "get_recent_filings":
+            identifier = arguments.get("identifier")
+            form_type = arguments.get("form_type")
+            days = arguments.get("days", 30)
+            limit = arguments.get("limit", 40)
+
+            result = sec_tools.get_recent_filings(identifier, form_type, days, limit)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "get_company_facts":
+            identifier = arguments.get("identifier")
+            if not identifier:
+                return json.dumps({
+                    "success": False,
+                    "error": "identifier (ticker or CIK) is required"
+                }, ensure_ascii=False)
+
+            result = sec_tools.get_company_facts(identifier)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "get_filings_summary":
+            identifier = arguments.get("identifier")
+            if not identifier:
+                return json.dumps({
+                    "success": False,
+                    "error": "identifier (ticker or CIK) is required"
+                }, ensure_ascii=False)
+
+            limit = arguments.get("limit", 20)
+            result = sec_tools.get_filings_summary(identifier, limit)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"Unknown action: {action}",
+                "available_actions": [
+                    "get_cik_by_ticker",
+                    "get_company_info",
+                    "search_companies",
+                    "get_recent_filings",
+                    "get_company_facts",
+                    "get_filings_summary"
+                ]
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.exception(f"[sec_edgar_advanced] Error: {str(e)}")
         return json.dumps({
             "success": False,
             "error": str(e),
