@@ -1815,6 +1815,67 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    # ── Unified Fetch Advanced Tool ───────────────────────────────────────────────
+    {
+        "name": "fetch_advanced",
+        "display_name": "Web: URL Fetcher",
+        "description": "Unified web scraping toolkit. Fetch URLs from the internet and convert HTML to readable Markdown. Supports fetching web content, checking robots.txt compliance, and handling large pages with pagination. Includes intelligent content extraction and simplification.",
+        "category": "web",
+        "icon": "🌐",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["fetch", "check_robots"],
+                    "description": "Operation to perform"
+                },
+                # Fetch action parameters
+                "url": {
+                    "type": "string",
+                    "description": "URL to fetch (e.g., 'https://example.com' or 'example.com')"
+                },
+                "max_length": {
+                    "type": "integer",
+                    "description": "Maximum characters to return (default: 5000, max: 100000)",
+                    "default": 5000,
+                    "minimum": 1,
+                    "maximum": 100000
+                },
+                "start_index": {
+                    "type": "integer",
+                    "description": "Start from this character index (for pagination, default: 0)",
+                    "default": 0,
+                    "minimum": 0
+                },
+                "raw": {
+                    "type": "boolean",
+                    "description": "Get raw HTML instead of converted Markdown (default: false)",
+                    "default": False
+                },
+                "check_robots": {
+                    "type": "boolean",
+                    "description": "Check robots.txt before fetching (default: true)",
+                    "default": True
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Request timeout in seconds (default: 30)",
+                    "default": 30,
+                    "minimum": 5,
+                    "maximum": 120
+                },
+                "user_agent": {
+                    "type": "string",
+                    "description": "Custom User-Agent string (optional)"
+                },
+            },
+            "required": ["action", "url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
 ]
 
 # ── AgentBay Tools ──────────────────────────────────────────────────────────

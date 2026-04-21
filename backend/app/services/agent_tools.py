@@ -2484,6 +2484,9 @@ async def execute_tool(
         # ── Unified Word Advanced Tool ──
         elif tool_name == "word_advanced":
             result = await word_advanced(arguments, agent_id, user_id)
+        # ── Unified Fetch Advanced Tool ──
+        elif tool_name == "fetch_advanced":
+            result = await fetch_advanced(arguments, agent_id, user_id)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -10517,3 +10520,141 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
     finally:
         # 恢复原始工作目录
         os.chdir(original_cwd)
+
+
+async def fetch_advanced(arguments: dict, agent_id: uuid.UUID | None = None, creator_id: uuid.UUID | None = None) -> str:
+    """统一网页抓取工具 - 支持 URL 抓取和 HTML 转 Markdown"""
+    from app.services.fetch_server.fetch_tools import (
+        fetch_url,
+        check_may_autonomously_fetch_url,
+        sanitize_url,
+        is_valid_url,
+        truncate_content
+    )
+
+    try:
+        action = arguments.get("action")
+        url = arguments.get("url", "")
+
+        if not action:
+            return json.dumps({
+                "success": False,
+                "error": "action is required"
+            }, ensure_ascii=False)
+
+        if action == "fetch":
+            # 验证并清理 URL
+            if not url:
+                return json.dumps({
+                    "success": False,
+                    "error": "url is required"
+                }, ensure_ascii=False)
+
+            url = sanitize_url(url)
+
+            if not is_valid_url(url):
+                return json.dumps({
+                    "success": False,
+                    "error": f"Invalid URL: {url}"
+                }, ensure_ascii=False)
+
+            # 获取参数
+            max_length = arguments.get("max_length", 5000)
+            start_index = arguments.get("start_index", 0)
+            raw = arguments.get("raw", False)
+            check_robots = arguments.get("check_robots", True)
+            timeout = arguments.get("timeout", 30)
+
+            # User agent
+            user_agent = arguments.get("user_agent", "ModelContextProtocol/1.0 (Clawith; +https://github.com/lijiajun1997/Clawith)")
+
+            # 检查 robots.txt（可选）
+            if check_robots:
+                allowed, error_msg = await check_may_autonomously_fetch_url(url, user_agent)
+                if not allowed:
+                    return json.dumps({
+                        "success": False,
+                        "error": "robots.txt restriction",
+                        "message": error_msg,
+                        "url": url
+                    }, ensure_ascii=False, indent=2)
+
+            # 抓取 URL
+            content, prefix, error_msg = await fetch_url(
+                url,
+                user_agent,
+                force_raw=raw,
+                timeout=timeout
+            )
+
+            if error_msg:
+                return json.dumps({
+                    "success": False,
+                    "error": error_msg,
+                    "url": url
+                }, ensure_ascii=False, indent=2)
+
+            # 截断内容
+            truncated_content, has_more = truncate_content(content, max_length, start_index)
+
+            result = {
+                "success": True,
+                "url": url,
+                "content": truncated_content,
+                "has_more": has_more,
+                "original_length": len(content),
+                "start_index": start_index,
+                "actual_length": len(truncated_content)
+            }
+
+            if prefix:
+                result["prefix"] = prefix
+
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "check_robots":
+            # 检查 robots.txt
+            if not url:
+                return json.dumps({
+                    "success": False,
+                    "error": "url is required"
+                }, ensure_ascii=False)
+
+            url = sanitize_url(url)
+
+            if not is_valid_url(url):
+                return json.dumps({
+                    "success": False,
+                    "error": f"Invalid URL: {url}"
+                }, ensure_ascii=False)
+
+            user_agent = arguments.get("user_agent", "*")
+            allowed, error_msg = await check_may_autonomously_fetch_url(url, user_agent)
+
+            from app.services.fetch_server.fetch_tools import get_robots_txt_url
+            robots_url = get_robots_txt_url(url)
+
+            return json.dumps({
+                "success": True,
+                "url": url,
+                "robots_txt_url": robots_url,
+                "allowed": allowed,
+                "message": error_msg if error_msg else "Allowed by robots.txt"
+            }, ensure_ascii=False, indent=2)
+
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"Unknown action: {action}",
+                "available_actions": [
+                    "fetch", "check_robots"
+                ]
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.exception(f"[fetch_advanced] Error: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }, ensure_ascii=False, indent=2)
