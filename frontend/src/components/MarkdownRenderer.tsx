@@ -13,46 +13,6 @@ function escapeHtml(str: string): string {
         .replace(/"/g, '&quot;');
 }
 
-function renderInline(text: string): string {
-    return text
-        // Bold + italic
-        .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
-        // Bold
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/__(.*?)__/g, '<strong>$1</strong>')
-        // Italic
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/_(.*?)_/g, '<em>$1</em>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
-        // Images
-        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${alt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`;
-        })
-        // Links
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
-            // Avoid matching images that snuck through or weird nested stuff
-            if (match.startsWith('!')) return match;
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            return `<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary)">${text}</a>`;
-        })
-        // Strikethrough
-        .replace(/~~(.*?)~~/g, '<del>$1</del>');
-}
-
 function injectToken(url: string): string {
     if (url.startsWith('/api/agents/')) {
         const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
@@ -74,24 +34,23 @@ function getFileIcon(fileName: string): string {
 }
 
 function renderFileReadyBlock(line: string): string | null {
-    // Match: File ready: [filename](url) or File ready: [filename](url)\noptional message
     const match = line.match(/^File ready:\s*\[([^\]]+)\]\(([^)]+)\)(.*)$/);
     if (!match) return null;
     const [, fileName, rawUrl, restContent] = match;
     const url = injectToken(rawUrl);
+    const safeName = escapeHtml(fileName);
     const icon = getFileIcon(fileName);
-    const fileSize = ''; // Size not available in this format
     const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes((fileName.split('.').pop() || '').toLowerCase());
     const displayContent = restContent ? restContent.trim() : '';
-    let html = `<div style="display:inline-flex;align-items:center;gap:8px;background:var(--bg-secondary);border:1px solid var(--border-default);border-radius:8px;padding:8px 12px;margin:6px 0">`;
+    let html = `<div style="display:inline-flex;align-items:center;gap:10px;background:var(--bg-secondary);border:1px solid #2563eb;border-left:4px solid #2563eb;border-radius:8px;padding:10px 14px;margin:6px 0;min-width:200px">`;
     if (isImage) {
-        html += `<img src="${url}" alt="${fileName}" style="width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid var(--border-subtle)" loading="lazy"/>`;
+        html += `<img src="${url}" alt="${safeName}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid var(--border-subtle)" loading="lazy"/>`;
     } else {
-        html += `<span style="font-size:24px">${icon}</span>`;
+        html += `<span style="font-size:22px;flex-shrink:0">${icon}</span>`;
     }
     html += `<div style="flex:1;min-width:0">`;
-    html += `<div style="font-weight:500;color:var(--text-primary);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px">${fileName}</div>`;
-    html += `<a href="${url}" download="${fileName}" style="font-size:11px;color:var(--accent-primary);text-decoration:none;display:inline-flex;align-items:center;gap:4px">下载</a>`;
+    html += `<div style="font-weight:500;color:var(--text-primary);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px" title="${safeName}">${safeName}</div>`;
+    html += `<a href="${url}" download="${safeName}" style="font-size:12px;color:#2563eb;text-decoration:underline;text-underline-offset:2px;font-weight:500">下载</a>`;
     html += `</div></div>`;
     if (displayContent) {
         return html + `<p style="margin:4px 0">${displayContent}</p>`;
@@ -183,7 +142,6 @@ function markdownToHtml(md: string): string {
         if (line.includes('|')) {
             flushList(); flushBlockquote();
             const cols = line.split('|').map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
-            // Separator row
             if (cols.every(c => /^[-:]+$/.test(c))) {
                 tableHeader = true;
                 continue;
@@ -192,7 +150,6 @@ function markdownToHtml(md: string): string {
                 html += '<table style="border-collapse:collapse;margin:8px 0;font-size:13px;width:100%"><thead>';
                 inTable = true;
                 tableHeader = false;
-                // This is the header row
                 html += '<tr>' + cols.map(c => `<th style="border:1px solid rgba(128,128,128,0.4);padding:6px 10px;background:var(--bg-secondary);text-align:left;font-weight:600">${renderInline(c)}</th>`).join('') + '</tr>';
                 html += '</thead><tbody>';
             } else {
@@ -223,7 +180,6 @@ function markdownToHtml(md: string): string {
 
         // Regular paragraph
         flushList(); flushBlockquote(); flushTable();
-        // Check for "File ready:" special format first
         const fileReadyHtml = renderFileReadyBlock(line.trim());
         if (fileReadyHtml) {
             html += fileReadyHtml;
@@ -232,13 +188,77 @@ function markdownToHtml(md: string): string {
         html += `<p style="margin:4px 0;line-height:1.7">${renderInline(line)}</p>`;
     }
 
-    // Close any open structures
     flushList(); flushBlockquote(); flushTable();
     if (inCodeBlock) {
         html += `<pre style="background:var(--bg-secondary);border-radius:8px;padding:12px 16px"><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
     }
 
     return html;
+}
+
+/**
+ * Renders inline Markdown (bold, italic, code, links, images) with FULL protection
+ * of link/image text content from other inline rules.
+ *
+ * Order of operations:
+ * 1. Capture all links/images and protect their text with placeholders
+ * 2. Apply bold, italic, code, strikethrough on the remaining text
+ * 3. Restore link/image HTML with original text (unescaped — browser will escape on render)
+ */
+function renderInline(text: string): string {
+    const protectedSegments: string[] = [];
+
+    // Step 1: protect link and image text by extracting them into placeholders
+    // The placeholder is a string that won't be touched by subsequent regexes
+    let step1 = text
+        .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
+            const safeAlt = escapeHtml(alt);
+            let finalUrl = url;
+            if (finalUrl.startsWith('/api/agents/')) {
+                const token = localStorage.getItem('token');
+                if (token && !finalUrl.includes('token=')) {
+                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                }
+            }
+            const idx = protectedSegments.length;
+            protectedSegments.push(`<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${safeAlt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
+            return `\x00IMG${idx}\x00`;
+        })
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+            if (match.startsWith('!')) return match; // already handled above
+            let finalUrl = url;
+            if (finalUrl.startsWith('/api/agents/')) {
+                const token = localStorage.getItem('token');
+                if (token && !finalUrl.includes('token=')) {
+                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                }
+            }
+            const idx = protectedSegments.length;
+            protectedSegments.push(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;text-underline-offset:2px">${linkText}</a>`);
+            return `\x00LINK${idx}\x00`;
+        });
+
+    // Step 2: apply all inline formatting to the remaining text
+    let step2 = step1
+        // Bold + italic
+        .replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>')
+        // Bold
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/__(.*?)__/g, '<strong>$1</strong>')
+        // Italic — single * only, NOT underscore (underscore in filenames breaks links)
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        // Inline code
+        .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
+        // Strikethrough
+        .replace(/~~(.*?)~~/g, '<del>$1</del>');
+
+    // Step 3: restore protected link/image HTML
+    for (let i = 0; i < protectedSegments.length; i++) {
+        step2 = step2.replace(`\x00IMG${i}\x00`, protectedSegments[i]);
+        step2 = step2.replace(`\x00LINK${i}\x00`, protectedSegments[i]);
+    }
+
+    return step2;
 }
 
 interface MarkdownRendererProps {
