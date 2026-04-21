@@ -141,13 +141,19 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS ix_users_external_id ON users(external_id)")
 
     # Add unique constraints (partial indexes - allow multiple NULL values)
+    # Note: email column may not exist in users table (moved to identities table in newer schemas)
     op.execute("""
         DO $$
         BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_tenant_email_unique'
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'email'
             ) THEN
-                CREATE UNIQUE INDEX ix_users_tenant_email_unique ON users(tenant_id, email) WHERE email IS NOT NULL;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_tenant_email_unique'
+                ) THEN
+                    CREATE UNIQUE INDEX ix_users_tenant_email_unique ON users(tenant_id, email) WHERE email IS NOT NULL;
+                END IF;
             END IF;
         END $$
     """)
