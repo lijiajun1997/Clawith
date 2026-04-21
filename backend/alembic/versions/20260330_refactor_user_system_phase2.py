@@ -62,12 +62,15 @@ def upgrade() -> None:
  
     # 5. Data migration (idempotent)
     # Only migrate users that don't have an identity_id yet
-    # Note: In newer schemas, email/primary_mobile may have been moved to identities table
+    # Note: In newer schemas, email/primary_mobile/username/password_hash may have been moved to identities table
     # Check which columns exist before querying
     user_columns = [col['name'] for col in inspector.get_columns('users')]
 
-    select_columns = ['id', 'username', 'password_hash', 'email_verified', 'is_active', 'role']
-    optional_columns = ['email', 'primary_mobile']
+    # Base required columns
+    select_columns = ['id']
+
+    # Optional columns that may have been moved to identities table in newer schemas
+    optional_columns = ['username', 'password_hash', 'email_verified', 'is_active', 'role', 'email', 'primary_mobile']
     for col in optional_columns:
         if col in user_columns:
             select_columns.append(col)
@@ -95,20 +98,17 @@ def upgrade() -> None:
  
         for row in users_data:
             # Handle dynamic column list based on schema
-            u_id = row[0]
-            u_username = row[1]
-            u_pwd = row[2]
-            u_email_verified = row[3]
-            u_active = row[4]
-            u_role = row[5]
+            # Build dict mapping column names to values
+            row_dict = dict(zip(select_columns, row))
 
-            # Optional columns (may be None if not present in result)
-            u_email = row[6] if len(row) > 6 and 'email' in select_columns else None
-            u_phone = row[7] if len(row) > 7 and 'primary_mobile' in select_columns else None
-
-            # Map primary_mobile to phone if exists
-            if u_phone is None and 'primary_mobile' in select_columns and len(row) > 6:
-                u_phone = row[select_columns.index('primary_mobile')]
+            u_id = row_dict.get('id')
+            u_username = row_dict.get('username')
+            u_pwd = row_dict.get('password_hash')
+            u_email_verified = row_dict.get('email_verified')
+            u_active = row_dict.get('is_active')
+            u_role = row_dict.get('role')
+            u_email = row_dict.get('email')
+            u_phone = row_dict.get('primary_mobile')
 
             # Check if this person already has an identity
             found_id = None

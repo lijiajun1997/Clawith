@@ -32,7 +32,7 @@ def upgrade() -> None:
     # 2. Backfill: create Participant for every existing User
     conn.execute(sa.text("""
         INSERT INTO participants (id, type, ref_id, display_name, avatar_url)
-        SELECT gen_random_uuid(), 'user', id, COALESCE(display_name, username), avatar_url
+        SELECT gen_random_uuid(), 'user', id, display_name, avatar_url
         FROM users
         ON CONFLICT DO NOTHING
     """))
