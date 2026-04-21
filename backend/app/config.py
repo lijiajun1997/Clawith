@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     JINA_API_KEY: str = ""
 
     # LLM Retry Strategy
-    LLM_RETRY_MAX: int = 10  # Max retry attempts (alternates primary/fallback), 0 to disable
+    LLM_RETRY_MAX: int = 30  # Max retry attempts (alternates primary/fallback), 0 to disable
 
     # Exa AI (Search API)
     EXA_API_KEY: str = ""

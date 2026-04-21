@@ -13,7 +13,7 @@ from app.database import Base
 # agent.context_window_size is None or 0 across all channels.
 # Centralizing this constant prevents inconsistent fallback values
 # (see: https://github.com/dataelement/Clawith/issues/238).
-DEFAULT_CONTEXT_WINDOW_SIZE = 100
+DEFAULT_CONTEXT_WINDOW_SIZE = 50
 
 
 class Agent(Base):
