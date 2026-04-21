@@ -507,7 +507,20 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             # For P2P chats: session_conv_id will be set later (after user resolution)
             # Group chat session was already created above (before mention check)
-            _session_for_history = session_conv_id if _is_group else conv_id
+            if _is_group:
+                _session_for_history = session_conv_id
+            else:
+                # For P2P chats, pre-resolve existing session to get the correct conversation_id for history lookup
+                # ChatMessage.conversation_id stores the ChatSession UUID, not the external_conv_id
+                from app.models.chat_session import ChatSession
+                _pre_sess_r = await db.execute(
+                    select(ChatSession).where(
+                        ChatSession.agent_id == agent_id,
+                        ChatSession.external_conv_id == conv_id,
+                    )
+                )
+                _pre_sess = _pre_sess_r.scalar_one_or_none()
+                _session_for_history = str(_pre_sess.id) if _pre_sess else conv_id
 
             # Load chat history for context
             from app.models.audit import ChatMessage
