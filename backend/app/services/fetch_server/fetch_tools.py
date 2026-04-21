@@ -67,7 +67,7 @@ async def check_may_autonomously_fetch_url(
         Tuple of (allowed: bool, error_message: str)
     """
     try:
-        from httpx import AsyncClient, HTTPError
+        from httpx import AsyncClient, HTTPError, ConnectError, ConnectTimeout, TimeoutException
         from protego import Protego
 
         robot_txt_url = get_robots_txt_url(url)
@@ -79,13 +79,20 @@ async def check_may_autonomously_fetch_url(
                     follow_redirects=True,
                     headers={"User-Agent": user_agent},
                 )
-            except HTTPError:
-                return False, f"Failed to fetch robots.txt {robot_txt_url} due to a connection issue"
+            except (ConnectError, ConnectTimeout, TimeoutException) as e:
+                # Connection issues - allow but with warning
+                logger.warning(f"[fetch_server] Connection issue accessing robots.txt {robot_txt_url}: {str(e)}")
+                return True, f"Warning: Could not access robots.txt due to connection issue, proceeding anyway"
+            except HTTPError as e:
+                # Other HTTP errors - allow but with warning
+                logger.warning(f"[fetch_server] HTTP error accessing robots.txt {robot_txt_url}: {str(e)}")
+                return True, f"Warning: HTTP error accessing robots.txt, proceeding anyway"
 
             if response.status_code in (401, 403):
+                # Explicitly forbidden
                 return False, f"robots.txt ({robot_txt_url}) forbids access (status {response.status_code})"
             elif 400 <= response.status_code < 500:
-                # No robots.txt or client error, assume allowed
+                # No robots.txt or other client error, assume allowed
                 return True, ""
 
             robot_txt = response.text
