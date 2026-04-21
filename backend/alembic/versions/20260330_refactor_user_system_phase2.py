@@ -62,9 +62,21 @@ def upgrade() -> None:
  
     # 5. Data migration (idempotent)
     # Only migrate users that don't have an identity_id yet
-    result = conn.execute(sa.text("""
-        SELECT id, email, primary_mobile, username, password_hash, email_verified, is_active, role 
-        FROM users 
+    # Note: In newer schemas, email/primary_mobile may have been moved to identities table
+    # Check which columns exist before querying
+    user_columns = [col['name'] for col in inspector.get_columns('users')]
+
+    select_columns = ['id', 'username', 'password_hash', 'email_verified', 'is_active', 'role']
+    optional_columns = ['email', 'primary_mobile']
+    for col in optional_columns:
+        if col in user_columns:
+            select_columns.append(col)
+
+    select_clause = ', '.join(select_columns)
+
+    result = conn.execute(sa.text(f"""
+        SELECT {select_clause}
+        FROM users
         WHERE identity_id IS NULL
     """))
     users_data = result.fetchall()
@@ -82,19 +94,33 @@ def upgrade() -> None:
             if r[3]: identity_map[f"u:{r[3]}"] = r[0]
  
         for row in users_data:
-            u_id, u_email, u_phone, u_username, u_pwd, u_email_verified, u_active, u_role = row
-            
+            # Handle dynamic column list based on schema
+            u_id = row[0]
+            u_username = row[1]
+            u_pwd = row[2]
+            u_email_verified = row[3]
+            u_active = row[4]
+            u_role = row[5]
+
+            # Optional columns (may be None if not present in result)
+            u_email = row[6] if len(row) > 6 and 'email' in select_columns else None
+            u_phone = row[7] if len(row) > 7 and 'primary_mobile' in select_columns else None
+
+            # Map primary_mobile to phone if exists
+            if u_phone is None and 'primary_mobile' in select_columns and len(row) > 6:
+                u_phone = row[select_columns.index('primary_mobile')]
+
             # Check if this person already has an identity
             found_id = None
             if u_email and f"e:{u_email}" in identity_map: found_id = identity_map[f"e:{u_email}"]
             elif u_phone and f"p:{u_phone}" in identity_map: found_id = identity_map[f"p:{u_phone}"]
             elif u_username and f"u:{u_username}" in identity_map: found_id = identity_map[f"u:{u_username}"]
-            
+
             if not found_id:
                 # Create new identity
                 found_id = str(uuid.uuid4())
                 is_platform_admin = (u_role == 'platform_admin')
-                
+
                 conn.execute(sa.text("""
                     INSERT INTO identities (id, email, phone, username, password_hash, email_verified, is_active, is_platform_admin)
                     VALUES (:id, :email, :phone, :username, :password_hash, :email_verified, :is_active, :admin)
@@ -120,8 +146,11 @@ def upgrade() -> None:
             })
  
     # 6. Cleanup: Make username/email nullable and DROP redundant columns
-    op.alter_column('users', 'username', existing_type=sa.String(length=100), nullable=True)
-    op.alter_column('users', 'email', existing_type=sa.String(length=255), nullable=True)
+    # Note: These columns may not exist in newer schemas
+    if 'username' in user_columns:
+        op.alter_column('users', 'username', existing_type=sa.String(length=100), nullable=True)
+    if 'email' in user_columns:
+        op.alter_column('users', 'email', existing_type=sa.String(length=255), nullable=True)
 
     # Physically drop redundant columns
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS username")

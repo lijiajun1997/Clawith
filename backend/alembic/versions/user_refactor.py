@@ -134,11 +134,30 @@ def upgrade() -> None:
     # ============================================
     # 6. Alter users - add new fields and constraints
     # ============================================
+    # Note: Some columns may not exist in newer schemas where user data was moved to identities table
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS primary_mobile VARCHAR(50)")
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS registration_source VARCHAR(50) DEFAULT 'web'")
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS external_id VARCHAR(255)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_users_primary_mobile ON users(primary_mobile)")
-    op.execute("CREATE INDEX IF NOT EXISTS ix_users_external_id ON users(external_id)")
+
+    # Create indexes only if columns exist
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'primary_mobile'
+            ) THEN
+                CREATE INDEX IF NOT EXISTS ix_users_primary_mobile ON users(primary_mobile);
+            END IF;
+
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'external_id'
+            ) THEN
+                CREATE INDEX IF NOT EXISTS ix_users_external_id ON users(external_id);
+            END IF;
+        END $$
+    """)
 
     # Add unique constraints (partial indexes - allow multiple NULL values)
     # Note: email column may not exist in users table (moved to identities table in newer schemas)
@@ -182,10 +201,15 @@ def upgrade() -> None:
     op.execute("""
         DO $$
         BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_tenant_mobile_unique'
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'primary_mobile'
             ) THEN
-                CREATE UNIQUE INDEX ix_users_tenant_mobile_unique ON users(tenant_id, primary_mobile) WHERE primary_mobile IS NOT NULL;
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_tenant_mobile_unique'
+                ) THEN
+                    CREATE UNIQUE INDEX ix_users_tenant_mobile_unique ON users(tenant_id, primary_mobile) WHERE primary_mobile IS NOT NULL;
+                END IF;
             END IF;
         END $$
     """)
