@@ -117,9 +117,11 @@ class BaseSandboxBackend(ABC):
         """Get the capabilities of this sandbox backend."""
         pass
 
-    @staticmethod
+    @classmethod
     def _format_result(
-        result: ExecutionResult, work_dir: str | None = None
+        cls,
+        result: ExecutionResult,
+        work_dir: str | None = None
     ) -> str:
         """Format execution result for user display.
 
@@ -133,7 +135,7 @@ class BaseSandboxBackend(ABC):
         # --- stdout ---
         if len(result.stdout) > _MAX_STDOUT_INLINE:
             truncated = True
-            file_path = self._save_overflow(
+            file_path = cls._save_overflow(
                 result.stdout, work_dir, prefix="stdout", suffix=".log"
             )
             if file_path:
@@ -155,7 +157,7 @@ class BaseSandboxBackend(ABC):
         # --- stderr ---
         if len(result.stderr) > _MAX_STDERR_INLINE:
             truncated = True
-            file_path = self._save_overflow(
+            file_path = cls._save_overflow(
                 result.stderr, work_dir, prefix="stderr", suffix=".log"
             )
             if file_path:

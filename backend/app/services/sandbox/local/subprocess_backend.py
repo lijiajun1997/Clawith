@@ -41,7 +41,9 @@ _DANGEROUS_BASH_NETWORK = [
 ]
 
 _DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
-    "subprocess", "shutil.rmtree", "os.system", "os.popen",
+    # Removed: "subprocess" — allow pip install via subprocess.run([sys.executable, "-m", "pip", ...])
+    # Agent needs to install packages during execution
+    "shutil.rmtree", "os.system", "os.popen",
     "os.exec", "os.spawn",
 ]
 
@@ -193,10 +195,17 @@ class SubprocessBackend(BaseSandboxBackend):
         elif language == "bash":
             ext = ".sh"
             cmd_prefix = ["bash"]
+            # Auto-convert pip install commands: pip install -> python3 -m pip install
+            # Supports both formats: `pip install` or `!pip install` (Jupyter style)
+            import re
+            if re.search(r'^\s*!?\s*pip\s+install', code, re.MULTILINE | re.IGNORECASE):
+                # Replace only 'pip' with 'python3 -m pip', keep the rest intact
+                code = re.sub(r'^\s*!?\s*(pip)\s+', r'python3 -m \1 ', code, count=1, flags=re.MULTILINE | re.IGNORECASE)
+                logger.info(f"[SubprocessBackend] Auto-converted pip command to: {code.strip()}")
         elif language == "node":
             ext = ".js"
             cmd_prefix = ["node"]
-        
+
         # Write code to temp file
         script_path = work_path / f"_exec_tmp{ext}"
 

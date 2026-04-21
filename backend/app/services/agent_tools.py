@@ -5876,7 +5876,9 @@ _DANGEROUS_BASH_NETWORK = [
 ]
 
 _DANGEROUS_PYTHON_ALWAYS = [
-    "subprocess", "shutil.rmtree", "os.system", "os.popen",
+    # Removed: "subprocess" — allow pip install via subprocess.run([sys.executable, "-m", "pip", ...])
+    # Agent needs to install packages during execution
+    "shutil.rmtree", "os.system", "os.popen",
     "os.exec", "os.spawn",
 ]
 
@@ -6059,7 +6061,8 @@ async def _execute_code_legacy(ws: Path, arguments: dict) -> str:
         # 支持两种格式：`pip install` 或 `!pip install`（Jupyter风格）
         import re
         if re.search(r'^\s*!?\s*pip\s+install', code, re.MULTILINE | re.IGNORECASE):
-            code = re.sub(r'^\s*!?\s*pip\s+', 'python3 -m pip install ', code, count=1, flags=re.MULTILINE | re.IGNORECASE)
+            # Replace only 'pip' with 'python3 -m pip', keep the rest intact
+            code = re.sub(r'^\s*!?\s*(pip)\s+', r'python3 -m \1 ', code, count=1, flags=re.MULTILINE | re.IGNORECASE)
             logger.info(f"[execute_code] Auto-converted pip command to: {code.strip()}")
     elif language == "node":
         ext = ".js"
