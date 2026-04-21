@@ -2478,6 +2478,12 @@ async def execute_tool(
         # ── File Conversion ──
         elif tool_name == "convert_markdown":
             result = await _convert_markdown(ws, arguments)
+        # ── Unified Excel Advanced Tool ──
+        elif tool_name == "excel_advanced":
+            result = await excel_advanced(arguments, agent_id)
+        # ── Unified Word Advanced Tool ──
+        elif tool_name == "word_advanced":
+            result = await word_advanced(arguments, agent_id, user_id)
         else:
             # Try MCP tool execution
             result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
@@ -10123,3 +10129,391 @@ async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -
             "error_type": type(e).__name__,
             "suggestion": "意外错误，请检查配置和网络连接"
         }, ensure_ascii=False)
+
+
+async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, creator_id: uuid.UUID | None = None) -> str:
+    """统一 Word 文档处理工具 - 支持 50+ 操作"""
+    import os
+    from pathlib import Path
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    # 获取 agent 的根目录（不包含 workspace 子目录）
+    if agent_id:
+        agent_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
+        agent_root.mkdir(parents=True, exist_ok=True)
+    else:
+        # 如果没有 agent_id，使用临时目录
+        import tempfile
+        agent_root = Path(tempfile.gettempdir())
+
+    # 切换到 agent 根目录（让 agent 自己决定是否使用 workspace 子目录）
+    original_cwd = os.getcwd()
+    os.chdir(str(agent_root))
+
+    try:
+        # 导入 Word MCP Server 工具
+        from app.services.word_document_server.tools import document_tools, content_tools, format_tools, protection_tools
+        from app.services.word_document_server.tools import footnote_tools, extended_document_tools, comment_tools
+
+        action = arguments.get("action")
+        filename = arguments.get("filename", "")
+
+        if not action:
+            return json.dumps({
+                "success": False,
+                "error": "action is required"
+            }, ensure_ascii=False)
+
+        # Document Operations
+        if action == "create_document":
+            title = arguments.get("title")
+            author = arguments.get("author")
+            result = await document_tools.create_document(filename, title, author)
+            return f"Document {filename} created successfully"
+
+        elif action == "get_document_info":
+            result = await document_tools.get_document_info(filename)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "get_document_text":
+            result = await document_tools.get_document_text(filename)
+            return result
+
+        elif action == "copy_document":
+            new_filename = arguments.get("new_filename")
+            result = await document_tools.copy_document(filename, new_filename)
+            return f"Document copied to {new_filename}"
+
+        # Content Operations
+        elif action == "add_paragraph":
+            text = arguments.get("text")
+            style = arguments.get("style")
+            font_name = arguments.get("font_name")
+            font_size = arguments.get("font_size")
+            bold = arguments.get("bold")
+            italic = arguments.get("italic")
+            color = arguments.get("color")
+            result = await content_tools.add_paragraph(filename, text, style, font_name, font_size, bold, italic, color)
+            return f"Paragraph added to {filename}"
+
+        elif action == "add_heading":
+            text = arguments.get("text")
+            level = arguments.get("level", 1)
+            result = await content_tools.add_heading(filename, text, level)
+            return f"Heading '{text}' (level {level}) added to {filename}"
+
+        elif action == "add_table":
+            rows = arguments.get("rows")
+            cols = arguments.get("cols")
+            data = arguments.get("data")
+            result = await content_tools.add_table(filename, rows, cols, data)
+            return f"Table ({rows}x{cols}) added to {filename}"
+
+        elif action == "add_page_break":
+            result = await content_tools.add_page_break(filename)
+            return f"Page break added to {filename}"
+
+        elif action == "search_and_replace":
+            search_text = arguments.get("search_text")
+            replace_text = arguments.get("replace_text")
+            result = await content_tools.search_and_replace(filename, search_text, replace_text)
+            return f"Replaced '{search_text}' with '{replace_text}'"
+
+        # Format Operations
+        elif action == "create_custom_style":
+            style_name = arguments.get("style_name")
+            style_type = arguments.get("style_type")
+            font_name = arguments.get("font_name")
+            font_size = arguments.get("font_size")
+            bold = arguments.get("bold")
+            result = await format_tools.create_custom_style(filename, style_name, style_type, font_name, font_size, bold)
+            return f"Custom style '{style_name}' created"
+
+        elif action == "format_text":
+            target_text = arguments.get("target_text")
+            font_name = arguments.get("font_name")
+            font_size = arguments.get("font_size")
+            bold = arguments.get("bold")
+            italic = arguments.get("italic")
+            color = arguments.get("color")
+            result = await format_tools.format_text(filename, target_text, font_name, font_size, bold, italic, color)
+            return f"Text formatted: {target_text}"
+
+        elif action == "set_cell_alignment":
+            table_index = arguments.get("table_index", 0)
+            row_index = arguments.get("row_index")
+            col_index = arguments.get("col_index")
+            alignment = arguments.get("alignment")
+            result = await format_tools.set_cell_alignment(filename, table_index, row_index, col_index, alignment)
+            return f"Cell alignment set to {alignment}"
+
+        elif action == "merge_cells":
+            table_index = arguments.get("table_index", 0)
+            row_start = arguments.get("row_start")
+            row_end = arguments.get("row_end")
+            col_start = arguments.get("col_start")
+            col_end = arguments.get("col_end")
+            result = await format_tools.merge_cells(filename, table_index, row_start, row_end, col_start, col_end)
+            return f"Cells merged: ({row_start},{col_start}) to ({row_end},{col_end})"
+
+        # Protection Operations
+        elif action == "protect_document":
+            password = arguments.get("password")
+            protection_type = arguments.get("protection_type", "read_only")
+            result = await protection_tools.protect_document(filename, password, protection_type)
+            return f"Document protected with {protection_type}"
+
+        elif action == "unprotect_document":
+            password = arguments.get("password")
+            result = await protection_tools.unprotect_document(filename, password)
+            return f"Document unprotected"
+
+        # Extended Operations
+        elif action == "get_usage_guide":
+            result = await extended_document_tools.get_usage_guide()
+            return result
+
+        elif action == "find_text":
+            search_text = arguments.get("search_text")
+            result = await extended_document_tools.find_text(filename, search_text)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "convert_to_pdf":
+            result = await extended_document_tools.convert_to_pdf(filename)
+            return f"Document converted to PDF: {result}"
+
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"Unknown action: {action}",
+                "available_actions": [
+                    "create_document", "get_document_info", "get_document_text", "copy_document",
+                    "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace",
+                    "create_custom_style", "format_text", "set_cell_alignment", "merge_cells",
+                    "protect_document", "unprotect_document",
+                    "get_usage_guide", "find_text", "convert_to_pdf"
+                ]
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.exception(f"[word_advanced] Error: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }, ensure_ascii=False, indent=2)
+
+    finally:
+        # 恢复原始工作目录
+        os.chdir(original_cwd)
+
+
+async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
+    """统一 Excel 处理工具 - 整合了原有的 10 个 Excel 工具"""
+    import os
+    from pathlib import Path
+    from app.config import get_settings
+
+    settings = get_settings()
+
+    # 获取 agent 的根目录（不包含 workspace 子目录）
+    if agent_id:
+        agent_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
+        agent_root.mkdir(parents=True, exist_ok=True)
+    else:
+        # 如果没有 agent_id，使用临时目录
+        import tempfile
+        agent_root = Path(tempfile.gettempdir())
+
+    # 切换到 agent 根目录（让 agent 自己决定是否使用 workspace 子目录）
+    original_cwd = os.getcwd()
+    os.chdir(str(agent_root))
+
+    try:
+        import openpyxl
+        from openpyxl import load_workbook
+        import json as jsonlib
+
+        action = arguments.get("action")
+        filename = arguments.get("filename", "")
+
+        if not action:
+            return json.dumps({
+                "success": False,
+                "error": "action is required"
+            }, ensure_ascii=False)
+
+        # 创建工作簿
+        if action == "create_workbook":
+            filename = filename or "new_workbook.xlsx"
+            wb = openpyxl.Workbook()
+            wb.save(filename)
+            return f"Workbook {filename} created successfully"
+
+        # 读取工作簿
+        elif action == "read_workbook":
+            if not filename or not os.path.exists(filename):
+                return json.dumps({
+                    "success": False,
+                    "error": f"File {filename} not found"
+                }, ensure_ascii=False)
+
+            wb = load_workbook(filename, data_only=True)
+            result = {}
+
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                sheet_data = []
+
+                for row in ws.iter_rows(values_only=True):
+                    row_data = []
+                    for cell in row:
+                        if cell is None:
+                            row_data.append("")
+                        elif isinstance(cell, float):
+                            # 智能格式化数字：移除不必要的小数
+                            if cell.is_integer():
+                                row_data.append(str(int(cell)))
+                            else:
+                                row_data.append(str(cell))
+                        else:
+                            row_data.append(str(cell))
+                    sheet_data.append(row_data)
+
+                result[sheet_name] = sheet_data
+
+            return json.dumps({
+                "success": True,
+                "filename": filename,
+                "sheets": result
+            }, ensure_ascii=False, indent=2)
+
+        # 写入数据
+        elif action == "write_data":
+            if not filename:
+                return json.dumps({
+                    "success": False,
+                    "error": "filename is required"
+                }, ensure_ascii=False)
+
+            sheet_name = arguments.get("sheet_name", "Sheet")
+            data = arguments.get("data", [])
+            start_row = arguments.get("start_row", 1)
+            start_col = arguments.get("start_col", 1)
+
+            # 加载或创建工作簿
+            if os.path.exists(filename):
+                wb = load_workbook(filename)
+            else:
+                wb = openpyxl.Workbook()
+
+            # 获取或创建工作表
+            if sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+            else:
+                ws = wb.create_sheet(sheet_name)
+
+            # 写入数据
+            for row_idx, row_data in enumerate(data):
+                for col_idx, cell_value in enumerate(row_data):
+                    ws.cell(row=start_row + row_idx, column=start_col + col_idx, value=cell_value)
+
+            wb.save(filename)
+            return f"Data written to {filename} (sheet: {sheet_name})"
+
+        # 添加工作表
+        elif action == "add_sheet":
+            if not filename:
+                return json.dumps({
+                    "success": False,
+                    "error": "filename is required"
+                }, ensure_ascii=False)
+
+            sheet_name = arguments.get("sheet_name", "Sheet1")
+
+            wb = load_workbook(filename) if os.path.exists(filename) else openpyxl.Workbook()
+
+            if sheet_name in wb.sheetnames:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Sheet {sheet_name} already exists"
+                }, ensure_ascii=False)
+
+            wb.create_sheet(sheet_name)
+            wb.save(filename)
+
+            return f"Sheet {sheet_name} added to {filename}"
+
+        # 获取工作表列表
+        elif action == "list_sheets":
+            if not filename or not os.path.exists(filename):
+                return json.dumps({
+                    "success": False,
+                    "error": f"File {filename} not found"
+                }, ensure_ascii=False)
+
+            wb = load_workbook(filename)
+            return json.dumps({
+                "success": True,
+                "filename": filename,
+                "sheets": wb.sheetnames
+            }, ensure_ascii=False, indent=2)
+
+        # 删除工作表
+        elif action == "delete_sheet":
+            if not filename or not os.path.exists(filename):
+                return json.dumps({
+                    "success": False,
+                    "error": f"File {filename} not found"
+                }, ensure_ascii=False)
+
+            sheet_name = arguments.get("sheet_name")
+
+            if not sheet_name:
+                return json.dumps({
+                    "success": False,
+                    "error": "sheet_name is required"
+                }, ensure_ascii=False)
+
+            wb = load_workbook(filename)
+
+            if sheet_name not in wb.sheetnames:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Sheet {sheet_name} not found"
+                }, ensure_ascii=False)
+
+            if len(wb.sheetnames) == 1:
+                return json.dumps({
+                    "success": False,
+                    "error": "Cannot delete the only sheet"
+                }, ensure_ascii=False)
+
+            wb.remove(wb[sheet_name])
+            wb.save(filename)
+
+            return f"Sheet {sheet_name} deleted from {filename}"
+
+        else:
+            return json.dumps({
+                "success": False,
+                "error": f"Unknown action: {action}",
+                "available_actions": [
+                    "create_workbook", "read_workbook", "write_data", "add_sheet",
+                    "list_sheets", "delete_sheet"
+                ]
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.exception(f"[excel_advanced] Error: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }, ensure_ascii=False, indent=2)
+
+    finally:
+        # 恢复原始工作目录
+        os.chdir(original_cwd)

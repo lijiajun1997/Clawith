@@ -546,6 +546,9 @@ class MarkdownToExcel:
     
     def save(self, output_path):
         """保存Excel文件"""
+        output_path = Path(output_path)
+        # 确保输出目录存在
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         self.wb.save(output_path)
         return output_path
 

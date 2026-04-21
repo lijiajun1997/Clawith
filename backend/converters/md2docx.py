@@ -402,6 +402,9 @@ class MarkdownToDocx:
     
     def save(self, output_path):
         """保存文档"""
+        output_path = Path(output_path)
+        # 确保输出目录存在
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         self.doc.save(output_path)
         return output_path
 

@@ -267,6 +267,10 @@ async def call_llm(
     from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
     _accumulated_tokens = 0
 
+    # ── Empty response tracking for retry logic ──
+    _consecutive_empty_responses = 0
+    _max_consecutive_empty = 30  # Maximum allowed consecutive empty responses (increased from 3)
+
     # Tool-calling loop (configurable per agent, default 50)
     for round_i in range(_max_tool_rounds):
         # ── Dynamic tool-call limit warning (Aware engine) ──
@@ -347,12 +351,46 @@ async def call_llm(
             round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
             _accumulated_tokens += estimate_tokens_from_chars(round_chars)
 
+        # ── Check for problematic responses that need retry ──
+        # Case 1: Empty content with no tool calls
+        if not response.tool_calls and (not response.content or (isinstance(response.content, str) and len(response.content.strip()) == 0)):
+            _consecutive_empty_responses += 1
+            logger.warning(f"[LLM] Round {round_i+1}: Received empty content (finish_reason={response.finish_reason}, consecutive={_consecutive_empty_responses}/{_max_consecutive_empty})")
+
+            if _consecutive_empty_responses >= _max_consecutive_empty:
+                # Too many consecutive empty responses, give up
+                error_msg = f"[LLM Error] Received empty content {_consecutive_empty_responses} times in a row. The LLM may be experiencing issues or the task may be unclear."
+                logger.error(f"[LLM] {error_msg}")
+                if agent_id and _accumulated_tokens > 0:
+                    await record_token_usage(agent_id, _accumulated_tokens)
+                await client.close()
+                return error_msg
+
+            # Add retry message to prompt LLM to respond properly
+            api_messages.append(LLMMessage(
+                role="user",
+                content=f"⚠️ Your response was empty. This is attempt {_consecutive_empty_responses}/{_max_consecutive_empty}. Please provide a meaningful response to complete the task."
+            ))
+            continue  # Retry the round
+
+        # Case 2: Abnormal finish reasons that might indicate issues
+        if response.finish_reason in ["error", "interrupted", "unknown"]:
+            logger.warning(f"[LLM] Round {round_i+1}: Abnormal finish_reason={response.finish_reason}, will retry...")
+            api_messages.append(LLMMessage(
+                role="user",
+                content=f"⚠️ The previous response was incomplete (finish_reason: {response.finish_reason}). Please continue your response."
+            ))
+            continue  # Retry the round
+
+        # Reset counter on successful response
+        _consecutive_empty_responses = 0
+
         # If no tool calls, return the final content
         if not response.tool_calls:
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
             await client.close()
-            return response.content or "[LLM returned empty content]"
+            return response.content
 
         # Execute tool calls
         logger.info(f"[LLM] Round {round_i+1}: {len(response.tool_calls)} tool call(s), finish_reason={response.finish_reason}")
