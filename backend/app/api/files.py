@@ -7,12 +7,15 @@ import re
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Literal
+import functools
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -30,6 +33,24 @@ router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 # Skill import limits
 MAX_SKILL_ZIP_SIZE = 30 * 1024 * 1024  # 30 MB  # 5 MB
 MAX_SINGLE_FILE_SIZE = 1024 * 1024    # 1 MB
+
+# Folder download limits
+MAX_FOLDER_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_FOLDER_RECURSION_DEPTH = 50  # Prevent zip bombs
+
+# File type mappings for filtering
+FILE_TYPE_MAP: dict[str, list[str]] = {
+    "image": [".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico", ".tiff", ".tif"],
+    "pdf": [".pdf"],
+    "word": [".doc", ".docx"],
+    "excel": [".xls", ".xlsx", ".xlsm"],
+    "powerpoint": [".ppt", ".pptx"],
+    "text": [".txt", ".md", ".markdown", ".rst"],
+    "code": [".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".css", ".html", ".json", ".xml", ".yaml", ".yml", ".sh", ".bat"],
+    "video": [".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".m4v"],
+    "audio": [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"],
+    "archive": [".zip", ".rar", ".7z", ".tar", ".gz"],
+}
 
 
 def _parse_skill_frontmatter(content: str) -> tuple[bool, bool]:
@@ -54,6 +75,7 @@ class FileInfo(BaseModel):
     size: int = 0
     modified_at: str = ""
     url: str | None = None
+    file_count: int | None = None  # Number of files in directory (only for directories)
 
 
 class FileContent(BaseModel):
@@ -65,8 +87,64 @@ class FileWrite(BaseModel):
     content: str
 
 
+def _filter_files(items: list[FileInfo], search: str, file_type: str) -> list[FileInfo]:
+    """Filter files by search query and file type.
+
+    Args:
+        items: List of file items to filter
+        search: Search query for filename matching (case-insensitive)
+        file_type: File type filter (image|document|video|audio|all)
+
+    Returns:
+        Filtered list of file items
+    """
+    filtered = items
+
+    # Apply search filter
+    if search:
+        search_lower = search.lower()
+        filtered = [f for f in filtered if search_lower in f.name.lower()]
+
+    # Apply file type filter
+    if file_type and file_type != "all":
+        extensions = FILE_TYPE_MAP.get(file_type, [])
+        filtered = [f for f in filtered if not f.is_dir and any(
+            f.name.lower().endswith(ext) for ext in extensions
+        ) or f.is_dir]  # Always include directories
+
+    return filtered
+
+
+def _sort_files(items: list[FileInfo], sort_by: str, sort_order: str) -> list[FileInfo]:
+    """Sort files by specified field and order.
+
+    Args:
+        items: List of file items to sort
+        sort_by: Sort field (name|size|modified_at)
+        sort_order: Sort order (asc|desc)
+
+    Returns:
+        Sorted list of file items
+    """
+    def sort_key(item: FileInfo):
+        if sort_by == "size":
+            return (not item.is_dir, item.size or 0)
+        elif sort_by == "modified_at":
+            return (not item.is_dir, float(item.modified_at) if item.modified_at else 0)
+        else:  # name (default)
+            return (not item.is_dir, item.name.lower())
+
+    reverse = sort_order.lower() == "desc"
+    return sorted(items, key=sort_key, reverse=reverse)
+
+
 def _agent_base_dir(agent_id: uuid.UUID) -> Path:
     return Path(settings.AGENT_DATA_DIR) / str(agent_id)
+
+
+# Folder download limits
+MAX_FOLDER_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_FOLDER_RECURSION_DEPTH = 50  # Prevent zip bombs
 
 
 def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
@@ -82,10 +160,24 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
 async def list_files(
     agent_id: uuid.UUID,
     path: str = "",
+    search: str = "",
+    file_type: Literal["", "all", "image", "pdf", "word", "excel", "powerpoint", "text", "code", "video", "audio", "archive"] = "",
+    sort_by: Literal["name", "size", "modified_at"] = "name",
+    sort_order: Literal["asc", "desc"] = "asc",
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List files and directories in an agent's file system."""
+    """List files and directories in an agent's file system with filtering and sorting support.
+
+    Query Parameters:
+        path: Directory path to list (default: root)
+        search: Search query for filename matching (case-insensitive substring)
+        file_type: Filter by file type (all|image|pdf|word|excel|powerpoint|text|code|video|audio|archive), empty = no filter
+        sort_by: Sort field (name|size|modified_at)
+        sort_order: Sort order (asc|desc)
+
+    All parameters are optional and backward compatible.
+    """
     await check_agent_access(db, current_user, agent_id)
     target = _safe_path(agent_id, path)
 
@@ -96,19 +188,39 @@ async def list_files(
 
     items = []
     base_abs = _agent_base_dir(agent_id).resolve()
-    for entry in sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
+    for entry in target.iterdir():
         if entry.name == '.gitkeep':
             continue
         rel = str(entry.resolve().relative_to(base_abs))
+        # Convert to forward slashes for cross-platform compatibility
+        rel = rel.replace('\\', '/')
         stat = entry.stat()
-        items.append(FileInfo(
-            name=entry.name,
-            path=rel,
-            is_dir=entry.is_dir(),
-            size=stat.st_size if entry.is_file() else 0,
-            modified_at=str(stat.st_mtime),
-            url=f"/api/agents/{agent_id}/files/download?path={rel}" if not entry.is_dir() else None
-        ))
+
+        # For directories, skip file count calculation for performance
+        if entry.is_dir():
+            items.append(FileInfo(
+                name=entry.name,
+                path=rel,
+                is_dir=True,
+                size=0,
+                modified_at=str(stat.st_mtime),
+                url=None,
+                file_count=None  # Disable file count for performance
+            ))
+        else:
+            items.append(FileInfo(
+                name=entry.name,
+                path=rel,
+                is_dir=False,
+                size=stat.st_size,
+                modified_at=str(stat.st_mtime),
+                url=f"/api/agents/{agent_id}/files/download?path={rel}"
+            ))
+
+    # Apply filtering and sorting
+    items = _filter_files(items, search, file_type)
+    items = _sort_files(items, sort_by, sort_order)
+
     return items
 
 
@@ -173,6 +285,134 @@ async def download_file(
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
     return FileResponse(path=str(target), filename=target.name)
+
+
+@router.get("/download-folder")
+async def download_folder(
+    agent_id: uuid.UUID,
+    path: str,
+    token: str = "",
+    credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Download a folder as a ZIP file.
+
+    Auth via Bearer header OR `token` query parameter (for browser downloads).
+
+    Security limits:
+    - Maximum total size: 100 MB
+    - Maximum recursion depth: 50 levels (prevents zip bombs)
+    """
+    from app.core.security import decode_access_token
+
+    # Resolve JWT token from either Bearer header or query param
+    jwt_token = None
+    if credentials:
+        jwt_token = credentials.credentials
+    elif token:
+        jwt_token = token
+
+    if not jwt_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    payload = decode_access_token(jwt_token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    await check_agent_access(db, user, agent_id)
+    target = _safe_path(agent_id, path)
+
+    if not target.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+    if not target.is_dir():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Path is not a directory")
+
+    # Create ZIP in memory
+    zip_buffer = io.BytesIO()
+    total_size = 0
+    file_count = 0
+
+    def add_to_zip(zipf: zipfile.ZipFile, directory: Path, arcpath: str, depth: int = 0):
+        """Recursively add files to ZIP with security limits."""
+        nonlocal total_size, file_count
+
+        if depth > MAX_FOLDER_RECURSION_DEPTH:
+            logger.warning(f"[FolderDownload] Max recursion depth reached: {directory}")
+            return
+
+        try:
+            for entry in directory.iterdir():
+                if entry.name == '.gitkeep':
+                    continue
+
+                # Calculate archive path
+                entry_arcpath = f"{arcpath}/{entry.name}" if arcpath else entry.name
+
+                if entry.is_file():
+                    # Check file size
+                    file_size = entry.stat().st_size
+                    if total_size + file_size > MAX_FOLDER_DOWNLOAD_SIZE:
+                        logger.warning(f"[FolderDownload] Size limit exceeded, skipping: {entry}")
+                        continue
+
+                    # Add file to ZIP
+                    zipf.write(entry, entry_arcpath)
+                    total_size += file_size
+                    file_count += 1
+
+                elif entry.is_dir():
+                    # Recursively add subdirectory
+                    add_to_zip(zipf, entry, entry_arcpath, depth + 1)
+
+        except PermissionError as e:
+            logger.warning(f"[FolderDownload] Permission denied: {directory} - {e}")
+        except Exception as e:
+            logger.error(f"[FolderDownload] Error reading {directory}: {e}")
+
+    try:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
+            add_to_zip(zipf, target, target.name)
+
+        if file_count == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Folder is empty or contains no accessible files")
+
+        logger.info(f"[FolderDownload] Created ZIP: {file_count} files, {total_size} bytes")
+
+        # Reset buffer position for reading
+        zip_buffer.seek(0)
+
+        # Generate filename
+        zip_filename = f"{target.name}.zip"
+
+        # Stream the ZIP file
+        def iter_chunks():
+            chunk_size = 64 * 1024  # 64 KB chunks
+            while True:
+                chunk = zip_buffer.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+
+        return StreamingResponse(
+            iter_chunks(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{zip_filename}"',
+                "Content-Length": str(len(zip_buffer.getvalue())),
+            }
+        )
+
+    except zipfile.LargeZipFile:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Folder too large to compress")
+    except Exception as e:
+        logger.error(f"[FolderDownload] Error creating ZIP: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create ZIP file")
 
 
 @router.put("/content")
@@ -447,7 +687,13 @@ async def upload_file_to_workspace(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload a binary file to agent workspace."""
+    """Upload a binary file to agent workspace.
+
+    Simple implementation:
+    - Sanitizes filename (removes path separators)
+    - Auto-creates parent directories via mkdir(parents=True)
+    - Frontend handles folder structure by calling API with correct subdirectory path
+    """
     await check_agent_access(db, current_user, agent_id)
 
     # Validate path prefix
@@ -461,7 +707,7 @@ async def upload_file_to_workspace(
 
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = file.filename or "unnamed"
-    # Sanitize filename
+    # Sanitize filename (remove path separators to prevent path traversal)
     filename = filename.replace("/", "_").replace("\\", "_")
     save_path = target_dir / filename
 

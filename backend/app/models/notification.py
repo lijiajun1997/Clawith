@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -14,6 +14,12 @@ class Notification(Base):
     """A notification delivered to a user or an agent."""
 
     __tablename__ = "notifications"
+
+    # Composite indexes for performance optimization
+    __table_args__ = (
+        Index('ix_notifications_user_id_is_read', 'user_id', 'is_read'),
+        Index('ix_notifications_agent_id_is_read', 'agent_id', 'is_read'),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
