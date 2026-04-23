@@ -696,12 +696,14 @@ async def upload_file_to_workspace(
     """
     await check_agent_access(db, current_user, agent_id)
 
-    # Validate path prefix
-    if not path.startswith(("workspace/", "skills/")):
+    # Validate path prefix (support both "workspace" and "workspace/")
+    normalized_path = path.replace("\\", "/")
+    if not (normalized_path == "workspace" or normalized_path == "skills" or
+            normalized_path.startswith("workspace/") or normalized_path.startswith("skills/")):
         raise HTTPException(status_code=400, detail="只能上传到 workspace/ 或 skills/ 目录")
 
     base = _agent_base_dir(agent_id)
-    target_dir = (base / path).resolve()
+    target_dir = (base / normalized_path).resolve()
     if not str(target_dir).startswith(str(base.resolve())):
         raise HTTPException(status_code=403, detail="Path traversal not allowed")
 

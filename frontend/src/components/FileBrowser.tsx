@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
+import DocumentViewer, { isSupportedDocumentFormat } from './DocumentViewer';
 import { useDropZone } from '../hooks/useDropZone';
 import {
     IconFile, IconFolder, IconPhoto, IconFileText, IconCode, IconVideo, IconMusic,
@@ -830,6 +831,9 @@ export default function FileBrowser({
     // ═══════════════════════════════════════════════════
     if (viewing) {
         const isText = isTextFile(viewing);
+        const isDocumentSupported = isSupportedDocumentFormat(viewing);
+        const filename = viewing.split('/').pop() || viewing;
+
         return (
             <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
@@ -862,13 +866,25 @@ export default function FileBrowser({
                     )}
                     {canDelete && (
                         <button className="btn btn-danger" style={{ padding: '4px 10px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                            onClick={() => setDeleteTarget({ path: viewing, name: viewing.split('/').pop() || viewing })}>
+                            onClick={() => setDeleteTarget({ path: viewing, name: filename })}>
                             <IconTrash size={14} />
                         </button>
                     )}
                 </div>
                 <div className="card">
-                    {isText ? (
+                    {/* 使用 jit-viewer 预览支持的文档格式 */}
+                    {isDocumentSupported && api.downloadUrl ? (
+                        <DocumentViewer
+                            file={api.downloadUrl(viewing)}
+                            filename={filename}
+                            height="600px"
+                            theme="light"
+                            onError={(error) => {
+                                console.error('Document preview error:', error);
+                                // 如果预览失败，显示错误信息
+                            }}
+                        />
+                    ) : isText ? (
                         editing ? (
                             <textarea ref={textareaRef} className="form-textarea" value={editContent} onChange={e => setEditContent(e.target.value)}
                                 style={{ fontFamily: 'var(--font-mono)', fontSize: '12px', lineHeight: '1.6', minHeight: '200px', resize: 'vertical', overflow: 'hidden' }} />
@@ -882,10 +898,10 @@ export default function FileBrowser({
                     ) : isImage(viewing) ? (
                         <div style={{ textAlign: 'center', padding: '20px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
                             {api.downloadUrl ? (
-                                <img 
-                                    src={api.downloadUrl(viewing)} 
-                                    alt={viewing.split('/').pop()} 
-                                    style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} 
+                                <img
+                                    src={api.downloadUrl(viewing)}
+                                    alt={filename}
+                                    style={{ maxWidth: '100%', maxHeight: '600px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
                                 />
                             ) : (
                                 <div style={{ padding: '20px', color: 'var(--text-tertiary)' }}>Cannot preview image without download URL</div>

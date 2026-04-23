@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档预览器测试</title>
+    <script src="https://unpkg.com/jit-viewer@latest/dist/iife/jit-viewer.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/jit-viewer@latest/dist/iife/jit-viewer.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .test-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 4px;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #555;
+        }
+        input[type="file"] {
+            margin-bottom: 10px;
+        }
+        .viewer-container {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+        .info {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2196f3;
+        }
+        .success {
+            color: #2e7d32;
+            background: #e8f5e9;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .error {
+            color: #c62828;
+            background: #ffebee;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 JitViewer 文档预览器测试</h1>
+
+        <div class="info">
+            <strong>说明：</strong>此页面用于测试 jit-viewer 文档预览功能是否正常工作。
+            <br>支持的格式：PDF、DOCX、XLSX、PPTX、TXT、Markdown 等
+        </div>
+
+        <div class="test-section">
+            <h3>测试 1: URL 预览</h3>
+            <p>输入文档URL进行预览测试：</p>
+            <input type="text" id="fileUrl" placeholder="https://example.com/document.pdf" style="width: 70%; padding: 8px;">
+            <button onclick="loadFromUrl()" style="padding: 8px 16px; cursor: pointer;">加载文档</button>
+            <div id="viewer1" class="viewer-container"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>测试 2: 本地文件预览</h3>
+            <p>选择本地文件进行预览：</p>
+            <input type="file" id="localFile" accept=".pdf,.docx,.xlsx,.pptx,.txt,.md">
+            <div id="viewer2" class="viewer-container"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>测试 3: Workspace 文件</h3>
+            <p>输入Workspace文件路径：</p>
+            <input type="text" id="workspacePath" placeholder="/api/agents/xxx/files/download?path=workspace/test.xlsx&token=xxx" style="width: 70%; padding: 8px;">
+            <button onclick="loadFromWorkspace()" style="padding: 8px 16px; cursor: pointer;">加载Workspace文件</button>
+            <div id="viewer3" class="viewer-container"></div>
+        </div>
+    </div>
+
+    <script>
+        let viewer1 = null;
+        let viewer2 = null;
+        let viewer3 = null;
+
+        // 测试1: 从URL加载
+        function loadFromUrl() {
+            const url = document.getElementById('fileUrl').value;
+            if (!url) {
+                alert('请输入文档URL');
+                return;
+            }
+
+            try {
+                if (viewer1) {
+                    viewer1.destroy();
+                }
+
+                const filename = url.split('/').pop() || 'document.pdf';
+                viewer1 = JitViewer.createViewer({
+                    target: '#viewer1',
+                    file: url,
+                    filename: filename,
+                    theme: 'light',
+                    toolbar: true
+                });
+
+                viewer1.mount().then(() => {
+                    showMessage('viewer1', 'success', '文档加载成功！');
+                }).catch(err => {
+                    showMessage('viewer1', 'error', '加载失败: ' + err.message);
+                });
+            } catch (err) {
+                showMessage('viewer1', 'error', '错误: ' + err.message);
+            }
+        }
+
+        // 测试2: 从本地文件加载
+        document.getElementById('localFile').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            try {
+                if (viewer2) {
+                    viewer2.destroy();
+                }
+
+                viewer2 = JitViewer.createViewer({
+                    target: '#viewer2',
+                    file: file,
+                    filename: file.name,
+                    theme: 'light',
+                    toolbar: true
+                });
+
+                viewer2.mount().then(() => {
+                    showMessage('viewer2', 'success', '文件加载成功！');
+                }).catch(err => {
+                    showMessage('viewer2', 'error', '加载失败: ' + err.message);
+                });
+            } catch (err) {
+                showMessage('viewer2', 'error', '错误: ' + err.message);
+            }
+        });
+
+        // 测试3: 从Workspace加载
+        function loadFromWorkspace() {
+            const path = document.getElementById('workspacePath').value;
+            if (!path) {
+                alert('请输入Workspace文件路径');
+                return;
+            }
+
+            try {
+                if (viewer3) {
+                    viewer3.destroy();
+                }
+
+                const filename = path.split('path=')[1]?.split('&')[0] || 'document.xlsx';
+                viewer3 = JitViewer.createViewer({
+                    target: '#viewer3',
+                    file: path,
+                    filename: filename,
+                    theme: 'light',
+                    toolbar: true
+                });
+
+                viewer3.mount().then(() => {
+                    showMessage('viewer3', 'success', 'Workspace文件加载成功！');
+                }).catch(err => {
+                    showMessage('viewer3', 'error', '加载失败: ' + err.message);
+                });
+            } catch (err) {
+                showMessage('viewer3', 'error', '错误: ' + err.message);
+            }
+        }
+
+        function showMessage(viewerId, type, message) {
+            const viewer = document.getElementById(viewerId);
+            const existingMsg = viewer.parentElement.querySelector('.' + type);
+            if (existingMsg) {
+                existingMsg.remove();
+            }
+
+            const msgDiv = document.createElement('div');
+            msgDiv.className = type;
+            msgDiv.textContent = message;
+            viewer.parentElement.appendChild(msgDiv);
+
+            setTimeout(() => {
+                msgDiv.remove();
+            }, 5000);
+        }
+
+        // 页面卸载时清理
+        window.addEventListener('beforeunload', () => {
+            if (viewer1) viewer1.destroy();
+            if (viewer2) viewer2.destroy();
+            if (viewer3) viewer3.destroy();
+        });
+    </script>
+</body>
+</html>
