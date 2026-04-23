@@ -112,13 +112,14 @@ async def _send_verification_email_task(
 
         raw_code, expires_at = await email_verification_service.create_email_verification_token(identity.id, identity.email)
         expiry_minutes = int((expires_at - datetime.now(timezone.utc)).total_seconds() // 60)
-        
+
         background_tasks.add_task(
             email_verification_service.send_verification_email,
             identity.email,
             user.display_name or identity.username or "User",
             raw_code,
             expiry_minutes,
+            db,  # 传递db参数以在后台任务中使用
         )
     except Exception as exc:
         logger.error(f"Failed to create verification token for {user.email}: {exc}")
@@ -628,6 +629,7 @@ async def forgot_password(
             identity.username or "User",
             reset_url,
             expiry_minutes,
+            db,  # 传递db参数
         )
     except Exception as exc:
         logger.warning(f"Failed to process password reset email for {data.email}: {exc}")

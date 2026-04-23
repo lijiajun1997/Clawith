@@ -97,8 +97,17 @@ class EmailVerificationService:
         display_name: str,
         verification_code: str,
         expiry_minutes: int,
+        db=None,
     ) -> None:
-        """Send an email verification code using the configured template."""
+        """Send an email verification code using the configured template.
+
+        Args:
+            to: Recipient email address
+            display_name: Display name for the recipient
+            verification_code: 6-digit verification code
+            expiry_minutes: Code validity period in minutes
+            db: Optional database session for email config lookup
+        """
         from app.services.system_email_service import send_system_email, render_email_template
 
         variables = {
@@ -106,8 +115,8 @@ class EmailVerificationService:
             "verification_code": verification_code,
             "expiry_minutes": str(expiry_minutes),
         }
-        subject, body = await render_email_template("email_verification", variables)
-        await send_system_email(to, subject, body)
+        subject, body = await render_email_template("email_verification", variables, db=db)
+        await send_system_email(to, subject, body, db=db)
 
 # Global Instance
 email_verification_service = EmailVerificationService()
