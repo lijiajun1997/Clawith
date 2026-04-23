@@ -5,6 +5,8 @@
  * dragenter/dragleave fire on every child element, so a simple boolean
  * would flicker. The counter increments on dragenter and decrements on
  * dragleave; isDragging is true when counter > 0.
+ *
+ * Enhanced to support folder drag-and-drop using webkitGetAsEntry API.
  */
 import { useState, useRef, useCallback, type DragEvent } from 'react';
 
@@ -33,6 +35,108 @@ export interface UseDropZoneReturn {
     };
 }
 
+// ─── Browser Compatibility Detection ─────────────────────
+
+/** Check if browser supports folder upload via webkitGetAsEntry */
+export function supportsDirectoryUpload(): boolean {
+    return 'webkitGetAsEntry' in DataTransfer.prototype ||
+           'getAsEntry' in DataTransfer.prototype;
+}
+
+// ─── Folder Reading Utilities ─────────────────────────────
+
+/** Recursively read a directory entry and return all files with relative paths */
+async function readDirectoryEntry(
+    directoryEntry: any,
+    path = ''
+): Promise<File[]> {
+    const files: File[] = [];
+    const reader = directoryEntry.createReader();
+
+    // readEntries() may only return up to 100 entries at a time
+    const readEntries = async (): Promise<File[]> => {
+        const entries = await new Promise<any[]>((resolve) => {
+            reader.readEntries(resolve);
+        });
+
+        for (const entry of entries) {
+            if (entry.isFile) {
+                const file = await new Promise<File>((resolve) => {
+                    entry.file((f: File) => {
+                        // Add relative path property for folder structure
+                        Object.defineProperty(f, 'webkitRelativePath', {
+                            value: `${path}${entry.name}`,
+                            writable: false,
+                            enumerable: true,
+                            configurable: false,
+                        });
+                        resolve(f);
+                    });
+                });
+                files.push(file);
+            } else if (entry.isDirectory) {
+                const subFiles = await readDirectoryEntry(
+                    entry,
+                    `${path}${entry.name}/`
+                );
+                files.push(...subFiles);
+            }
+        }
+
+        // If we got 100 entries, there might be more to read
+        if (entries.length === 100) {
+            const moreFiles = await readEntries();
+            files.push(...moreFiles);
+        }
+
+        return files;
+    };
+
+    return readEntries();
+}
+
+/** Extract files from DataTransfer with folder support */
+async function extractFilesWithFolderSupport(
+    dataTransfer: DataTransfer,
+    enableFolderUpload: boolean
+): Promise<File[]> {
+    // Check if folder upload is supported and enabled
+    if (enableFolderUpload && supportsDirectoryUpload()) {
+        const items = dataTransfer.items;
+        if (!items || items.length === 0) {
+            // Fallback to standard file access
+            return Array.from(dataTransfer.files || []);
+        }
+
+        const allFiles: File[] = [];
+
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i].webkitGetAsEntry?.() || (items[i] as any).getAsEntry?.();
+
+            if (item) {
+                if (item.isDirectory) {
+                    // Recursively read directory
+                    const dirFiles = await readDirectoryEntry(item);
+                    allFiles.push(...dirFiles);
+                } else if (item.isFile) {
+                    // Single file
+                    const file = await new Promise<File>((resolve) => {
+                        item.file((f: File) => resolve(f));
+                    });
+                    allFiles.push(file);
+                }
+            }
+        }
+
+        return allFiles.length > 0 ? allFiles : Array.from(dataTransfer.files || []);
+    }
+
+    // Fallback: standard file access
+    return Array.from(dataTransfer.files || []);
+}
+
+// ─── Original Utilities ───────────────────────────────────
+
 /** Check whether a drag event contains files (vs plain text / URLs). */
 function hasFiles(e: DragEvent): boolean {
     if (e.dataTransfer?.types) {
@@ -44,13 +148,12 @@ function hasFiles(e: DragEvent): boolean {
 }
 
 /** Filter a FileList by an accept string (same format as <input accept>). */
-function filterFiles(files: FileList, accept?: string): File[] {
-    const list = Array.from(files);
-    if (!accept) return list;
+function filterFiles(files: File[], accept?: string): File[] {
+    if (!accept) return files;
 
     const tokens = accept.split(',').map(t => t.trim().toLowerCase());
 
-    return list.filter(file => {
+    return files.filter(file => {
         const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
         const mime = file.type.toLowerCase();
 
@@ -62,7 +165,11 @@ function filterFiles(files: FileList, accept?: string): File[] {
     });
 }
 
-export function useDropZone({ onDrop, disabled = false, accept }: UseDropZoneOptions): UseDropZoneReturn {
+export function useDropZone({
+    onDrop,
+    disabled = false,
+    accept
+}: UseDropZoneOptions): UseDropZoneReturn {
     const [isDragging, setIsDragging] = useState(false);
     const counterRef = useRef(0);
 
@@ -93,16 +200,22 @@ export function useDropZone({ onDrop, disabled = false, accept }: UseDropZoneOpt
         }
     }, [disabled]);
 
-    const handleDrop = useCallback((e: DragEvent) => {
+    const handleDrop = useCallback(async (e: DragEvent) => {
         e.preventDefault();
         e.stopPropagation();
         counterRef.current = 0;
         setIsDragging(false);
         if (disabled) return;
 
-        const rawFiles = e.dataTransfer?.files;
-        if (!rawFiles || rawFiles.length === 0) return;
+        const dataTransfer = e.dataTransfer;
+        if (!dataTransfer) return;
 
+        // Extract files with folder support (always enabled)
+        const rawFiles = await extractFilesWithFolderSupport(dataTransfer, true);
+
+        if (rawFiles.length === 0) return;
+
+        // Filter by accept string
         const filtered = filterFiles(rawFiles, accept);
         if (filtered.length > 0) {
             onDrop(filtered);

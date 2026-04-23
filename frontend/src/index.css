@@ -259,25 +259,6 @@
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }
 
-/* ─── Light Theme — Tabs ─── */
-[data-theme="light"] .tabs {
-  background: transparent;
-  border-bottom-color: rgba(99, 102, 241, 0.10);
-}
-
-[data-theme="light"] .tab {
-  color: #94a3b8;
-}
-
-[data-theme="light"] .tab:hover {
-  color: #6366f1;
-}
-
-[data-theme="light"] .tab.active {
-  color: #3b82f6;
-  border-bottom-color: #3b82f6;
-}
-
 /* ─── Light Theme — Badges ─── */
 [data-theme="light"] .badge-success {
   background: rgba(22, 163, 74, 0.08);
@@ -441,8 +422,7 @@
 /* ─── Light Theme — General Layout ─── */
 [data-theme="light"] .chat-container,
 [data-theme="light"] .agent-grid,
-[data-theme="light"] .wizard-steps,
-[data-theme="light"] .tabs {
+[data-theme="light"] .wizard-steps {
   background: transparent;
 }
 
@@ -545,52 +525,152 @@
 }
 
 [data-theme="light"] {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f9f9fb;
-  --bg-tertiary: #f2f2f5;
-  --bg-elevated: #ffffff;
-  --bg-hover: #f0f0f3;
-  --bg-active: #e8e8ed;
+  /* ═══════════════════════════════════════════════════════════
+     背景色系统 - 5层层次结构
+     ═══════════════════════════════════════════════════════════ */
 
-  --border-default: #e0e0e6;
-  --border-subtle: #eaeaef;
-  --border-strong: #d0d0d8;
+  /* 主背景 - 带微妙蓝调的浅灰背景 */
+  --bg-primary: #F8FAFC;
 
-  --text-primary: #1a1a22;
-  --text-secondary: #6b6b80;
-  --text-tertiary: #9898a8;
-  --text-inverse: #ffffff;
+  /* 次背景 - 纯白，用于卡片和容器 */
+  --bg-secondary: #FFFFFF;
 
-  --accent-primary: #3a3a42;
-  --accent-hover: #28282e;
-  --accent-subtle: rgba(58, 58, 66, 0.08);
-  --accent-text: #3a3a42;
+  /* 三级背景 - 浅蓝灰色，用于分区 */
+  --bg-tertiary: #F1F5F9;
+
+  /* 浮起元素 - 带暖调的白色 */
+  --bg-elevated: #FEFEFE;
+
+  /* 交互状态背景 */
+  --bg-hover: rgba(99, 102, 241, 0.06);
+  --bg-active: rgba(99, 102, 241, 0.12);
+  --bg-selected: rgba(99, 102, 241, 0.08);
+
+  /* ═══════════════════════════════════════════════════════════
+     文字色系统 - 4层层次结构
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 主文字 - 深蓝灰，接近黑色但更柔和 */
+  --text-primary: #0F172A;
+
+  /* 次文字 - 中灰色 */
+  --text-secondary: #475569;
+
+  /* 辅助文字 - 浅灰色 */
+  --text-tertiary: #94A3B8;
+
+  /* 反转文字 - 用于深色背景 */
+  --text-inverse: #FFFFFF;
+
+  /* ═══════════════════════════════════════════════════════════
+     边框色系统 - 4层层次结构
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 微妙边框 - 最轻的边框 */
+  --border-subtle: rgba(148, 163, 184, 0.18);
+
+  /* 默认边框 - 标准边框 */
+  --border-default: rgba(148, 163, 184, 0.28);
+
+  /* 强调边框 - 更明显的边框 */
+  --border-strong: rgba(99, 102, 241, 0.35);
+
+  /* 焦点边框 - 用于输入框焦点状态 */
+  --border-focus: rgba(99, 102, 241, 0.50);
+
+  /* ═══════════════════════════════════════════════════════════
+     主色调系统 - 蓝紫色系
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 主色调 - 蓝紫色 */
+  --accent-primary: #6366F1;
+  --accent-hover: #4F46E5;
+  --accent-active: #4338CA;
+
+  /* 微妙背景 - 用于高亮背景 */
+  --accent-subtle: rgba(99, 102, 241, 0.10);
+  --accent-subtle-hover: rgba(99, 102, 241, 0.15);
+
+  /* 文字链接色 */
+  --accent-text: #6366F1;
+  --accent-text-hover: #4F46E5;
+
+  /* ═══════════════════════════════════════════════════════════
+     功能色系统 - 语义化颜色
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 成功色 - 绿色系 */
+  --success: #10B981;
+  --success-hover: #059669;
+  --success-subtle: rgba(16, 185, 129, 0.10);
+  --success-subtle-hover: rgba(16, 185, 129, 0.15);
+
+  /* 警告色 - 琥珀色 */
+  --warning: #F59E0B;
+  --warning-hover: #D97706;
+  --warning-subtle: rgba(245, 158, 11, 0.10);
+  --warning-subtle-hover: rgba(245, 158, 11, 0.15);
+
+  /* 错误色 - 红色系 */
+  --error: #EF4444;
+  --error-hover: #DC2626;
+  --error-subtle: rgba(239, 68, 68, 0.10);
+  --error-subtle-hover: rgba(239, 68, 68, 0.15);
+
+  /* 信息色 - 蓝色系 */
+  --info: #3B82F6;
+  --info-hover: #2563EB;
+  --info-subtle: rgba(59, 130, 246, 0.10);
+  --info-subtle-hover: rgba(59, 130, 246, 0.15);
+
+  /* ═══════════════════════════════════════════════════════════
+     状态色系统 - Agent状态
+     ═══════════════════════════════════════════════════════════ */
+
+  --status-running: #10B981;
+  --status-idle: #94A3B8;
+  --status-stopped: #CBD5E1;
+  --status-error: #EF4444;
+  --status-creating: #3B82F6;
+
+  /* ═══════════════════════════════════════════════════════════
+     阴影系统 - 4层层次结构
+     ═══════════════════════════════════════════════════════════ */
+
+  /* 微阴影 - 用于小的交互元素 */
+  --shadow-sm:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 1px 3px rgba(99, 102, 241, 0.04);
+
+  /* 默认阴影 - 用于卡片 */
+  --shadow-md:
+    0 4px 6px rgba(15, 23, 42, 0.05),
+    0 2px 4px rgba(15, 23, 42, 0.04),
+    0 12px 20px rgba(99, 102, 241, 0.04);
+
+  /* 强阴影 - 用于浮起元素 */
+  --shadow-lg:
+    0 8px 14px rgba(15, 23, 42, 0.06),
+    0 4px 8px rgba(15, 23, 42, 0.04),
+    0 20px 40px rgba(99, 102, 241, 0.06);
+
+  /* 焦点阴影 - 用于输入框焦点 */
+  --shadow-focus:
+    0 0 0 3px rgba(99, 102, 241, 0.12),
+    0 2px 4px rgba(99, 102, 241, 0.08);
+
+  /* ═══════════════════════════════════════════════════════════
+     其他变量
+     ═══════════════════════════════════════════════════════════ */
 
   --segment-active-bg: var(--bg-elevated);
   --segment-active-text: var(--text-primary);
 
   /* Select chevron — @tabler/icons chevron-down, colored to --text-secondary */
-  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%236b6b80' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='none' d='M0 0h24v24H0z' fill='none'/%3E%3Cpath d='M6 9l6 6l6 -6'/%3E%3C/svg%3E");
-
-  --success: #16a34a;
-  --success-subtle: rgba(22, 163, 74, 0.08);
-  --warning: #d97706;
-  --warning-subtle: rgba(217, 119, 6, 0.08);
-  --error: #dc2626;
-  --error-subtle: rgba(220, 38, 38, 0.08);
-  --info: #2563eb;
-
-  --status-running: #16a34a;
-  --status-idle: #9898a8;
-  --status-stopped: #d0d0d8;
-  --status-error: #dc2626;
-
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='none' d='M0 0h24v24H0z' fill='none'/%3E%3Cpath d='M6 9l6 6l6 -6'/%3E%3C/svg%3E");
 
   /* Light mode: notification bar always white text */
-  --notification-bar-text: var(--bg-primary); /* For light mode, bg-primary is #fff */
+  --notification-bar-text: #ffffff;
   --notification-bar-close-hover: rgba(255, 255, 255, 0.2);
 }
 
@@ -823,6 +903,59 @@ select:focus {
 .sidebar-item.active {
   background: var(--accent-subtle);
   color: var(--accent-text);
+}
+
+/* ───────────────────────────────────────────────────────────
+   Light Theme - 侧边栏菜单项现代无框设计
+   ─────────────────────────────────────────────────────────── */
+
+[data-theme="light"] .sidebar-item {
+  position: relative;
+  margin: 2px 8px;
+  padding: 10px 16px;
+  border: none;
+  background: transparent;
+  border-radius: 12px;
+  gap: 12px;
+}
+
+[data-theme="light"] .sidebar-item::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 0;
+  background: linear-gradient(180deg, #6366F1 0%, #8B5CF6 100%);
+  border-radius: 2px;
+  transition: height 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] .sidebar-item:hover {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, rgba(139, 92, 246, 0.03) 100%);
+  margin: 2px 6px;
+  padding-left: 18px;
+}
+
+[data-theme="light"] .sidebar-item:hover::before {
+  height: 12px;
+  left: -6px;
+}
+
+[data-theme="light"] .sidebar-item.active {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.06) 100%);
+  color: #6366F1;
+  font-weight: 500;
+  margin: 2px 6px;
+  padding-left: 18px;
+  border: none;
+  box-shadow: 0 1px 3px rgba(99, 102, 241, 0.08);
+}
+
+[data-theme="light"] .sidebar-item.active::before {
+  height: 20px;
+  left: -6px;
 }
 
 .sidebar-item-icon {
@@ -1450,6 +1583,65 @@ select:focus {
 .tab.active {
   color: var(--text-primary);
   border-bottom-color: var(--accent-primary);
+}
+
+/* ───────────────────────────────────────────────────────────
+   Light Theme - 现代无框Tab设计（一体化Tab栏）
+   ─────────────────────────────────────────────────────────── */
+
+[data-theme="light"] .tabs {
+  border-bottom: 2px solid transparent;
+  background: linear-gradient(to bottom, transparent 95%, rgba(99, 102, 241, 0.08) 95%);
+  padding: 0;
+  gap: 0;
+  position: relative;
+}
+
+[data-theme="light"] .tabs::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(99, 102, 241, 0.12);
+}
+
+[data-theme="light"] .tab {
+  border: none;
+  border-radius: 8px 8px 0 0;
+  padding: 12px 20px;
+  margin: 0 4px -2px 0;
+  font-weight: 500;
+  background: transparent;
+  position: relative;
+  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] .tab:hover {
+  background: rgba(99, 102, 241, 0.04);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .tab.active {
+  border: none;
+  color: #6366F1;
+  background: rgba(255, 255, 255, 0.9);
+  font-weight: 600;
+  box-shadow: 0 -2px 8px rgba(99, 102, 241, 0.08);
+  position: relative;
+  z-index: 1;
+}
+
+[data-theme="light"] .tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #6366F1 0%, #8B5CF6 100%);
+  border-radius: 2px 2px 0 0;
 }
 
 /* Session sidebar admin tabs — segment control style */
@@ -3263,4 +3455,164 @@ select:focus {
 [data-theme="light"] .drop-zone-overlay {
     background: rgba(99, 102, 241, 0.06);
     border-color: rgba(99, 102, 241, 0.35);
+}
+
+/* ───────────────────────────────────────────────────────────
+   Light Theme — 额外优化样式
+   ─────────────────────────────────────────────────────────── */
+
+/* 卡片样式优化 */
+[data-theme="light"] .card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] .card:hover {
+  border-color: var(--border-default);
+  box-shadow: var(--shadow-md);
+}
+
+[data-theme="light"] .card-clickable:hover {
+  border-color: var(--accent-primary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* 输入框样式优化 */
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] input:hover,
+[data-theme="light"] textarea:hover,
+[data-theme="light"] select:hover {
+  border-color: var(--border-strong);
+}
+
+[data-theme="light"] input:focus,
+[data-theme="light"] textarea:focus,
+[data-theme="light"] select:focus {
+  border-color: var(--border-focus);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-focus);
+  outline: none;
+}
+
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* 侧边栏样式优化 */
+[data-theme="light"] .sidebar {
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid var(--border-subtle);
+  box-shadow: 4px 0 24px rgba(15, 23, 42, 0.04);
+}
+
+[data-theme="light"] .sidebar-logo {
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .sidebar-item {
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] .sidebar-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .sidebar-item.active {
+  background: var(--accent-subtle);
+  color: var(--accent-primary);
+  font-weight: 500;
+}
+
+/* Tab 样式优化 */
+[data-theme="light"] .tabs {
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+[data-theme="light"] .tab {
+  color: var(--text-tertiary);
+  transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-theme="light"] .tab:hover {
+  color: var(--text-secondary);
+}
+
+[data-theme="light"] .tab.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+/* 聊天气泡样式 */
+[data-theme="light"] .chat-message.assistant .chat-bubble {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .chat-message.user .chat-bubble {
+  background: var(--accent-primary);
+  color: #ffffff;
+  border: none;
+  box-shadow: var(--shadow-md);
+}
+
+/* 状态点样式 */
+[data-theme="light"] .status-dot.running {
+  background: var(--status-running);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+}
+
+[data-theme="light"] .status-dot.error {
+  background: var(--status-error);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+}
+
+/* Agent 头像样式 */
+[data-theme="light"] .agent-avatar {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+[data-theme="light"] .sidebar-agent-item:nth-child(4n+1) .agent-avatar {
+  background: linear-gradient(135deg, #DBEAFE, #BFDBFE);
+  color: #2563EB;
+  border-color: rgba(37, 99, 235, 0.2);
+}
+
+[data-theme="light"] .sidebar-agent-item:nth-child(4n+2) .agent-avatar {
+  background: linear-gradient(135deg, #EDE9FE, #DDD6FE);
+  color: #7C3AED;
+  border-color: rgba(124, 58, 237, 0.2);
+}
+
+[data-theme="light"] .sidebar-agent-item:nth-child(4n+3) .agent-avatar {
+  background: linear-gradient(135deg, #CCFBF1, #99F6E4);
+  color: #0D9488;
+  border-color: rgba(13, 148, 136, 0.2);
+}
+
+[data-theme="light"] .sidebar-agent-item:nth-child(4n+4) .agent-avatar {
+  background: linear-gradient(135deg, #FEF3C7, #FDE68A);
+  color: #D97706;
+  border-color: rgba(217, 119, 6, 0.2);
 }

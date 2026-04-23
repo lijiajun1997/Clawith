@@ -286,8 +286,30 @@ export const taskApi = {
 
 // ─── Files ────────────────────────────────────────────
 export const fileApi = {
-    list: (agentId: string, path: string = '') =>
-        request<any[]>(`/agents/${agentId}/files/?path=${encodeURIComponent(path)}`),
+    list: (agentId: string, pathOrParams?: string | Record<string, any>, path: string = '') => {
+        // Handle both old string path and new object params
+        let queryParams = '';
+        let actualPath = path;
+
+        if (typeof pathOrParams === 'string') {
+            actualPath = pathOrParams;
+        } else if (pathOrParams && typeof pathOrParams === 'object') {
+            // Build query string from params object
+            const params = new URLSearchParams();
+            if (pathOrParams.search) params.append('search', pathOrParams.search);
+            if (pathOrParams.file_type) params.append('file_type', pathOrParams.file_type);
+            if (pathOrParams.sort_by) params.append('sort_by', pathOrParams.sort_by);
+            if (pathOrParams.sort_order) params.append('sort_order', pathOrParams.sort_order);
+            // Use _path if provided (from adapter), otherwise use the path parameter
+            const targetPath = pathOrParams._path !== undefined ? pathOrParams._path : (path || '');
+            if (targetPath) params.append('path', targetPath);
+
+            queryParams = params.toString();
+            return request<any[]>(`/agents/${agentId}/files/?${queryParams}`);
+        }
+
+        return request<any[]>(`/agents/${agentId}/files/?path=${encodeURIComponent(actualPath)}`);
+    },
 
     read: (agentId: string, path: string) =>
         request<{ path: string; content: string }>(`/agents/${agentId}/files/content?path=${encodeURIComponent(path)}`),
@@ -329,6 +351,11 @@ export const fileApi = {
     downloadUrl: (agentId: string, path: string) => {
         const token = localStorage.getItem('token');
         return `${API_BASE}/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+    },
+
+    downloadFolderUrl: (agentId: string, path: string) => {
+        const token = localStorage.getItem('token');
+        return `${API_BASE}/agents/${agentId}/files/download-folder?path=${encodeURIComponent(path)}&token=${token}`;
     },
 };
 

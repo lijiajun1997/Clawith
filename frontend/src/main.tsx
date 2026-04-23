@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import './i18n';
 import './index.css';
+import './chat-enhanced.css';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { loadSavedAccentColor } from './utils/theme';

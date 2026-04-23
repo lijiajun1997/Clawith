@@ -79,6 +79,11 @@ export default function Login() {
                     setTenant(res);
                 }
             })
+            .catch(err => {
+                // Ignore 404 errors - domain resolution might not be enabled
+                console.warn('Domain resolution failed (this is expected if feature is disabled):', err);
+                setResolving(false);
+            })
             .catch(() => { })
             .finally(() => setResolving(false));
     }, []);
