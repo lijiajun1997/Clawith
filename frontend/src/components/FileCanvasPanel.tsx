@@ -335,8 +335,13 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
 
             {/* ── Content ── */}
             <div style={{ flex: 1, overflow: 'auto', background: 'var(--bg-primary)' }}>
-                {activeFile?.status === 'generating' ? <Skeleton /> :
-                 activeFile?.status === 'error' ? (
+                {!activeFile ? (
+                    <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+                        <IconFile size={32} style={{ marginBottom: 8, opacity: 0.4 }} />
+                        <div style={{ fontSize: 13 }}>{t('fileCanvas.noContent', '暂无内容')}</div>
+                    </div>
+                ) : activeFile.status === 'generating' ? <Skeleton /> :
+                 activeFile.status === 'error' ? (
                     <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--error)' }}>
                         <IconX size={32} style={{ marginBottom: 8, opacity: 0.6 }} />
                         <div style={{ fontSize: 13 }}>{t('fileCanvas.generationFailed', '文件生成失败')}</div>
@@ -348,22 +353,22 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
                             padding: '16px', fontFamily: "'JetBrains Mono',monospace", fontSize: '13px', lineHeight: 1.7,
                             color: 'var(--text-primary)', background: 'var(--bg-primary)',
                         }} />
-                    ) : getFileType(activeFile!.name) === 'code' ? (
-                        <CodePreview content={displayContent} fileName={activeFile!.name} />
-                    ) : getFileType(activeFile!.name) === 'markdown' ? (
+                    ) : getFileType(activeFile.name) === 'code' ? (
+                        <CodePreview content={displayContent} fileName={activeFile.name} />
+                    ) : getFileType(activeFile.name) === 'markdown' ? (
                         <MarkdownRenderer content={displayContent} style={{ padding: '20px' }} />
-                    ) : getFileType(activeFile!.name) === 'image' ? (
+                    ) : getFileType(activeFile.name) === 'image' ? (
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12, minHeight: 200 }}>
-                            {activeFile!.path && agentId ? (
-                                <img src={`/api/agents/${agentId}/files/download?path=${encodeURIComponent(activeFile!.path!)}${localStorage.getItem('token') ? `&token=${localStorage.getItem('token')}` : ''}`}
-                                    alt={activeFile!.name} style={{ maxWidth: '100%', maxHeight: 400, objectFit: 'contain', borderRadius: 8, border: '1px solid var(--border-subtle)' }} />
+                            {activeFile.path && agentId ? (
+                                <img src={`/api/agents/${agentId}/files/download?path=${encodeURIComponent(activeFile.path)}${localStorage.getItem('token') ? `&token=${localStorage.getItem('token')}` : ''}`}
+                                    alt={activeFile.name} style={{ maxWidth: '100%', maxHeight: 400, objectFit: 'contain', borderRadius: 8, border: '1px solid var(--border-subtle)' }} />
                             ) : <IconPhoto size={40} style={{ color: 'var(--text-tertiary)' }} />}
-                            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{activeFile!.name}</span>
+                            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{activeFile.name}</span>
                         </div>
-                    ) : getFileType(activeFile!.name) === 'document' && activeFile!.path && agentId ? (
+                    ) : getFileType(activeFile.name) === 'document' && activeFile.path && agentId ? (
                         <DocumentViewer
-                            file={`/api/agents/${agentId}/files/download?path=${encodeURIComponent(activeFile!.path!)}${localStorage.getItem('token') ? `&token=${localStorage.getItem('token')}` : ''}`}
-                            filename={activeFile!.name} height="100%" theme="light"
+                            file={`/api/agents/${agentId}/files/download?path=${encodeURIComponent(activeFile.path)}${localStorage.getItem('token') ? `&token=${localStorage.getItem('token')}` : ''}`}
+                            filename={activeFile.name} height="100%" theme="light"
                         />
                     ) : (
                         <pre style={{ padding: 16, fontFamily: "'JetBrains Mono',monospace", fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
