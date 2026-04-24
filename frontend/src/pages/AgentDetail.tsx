@@ -1793,6 +1793,29 @@ function AgentDetailInner() {
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    // Extract file-generating tool calls from chatMessages for Canvas panel
+    const FILE_TOOL_NAMES = useMemo(() => new Set([
+        'write_file', 'edit_file', 'create_file', 'python_run_file', 'run_python_file',
+        'python_exec', 'python', 'execute_python', 'run_code',
+    ]), []);
+    const canvasFiles = useMemo(() => {
+        const m = new Map<string, { name: string; status: 'generating' | 'done' | 'error'; content?: string; path?: string }>();
+        for (const msg of chatMessages) {
+            if (msg.role !== 'tool_call' || !FILE_TOOL_NAMES.has(msg.toolName || '')) continue;
+            let fileName = msg.toolArgs?.file_path || msg.toolArgs?.path || msg.toolArgs?.filename || '';
+            if (!fileName) {
+                const match = (msg.toolResult || '').match(/(?:created|written|saved|generated|output)[\s:]+([^\s]+\.\w+)/i);
+                fileName = match ? match[1] : 'untitled_file';
+            }
+            m.set(`file-${fileName}`, {
+                name: fileName,
+                status: msg.toolStatus === 'running' ? 'generating' : 'done',
+                content: msg.toolResult || '',
+                path: msg.toolArgs?.file_path || msg.toolArgs?.path,
+            });
+        }
+        return m;
+    }, [chatMessages, FILE_TOOL_NAMES]);
     // Stable expanded-state map for tool groups — keyed by groupStartIndex.
     // Stored in a ref so it survives parent re-renders without causing extra renders.
     const toolGroupExpandedRef = useRef<Map<number, boolean>>(new Map());
@@ -1810,14 +1833,7 @@ function AgentDetailInner() {
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
-    // Canvas-style file generation panel
-    const [generatingFiles, setGeneratingFiles] = useState<Map<string, {
-        name: string;
-        status: 'generating' | 'done' | 'error';
-        progress?: number;
-        content?: string;
-        path?: string;
-    }>>(new Map());
+    // Canvas panel visibility (data comes from chatMessages via useMemo below)
     const [canvasPanelVisible, setCanvasPanelVisible] = useState(true);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
@@ -2074,40 +2090,9 @@ function AgentDetailInner() {
                     return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'tool_call') {
-                // ── Canvas-style file generation tracking ──
-                const fileToolNames = ['write_file', 'edit_file', 'create_file', 'python_run_file', 'run_python_file', 'python_exec', 'python', 'execute_python', 'run_code'];
-                if (fileToolNames.includes(d.name)) {
-                    let fileName = d.args?.file_path || d.args?.path || d.args?.filename || '';
-                    // For Python tools, try to extract created files from result
-                    if (!fileName && (d.name.includes('python') || d.name.includes('exec') || d.name.includes('run_code'))) {
-                        // Extract filename from result text like "Created file: xxx" or "Written to xxx"
-                        const resultText = d.result || '';
-                        const match = resultText.match(/(?:created|written|saved|generated|output)[\s:]+([^\s]+\.\w+)/i);
-                        if (match) fileName = match[1];
-                        else fileName = 'python_output.txt';
-                    }
-                    if (!fileName) fileName = 'untitled_file';
-
-                    const fileKey = `file-${fileName}`;
-                    if (d.status === 'running') {
-                        setGeneratingFiles(prev => {
-                            const next = new Map(prev);
-                            next.set(fileKey, { name: fileName, status: 'generating' });
-                            return next;
-                        });
-                        setCanvasPanelVisible(true);
-                    } else if (d.status === 'done') {
-                        setGeneratingFiles(prev => {
-                            const next = new Map(prev);
-                            next.set(fileKey, {
-                                name: fileName,
-                                status: 'done',
-                                content: d.result || '',
-                                path: d.args?.file_path || d.args?.path,
-                            });
-                            return next;
-                        });
-                    }
+                // Auto-expand Canvas panel when file tools are used
+                if (d.status === 'running' && FILE_TOOL_NAMES.has(d.name)) {
+                    setCanvasPanelVisible(true);
                 }
                 if (d.live_preview) {
                     const lp = d.live_preview;
@@ -4946,7 +4931,7 @@ function AgentDetailInner() {
                                 )}
                                 {/* Canvas-style File Generation Panel */}
                                 <FileCanvasPanel
-                                    files={generatingFiles}
+                                    files={canvasFiles}
                                     visible={canvasPanelVisible}
                                     onToggle={() => setCanvasPanelVisible(v => !v)}
                                     agentId={id}
