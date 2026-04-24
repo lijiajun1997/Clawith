@@ -3,21 +3,22 @@
  *
  * 数据源：从 chatMessages 的 tool_call 中提取文件列表（刷新不丢失）
  * 预览策略：
- *   代码 → 语法高亮 + 行号
  *   Markdown → MarkdownRenderer / 可编辑 textarea + 保存
  *   PDF/DOCX/XLSX/PPTX → DocumentViewer (JIT)
- *   图片 → <img>
- *   其他 → 纯文本
+ *   TXT/CSV → 纯文本
+ *   其他 → 不显示（过滤掉代码文件）
  *
- * 面板宽度可拖拽调整。
+ * 面板宽度可拖拽调整，支持文件类型过滤和搜索。
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
-    IconFile, IconFileText, IconCode, IconPhoto, IconCheck,
+    IconFile, IconFileText, IconCheck,
     IconCopy, IconDownload, IconChevronRight, IconChevronLeft,
-    IconEdit, IconDeviceFloppy, IconX,
+    IconEdit, IconDeviceFloppy, IconX, IconSearch,
+    IconFileDescription, IconFileTypePdf,
+    IconFileSpreadsheet, IconPresentation, IconCircleX,
 } from '@tabler/icons-react';
 import MarkdownRenderer from './MarkdownRenderer';
 import DocumentViewer, { isSupportedDocumentFormat } from './DocumentViewer';
@@ -41,6 +42,30 @@ interface FileCanvasPanelProps {
 const MIN_WIDTH = 320;
 const MAX_WIDTH_VW = 0.65;
 
+// 允许的文件类型扩展名
+const ALLOWED_EXTENSIONS = new Set([
+    // Office文档
+    'doc', 'docx',
+    'pdf',
+    'ppt', 'pptx',
+    'xls', 'xlsx',
+    // 文本文件
+    'md', 'markdown',
+    'txt',
+    'csv',
+]);
+
+// 文件类型过滤选项
+type FilterType = 'all' | 'word' | 'pdf' | 'ppt' | 'excel' | 'text';
+const FILTER_OPTIONS: { type: FilterType; label: string; extensions: string[]; icon: any }[] = [
+    { type: 'all', label: '全部', extensions: [], icon: IconFile },
+    { type: 'word', label: 'Word', extensions: ['doc', 'docx'], icon: IconFileDescription },
+    { type: 'pdf', label: 'PDF', extensions: ['pdf'], icon: IconFileTypePdf },
+    { type: 'ppt', label: 'PPT', extensions: ['ppt', 'pptx'], icon: IconPresentation },
+    { type: 'excel', label: 'Excel', extensions: ['xls', 'xlsx'], icon: IconFileSpreadsheet },
+    { type: 'text', label: '文本', extensions: ['md', 'markdown', 'txt', 'csv'], icon: IconFileText },
+];
+
 function calcInitialWidth(): number {
     const el = document.querySelector('.agent-chat-area') as HTMLElement | null;
     if (el) return Math.max(MIN_WIDTH, Math.floor(el.clientWidth * 0.45));
@@ -48,36 +73,42 @@ function calcInitialWidth(): number {
 }
 
 /* ── File type helpers ── */
-type FileType = 'code' | 'markdown' | 'image' | 'document' | 'text';
+type FileType = 'document' | 'markdown' | 'text';
 
 function getFileType(name: string): FileType {
     const ext = name.toLowerCase().split('.').pop() || '';
-    if (['py', 'js', 'ts', 'jsx', 'tsx', 'java', 'cpp', 'c', 'go', 'rs', 'rb', 'php',
-        'swift', 'kt', 'sh', 'bat', 'css', 'scss', 'html', 'sql', 'toml', 'dockerfile'].includes(ext)) return 'code';
-    if (['md', 'mdx', 'rst'].includes(ext)) return 'markdown';
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico'].includes(ext)) return 'image';
     if (isSupportedDocumentFormat(name)) return 'document';
+    if (['md', 'mdx', 'rst', 'markdown'].includes(ext)) return 'markdown';
     return 'text';
 }
 
 function getFileIcon(name: string, size = 16) {
-    switch (getFileType(name)) {
-        case 'code': return <IconCode size={size} />;
-        case 'markdown': return <IconFileText size={size} />;
-        case 'image': return <IconPhoto size={size} />;
-        default: return <IconFile size={size} />;
-    }
+    const ext = name.toLowerCase().split('.').pop() || '';
+    if (['pdf'].includes(ext)) return <IconFileTypePdf size={size} />;
+    if (['doc', 'docx'].includes(ext)) return <IconFileDescription size={size} />;
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return <IconFileSpreadsheet size={size} />;
+    if (['ppt', 'pptx'].includes(ext)) return <IconPresentation size={size} />;
+    if (['md', 'mdx', 'rst', 'markdown'].includes(ext)) return <IconFileText size={size} />;
+    return <IconFile size={size} />;
 }
 
 function getLanguageLabel(name: string): string {
     const ext = name.toLowerCase().split('.').pop() || '';
     const map: Record<string, string> = {
-        py: 'Python', js: 'JavaScript', ts: 'TypeScript', jsx: 'JSX', tsx: 'TSX',
-        java: 'Java', cpp: 'C++', c: 'C', go: 'Go', rs: 'Rust', rb: 'Ruby',
-        php: 'PHP', sh: 'Shell', css: 'CSS', html: 'HTML', sql: 'SQL',
-        json: 'JSON', yaml: 'YAML', yml: 'YAML', md: 'Markdown', txt: 'Text',
+        doc: 'Word', docx: 'Word',
+        pdf: 'PDF',
+        ppt: 'PPT', pptx: 'PPT',
+        xls: 'Excel', xlsx: 'Excel',
+        md: 'Markdown', mdx: 'Markdown', rst: 'Markdown',
+        txt: 'Text', csv: 'CSV',
     };
-    return map[ext] || ext.toUpperCase() || 'Text';
+    return map[ext] || ext.toUpperCase() || 'File';
+}
+
+// 检查文件是否在允许的扩展名列表中
+function isAllowedFile(name: string): boolean {
+    const ext = name.toLowerCase().split('.').pop() || '';
+    return ALLOWED_EXTENSIONS.has(ext);
 }
 
 /* ── Lightweight syntax highlighting ── */
@@ -116,26 +147,32 @@ function Skeleton() {
     );
 }
 
-function CodePreview({ content, fileName }: { content: string; fileName: string }) {
-    const lines = content.split('\n');
-    const numW = String(lines.length).length;
+// ── Helper: Truncate filename with tooltip support
+function TruncatedFileName({ name }: { name: string }) {
+    const [showTooltip, setShowTooltip] = useState(false);
+    const MAX_LENGTH = 25;
+    const shouldTruncate = name.length > MAX_LENGTH;
+    const displayName = shouldTruncate ? name.substring(0, MAX_LENGTH - 2) + '...' : name;
+
     return (
-        <div style={{ fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: '12px', lineHeight: '1.7', color: 'var(--text-secondary)' }}>
-            <div style={{ padding: '6px 16px', borderBottom: '1px solid var(--border-subtle)', fontSize: '11px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                {getFileIcon(fileName, 13)} {getLanguageLabel(fileName)}
-                <span style={{ marginLeft: 'auto' }}>{lines.length} lines</span>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-                {lines.map((line, i) => (
-                    <div key={i} style={{ display: 'flex', minHeight: '20px' }}
-                        onMouseEnter={e => (e.currentTarget.style.background = 'var(--bg-hover)')}
-                        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                        <span style={{ width: `${numW * 8 + 20}px`, flexShrink: 0, textAlign: 'right', paddingRight: '12px', color: 'var(--text-tertiary)', opacity: 0.5, userSelect: 'none', fontSize: '11px' }}>{i + 1}</span>
-                        <span style={{ flex: 1, whiteSpace: 'pre', paddingRight: '16px' }} dangerouslySetInnerHTML={{ __html: hl(line) || ' ' }} />
-                    </div>
-                ))}
-            </div>
-        </div>
+        <span
+            onMouseEnter={() => shouldTruncate && setShowTooltip(true)}
+            onMouseLeave={() => setShowTooltip(false)}
+            style={{ position: 'relative', display: 'inline-block' }}
+        >
+            {displayName}
+            {showTooltip && (
+                <div style={{
+                    position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
+                    background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+                    padding: '6px 10px', borderRadius: '6px', fontSize: '12px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)', whiteSpace: 'nowrap',
+                    zIndex: 1000, marginTop: '4px', border: '1px solid var(--border-subtle)',
+                }}>
+                    {name}
+                </div>
+            )}
+        </span>
     );
 }
 
@@ -183,17 +220,48 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
         document.body.style.userSelect = 'none';
     }, [panelWidth]);
 
-    // ── Tabs ──
-    const fileList = useMemo(() => Array.from(files.entries()), [files]);
+    // ── File filtering ──
+    const [filterType, setFilterType] = useState<FilterType>('all');
+    const [searchQuery, setSearchQuery] = useState('');
+
+    // Filter and search files
+    const filteredFileList = useMemo(() => {
+        let list = Array.from(files.entries());
+
+        // Filter by allowed file types
+        list = list.filter(([key, file]) => isAllowedFile(file.name));
+
+        // Apply file type filter
+        if (filterType !== 'all') {
+            const filterOption = FILTER_OPTIONS.find(opt => opt.type === filterType);
+            if (filterOption) {
+                list = list.filter(([_, file]) => {
+                    const ext = file.name.toLowerCase().split('.').pop() || '';
+                    return filterOption.extensions.includes(ext);
+                });
+            }
+        }
+
+        // Apply search filter
+        if (searchQuery.trim()) {
+            const query = searchQuery.toLowerCase();
+            list = list.filter(([_, file]) =>
+                file.name.toLowerCase().includes(query)
+            );
+        }
+
+        return list;
+    }, [files, filterType, searchQuery]);
+
     const [activeTab, setActiveTab] = useState<string | null>(null);
-    const hasActive = fileList.some(([_, f]) => f.status === 'generating');
+    const hasActive = filteredFileList.some(([_, f]) => f.status === 'generating');
 
     // Auto-select latest file
     useEffect(() => {
-        if (fileList.length > 0 && (!activeTab || !files.has(activeTab))) {
-            setActiveTab(fileList[fileList.length - 1][0]);
+        if (filteredFileList.length > 0 && (!activeTab || !files.has(activeTab) || !filteredFileList.some(([k]) => k === activeTab))) {
+            setActiveTab(filteredFileList[filteredFileList.length - 1][0]);
         }
-    }, [fileList.length, files]);
+    }, [filteredFileList.length, files]);
 
     const activeFile = activeTab ? files.get(activeTab) : null;
 
@@ -263,8 +331,9 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
     }, [activeFile, agentId]);
 
     // ── Collapsed ──
-    if (!visible || fileList.length === 0) {
-        if (fileList.length === 0) return null;
+    const originalFileList = useMemo(() => Array.from(files.entries()).filter(([_, f]) => isAllowedFile(f.name)), [files]);
+    if (!visible || originalFileList.length === 0) {
+        if (originalFileList.length === 0) return null;
         return (
             <button onClick={onToggle} style={{
                 position: 'relative', width: '44px', flexShrink: 0,
@@ -274,7 +343,7 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
                 boxShadow: hasActive ? '-2px 0 12px rgba(99,102,241,0.2)' : 'none',
             }} title={t('fileCanvas.expand', '展开文件预览')}>
                 <IconChevronLeft size={18} style={{ color: hasActive ? '#fff' : 'var(--text-tertiary)' }} />
-                <span style={{ fontSize: '18px', fontWeight: 700, color: hasActive ? '#fff' : 'var(--accent-primary)' }}>{fileList.length}</span>
+                <span style={{ fontSize: '18px', fontWeight: 700, color: hasActive ? '#fff' : 'var(--accent-primary)' }}>{originalFileList.length}</span>
                 {hasActive && <span style={{ fontSize: '9px', fontWeight: 600, color: 'rgba(255,255,255,0.8)', animation: 'fcpPulse 2s ease-in-out infinite' }}>{t('fileCanvas.generating', '生成中')}</span>}
             </button>
         );
@@ -298,39 +367,118 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
             }} onMouseEnter={e => (e.currentTarget.style.background = 'var(--accent-primary)')}
                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')} />
 
-            {/* ── Tab Bar ── */}
-            <div style={{ background: 'var(--bg-tertiary)', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'stretch', height: '42px' }}>
-                <div style={{ flex: 1, display: 'flex', overflowX: 'auto', scrollbarWidth: 'none' }}>
-                    {fileList.map(([key, file]) => {
-                        const active = key === activeTab;
-                        return (
-                            <button key={key} onClick={() => setActiveTab(key)} style={{
-                                display: 'flex', alignItems: 'center', gap: '6px', padding: '0 14px',
-                                border: 'none', borderBottom: active ? '2px solid var(--accent-primary)' : '2px solid transparent',
-                                background: active ? 'var(--accent-subtle)' : 'transparent',
-                                color: active ? 'var(--accent-primary)' : 'var(--text-tertiary)',
-                                fontSize: '12px', fontWeight: active ? 600 : 400, cursor: 'pointer',
-                                whiteSpace: 'nowrap', transition: 'all 150ms ease', flexShrink: 0,
-                            }} onMouseEnter={e => { if (!active) { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-hover)'; } }}
-                              onMouseLeave={e => { if (!active) { e.currentTarget.style.color = 'var(--text-tertiary)'; e.currentTarget.style.background = 'transparent'; } }}>
-                                {file.status === 'generating' ? (
-                                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-primary)', animation: 'fcpPulse 1.5s ease-in-out infinite' }} />
-                                ) : (
-                                    <span style={{ display: 'flex', opacity: 0.7, alignItems: 'center' }}>{getFileIcon(file.name, 13)}</span>
-                                )}
-                                <span style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{file.name}</span>
+            {/* ── Toolbar: Search + Filter + Tabs ── */}
+            <div style={{ background: 'var(--bg-tertiary)', borderBottom: '1px solid var(--border-subtle)' }}>
+                {/* Search and Filter Row */}
+                <div style={{ display: 'flex', alignItems: 'center', padding: '8px 12px', gap: '8px', borderBottom: '1px solid var(--border-subtle)' }}>
+                    {/* Search Input */}
+                    <div style={{ flex: 1, position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <IconSearch size={14} style={{ position: 'absolute', left: '8px', color: 'var(--text-tertiary)' }} />
+                        <input
+                            type="text"
+                            placeholder={t('fileCanvas.search', '搜索文件...')}
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            style={{
+                                width: '100%', padding: '6px 12px 6px 30px',
+                                border: '1px solid var(--border-subtle)', borderRadius: '6px',
+                                background: 'var(--bg-primary)', color: 'var(--text-primary)',
+                                fontSize: '12px', outline: 'none', transition: 'all 150ms ease',
+                            }}
+                            onFocus={e => e.currentTarget.style.borderColor = 'var(--accent-primary)'}
+                            onBlur={e => e.currentTarget.style.borderColor = 'var(--border-subtle)'}
+                        />
+                        {searchQuery && (
+                            <button
+                                onClick={() => setSearchQuery('')}
+                                style={{ position: 'absolute', right: '8px', padding: '2px', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-tertiary)' }}
+                                onMouseEnter={e => e.currentTarget.style.color = 'var(--text-primary)'}
+                                onMouseLeave={e => e.currentTarget.style.color = 'var(--text-tertiary)'}
+                            >
+                                <IconCircleX size={12} />
                             </button>
-                        );
-                    })}
+                        )}
+                    </div>
+
+                    {/* Filter Buttons */}
+                    <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                        {FILTER_OPTIONS.map(option => {
+                            const Icon = option.icon;
+                            return (
+                                <button
+                                    key={option.type}
+                                    onClick={() => setFilterType(option.type)}
+                                    title={option.label}
+                                    style={{
+                                        padding: '6px 10px',
+                                        border: `1px solid ${filterType === option.type ? 'var(--accent-primary)' : 'var(--border-subtle)'}`,
+                                        background: filterType === option.type ? 'var(--accent-subtle)' : 'transparent',
+                                        color: filterType === option.type ? 'var(--accent-primary)' : 'var(--text-secondary)',
+                                        borderRadius: '6px', fontSize: '11px', fontWeight: 500, cursor: 'pointer',
+                                        display: 'flex', alignItems: 'center', gap: '4px', transition: 'all 150ms ease',
+                                        whiteSpace: 'nowrap',
+                                    }}
+                                    onMouseEnter={e => {
+                                        if (filterType !== option.type) {
+                                            e.currentTarget.style.background = 'var(--bg-hover)';
+                                            e.currentTarget.style.color = 'var(--text-primary)';
+                                        }
+                                    }}
+                                    onMouseLeave={e => {
+                                        if (filterType !== option.type) {
+                                            e.currentTarget.style.background = 'transparent';
+                                            e.currentTarget.style.color = 'var(--text-secondary)';
+                                        }
+                                    }}
+                                >
+                                    <Icon size={12} />
+                                    <span>{option.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
-                <button onClick={onToggle} style={{
-                    width: 36, flexShrink: 0, border: 'none', borderLeft: '1px solid var(--border-subtle)',
-                    background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: 'var(--text-tertiary)', transition: 'all 150ms ease',
-                }} onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}>
-                    <IconChevronRight size={16} />
-                </button>
+
+                {/* Tab Bar */}
+                <div style={{ display: 'flex', alignItems: 'stretch', height: '36px' }}>
+                    <div style={{ flex: 1, display: 'flex', overflowX: 'auto', padding: '0 8px' }} className="file-tabs-scroll">
+                        {filteredFileList.map(([key, file]) => {
+                            const active = key === activeTab;
+                            return (
+                                <button key={key} onClick={() => setActiveTab(key)} style={{
+                                    display: 'flex', alignItems: 'center', gap: '6px', padding: '0 12px',
+                                    border: 'none', borderBottom: active ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                                    background: active ? 'var(--accent-subtle)' : 'transparent',
+                                    color: active ? 'var(--accent-primary)' : 'var(--text-tertiary)',
+                                    fontSize: '12px', fontWeight: active ? 600 : 400, cursor: 'pointer',
+                                    whiteSpace: 'nowrap', transition: 'all 150ms ease', flexShrink: 0,
+                                    height: '100%', position: 'relative',
+                                }} onMouseEnter={e => { if (!active) { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.background = 'var(--bg-hover)'; } }}
+                                  onMouseLeave={e => { if (!active) { e.currentTarget.style.color = 'var(--text-tertiary)'; e.currentTarget.style.background = 'transparent'; } }}>
+                                    {file.status === 'generating' ? (
+                                        <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent-primary)', animation: 'fcpPulse 1.5s ease-in-out infinite' }} />
+                                    ) : (
+                                        <span style={{ display: 'flex', opacity: 0.7, alignItems: 'center' }}>{getFileIcon(file.name, 13)}</span>
+                                    )}
+                                    <TruncatedFileName name={file.name} />
+                                </button>
+                            );
+                        })}
+                        {filteredFileList.length === 0 && (
+                            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                {t('fileCanvas.noMatchingFiles', '没有匹配的文件')}
+                            </div>
+                        )}
+                    </div>
+                    <button onClick={onToggle} style={{
+                        width: 36, flexShrink: 0, border: 'none', borderLeft: '1px solid var(--border-subtle)',
+                        background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        color: 'var(--text-tertiary)', transition: 'all 150ms ease',
+                    }} onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; e.currentTarget.style.color = 'var(--text-primary)'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}>
+                        <IconChevronRight size={16} />
+                    </button>
+                </div>
             </div>
 
             {/* ── Content ── */}
@@ -353,23 +501,13 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
                             padding: '16px', fontFamily: "'JetBrains Mono',monospace", fontSize: '13px', lineHeight: 1.7,
                             color: 'var(--text-primary)', background: 'var(--bg-primary)',
                         }} />
-                    ) : getFileType(activeFile.name) === 'code' ? (
-                        <CodePreview content={displayContent} fileName={activeFile.name} />
-                    ) : getFileType(activeFile.name) === 'markdown' ? (
-                        <MarkdownRenderer content={displayContent} style={{ padding: '20px' }} />
-                    ) : getFileType(activeFile.name) === 'image' ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12, minHeight: 200 }}>
-                            {activeFile.path && agentId ? (
-                                <img src={`/api/agents/${agentId}/files/download?path=${encodeURIComponent(activeFile.path)}${localStorage.getItem('token') ? `&token=${localStorage.getItem('token')}` : ''}`}
-                                    alt={activeFile.name} style={{ maxWidth: '100%', maxHeight: 400, objectFit: 'contain', borderRadius: 8, border: '1px solid var(--border-subtle)' }} />
-                            ) : <IconPhoto size={40} style={{ color: 'var(--text-tertiary)' }} />}
-                            <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{activeFile.name}</span>
-                        </div>
                     ) : getFileType(activeFile.name) === 'document' && activeFile.path && agentId ? (
                         <DocumentViewer
                             file={`/api/agents/${agentId}/files/download?path=${encodeURIComponent(activeFile.path)}${localStorage.getItem('token') ? `&token=${localStorage.getItem('token')}` : ''}`}
                             filename={activeFile.name} height="100%" theme="light"
                         />
+                    ) : getFileType(activeFile.name) === 'markdown' ? (
+                        <MarkdownRenderer content={displayContent} style={{ padding: '20px' }} />
                     ) : (
                         <pre style={{ padding: 16, fontFamily: "'JetBrains Mono',monospace", fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0 }}>
                             {displayContent}
@@ -427,6 +565,23 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
                 @keyframes fcpSlideIn { from { opacity:0; transform:translateX(20px) } to { opacity:1; transform:translateX(0) } }
                 @keyframes fcpPulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
                 @keyframes fcpShimmer { 0% { background-position:200% 0 } 100% { background-position:-200% 0 } }
+                .file-tabs-scroll {
+                    scrollbar-width: thin;
+                    scrollbar-color: var(--border-default) transparent;
+                }
+                .file-tabs-scroll::-webkit-scrollbar {
+                    height: 4px;
+                }
+                .file-tabs-scroll::-webkit-scrollbar-track {
+                    background: transparent;
+                }
+                .file-tabs-scroll::-webkit-scrollbar-thumb {
+                    background-color: var(--border-default);
+                    border-radius: 2px;
+                }
+                .file-tabs-scroll::-webkit-scrollbar-thumb:hover {
+                    background-color: var(--text-tertiary);
+                }
             `}</style>
         </div>
     );

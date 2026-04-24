@@ -1797,22 +1797,80 @@ function AgentDetailInner() {
     const FILE_TOOL_NAMES = useMemo(() => new Set([
         'write_file', 'edit_file', 'create_file', 'python_run_file', 'run_python_file',
         'python_exec', 'python', 'execute_python', 'run_code',
+        'execute_code', 'execute_code_e2b',
+        'call_model', 'callmodel',
     ]), []);
     const canvasFiles = useMemo(() => {
         const m = new Map<string, { name: string; status: 'generating' | 'done' | 'error'; content?: string; path?: string }>();
+
+        // Helper function to extract generated files from tool output
+        const extractGeneratedFiles = (toolResult: string): string[] => {
+            const files: string[] = [];
+            if (!toolResult) return files;
+
+            // Match multiple patterns:
+            // 1. Chinese format: ✅ PDF文档已生成: workspace/demo.pdf
+            // 2. English format: ✅ PDF generated: workspace/demo.pdf
+            // 3. Direct paths: workspace/demo.pdf or demo.pdf
+            // 4. Office file formats: .pdf, .pptx, .xlsx, .docx, etc.
+
+            const patterns = [
+                // Chinese/English format with emoji and indicators
+                /(?:✅|❌)?\s*(?:PDF|PPT|Excel|Word|文档|表格|演示文稿|文件)[^\s:]*[:：]\s*([^\s\n]+\.(?:pdf|pptx?|xlsx?|docx?))/gi,
+                // English format: generated/saved/created/written: path
+                /(?:generated|saved|created|written|output)[\s:]+([^\s\n]+\.(?:pdf|pptx?|xlsx?|docx?|png|jpe?g|gif|svg|html?|py|js|ts|jsx|tsx|json|yaml?|md|txt|csv))/gi,
+                // Direct workspace paths: workspace/filename.ext
+                /workspace\/[^\s\n]+\.(?:pdf|pptx?|xlsx?|docx?|png|jpe?g|gif|svg|html?|py|js|ts|jsx|tsx|json|yaml?|md|txt|csv)/gi,
+                // Direct filename with extension (fallback)
+                /[a-zA-Z0-9_\-\/]+\.(?:pdf|pptx?|xlsx?|docx?)/gi,
+            ];
+
+            for (const pattern of patterns) {
+                let match;
+                // Reset regex state
+                pattern.lastIndex = 0;
+                while ((match = pattern.exec(toolResult)) !== null) {
+                    let filePath = match[1] || match[0];
+                    // Extract just the filename from the path
+                    const fileName = filePath.split('/').pop() || filePath;
+                    // Normalize to lowercase for comparison
+                    const normalizedFileName = fileName.toLowerCase();
+                    // Avoid duplicates (case-insensitive)
+                    if (!files.some(f => f.toLowerCase() === normalizedFileName)) {
+                        files.push(fileName);
+                    }
+                }
+            }
+
+            return files;
+        };
+
         for (const msg of chatMessages) {
             if (msg.role !== 'tool_call' || !FILE_TOOL_NAMES.has(msg.toolName || '')) continue;
+
+            // Try to get filename from tool arguments first
             let fileName = msg.toolArgs?.file_path || msg.toolArgs?.path || msg.toolArgs?.filename || '';
+
+            // If not found in arguments, extract from tool result
             if (!fileName) {
-                const match = (msg.toolResult || '').match(/(?:created|written|saved|generated|output)[\s:]+([^\s]+\.\w+)/i);
-                fileName = match ? match[1] : 'untitled_file';
+                const extractedFiles = extractGeneratedFiles(msg.toolResult || '');
+                if (extractedFiles.length > 0) {
+                    // Use the first extracted file as the primary file
+                    fileName = extractedFiles[0];
+                } else {
+                    fileName = 'untitled_file';
+                }
             }
-            m.set(`file-${fileName}`, {
-                name: fileName,
-                status: msg.toolStatus === 'running' ? 'generating' : 'done',
-                content: '', // content fetched via API in FileCanvasPanel
-                path: msg.toolArgs?.file_path || msg.toolArgs?.path,
-            });
+
+            // Only add if we got a valid filename with extension
+            if (fileName && fileName !== 'untitled_file') {
+                m.set(`file-${fileName}`, {
+                    name: fileName,
+                    status: msg.toolStatus === 'running' ? 'generating' : 'done',
+                    content: '', // content fetched via API in FileCanvasPanel
+                    path: msg.toolArgs?.file_path || msg.toolArgs?.path || `workspace/${fileName}`,
+                });
+            }
         }
         return m;
     }, [chatMessages, FILE_TOOL_NAMES]);

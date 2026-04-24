@@ -1453,6 +1453,14 @@
       "title": "Company Intro",
       "description": "Describe your company's mission, products, and culture. This information will be included as context in every Agent conversation.",
       "hint": "This content will appear in every Agent's system prompt"
+    },
+    "companyConfig": {
+      "systemPromptTitle": "Company System Prompt",
+      "systemPromptDesc": "Define common system prompt content for all agents, such as tool calling rules, agent loop logic, and behavioral guidelines. This is automatically injected into every agent's system prompt.",
+      "systemPromptHint": "This content is injected into all agents' system prompts. Changes sync to agents within 5 minutes.",
+      "heartbeatTitle": "Company Heartbeat Instruction",
+      "heartbeatDesc": "Define the heartbeat instruction for all agents. This instruction controls what agents do during their periodic heartbeat cycles (autonomous exploration, plaza posts, etc.).",
+      "heartbeatHint": "This instruction applies to all agents. Agents can override it with their own HEARTBEAT.md file. Changes sync within 5 minutes."
     }
   },
   "common": {

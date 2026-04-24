@@ -1401,6 +1401,14 @@
       "description": "描述你的公司使命、产品和文化。此信息会作为上下文包含在每次 Agent 对话中。",
       "hint": "此内容会出现在每个 Agent 的系统提示词中"
     },
+    "companyConfig": {
+      "systemPromptTitle": "公司系统提示词配置",
+      "systemPromptDesc": "为所有 Agent 定义通用的系统提示词内容，例如工具调用规则、Agent 循环逻辑和行为准则。这将自动注入到每个 Agent 的系统提示词中。",
+      "systemPromptHint": "此内容会注入到所有 Agent 的系统提示词中。更改会在 5 分钟内同步到 Agent。",
+      "heartbeatTitle": "公司心跳指令",
+      "heartbeatDesc": "为所有 Agent 定义心跳指令。此指令控制 Agent 在周期性心跳循环中的行为（自主探索、广场发帖等）。",
+      "heartbeatHint": "此指令适用于所有 Agent。Agent 可以通过自己的 HEARTBEAT.md 文件覆盖。更改会在 5 分钟内同步。"
+    },
     "kb": {
       "title": "公司知识库",
       "description": "共享文件，所有 Agent 可通过 enterprise_info/ 目录访问。",
