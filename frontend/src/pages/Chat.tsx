@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
+import RecentFilesPanel from '../components/RecentFilesPanel';
 import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
@@ -722,6 +723,14 @@ export default function Chat() {
 
     const hasLiveData = !!(liveState.desktop || liveState.browser || liveState.code);
 
+    // ── File preview handler ──
+    const handlePreviewFile = useCallback((file: any) => {
+        // 可以扩展为在模态框中预览文件
+        if (file.url) {
+            window.open(file.url, '_blank');
+        }
+    }, []);
+
     // ── Drag-and-drop file upload ──
     const handleDroppedFiles = useCallback(async (files: File[]) => {
         const file = files[0]; // Chat supports single file
@@ -780,7 +789,7 @@ export default function Chat() {
                 </div>
             </div>
 
-            <div className={`chat-container ${hasLiveData ? 'chat-with-live-panel' : ''}`} {...chatDropProps} style={{ position: 'relative' }}>
+            <div className={`chat-container ${hasLiveData ? 'chat-with-live-panel' : ''}`} {...chatDropProps} style={{ position: 'relative', display: 'flex', flexDirection: 'row' }}>
                 {/* Drop overlay */}
                 {isChatDragging && (
                     <div className="drop-zone-overlay">
@@ -1013,6 +1022,12 @@ export default function Chat() {
                         }}
                     />
                 )}
+
+                {/* Recent Files Panel */}
+                <RecentFilesPanel
+                    agentId={id}
+                    onPreviewFile={handlePreviewFile}
+                />
             </div>
         </div>
     );

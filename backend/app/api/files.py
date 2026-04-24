@@ -156,6 +156,111 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     return full
 
 
+def _is_code_file(filename: str) -> bool:
+    """Check if a file is a code file based on its extension."""
+    code_extensions = FILE_TYPE_MAP.get("code", [])
+    lower_name = filename.lower()
+    return any(lower_name.endswith(ext) for ext in code_extensions)
+
+
+def _collect_all_files(agent_id: uuid.UUID, base_dir: Path | None = None) -> list[FileInfo]:
+    """Recursively collect all files from agent workspace.
+
+    Args:
+        agent_id: Agent UUID
+        base_dir: Base directory to start from (defaults to agent base dir)
+
+    Returns:
+        List of all files with metadata
+    """
+    if base_dir is None:
+        base_dir = _agent_base_dir(agent_id)
+
+    base_abs = base_dir.resolve()
+    all_files = []
+
+    try:
+        for entry in base_dir.rglob("*"):
+            if entry.is_file() and entry.name != '.gitkeep':
+                try:
+                    rel = str(entry.resolve().relative_to(base_abs))
+                    # Convert to forward slashes for cross-platform compatibility
+                    rel = rel.replace("\\", "/")
+                    stat = entry.stat()
+
+                    all_files.append(FileInfo(
+                        name=entry.name,
+                        path=rel,
+                        is_dir=False,
+                        size=stat.st_size,
+                        modified_at=str(stat.st_mtime),
+                        url=f"/api/agents/{agent_id}/files/download?path={rel}"
+                    ))
+                except (OSError, ValueError) as e:
+                    # Skip files that can't be accessed or cause path issues
+                    logger.warning(f"Skipping file {entry}: {e}")
+                    continue
+    except Exception as e:
+        logger.error(f"Error scanning directory {base_dir}: {e}")
+
+    return all_files
+
+
+@router.get("/recent", response_model=dict)
+async def get_recent_files(
+    agent_id: uuid.UUID,
+    limit: int = 10,
+    offset: int = 0,
+    exclude_code: bool = True,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get recently modified files from agent workspace with pagination.
+
+    Query Parameters:
+        limit: Number of files per page (default: 10, max: 50)
+        offset: Offset for pagination (default: 0)
+        exclude_code: Whether to exclude code files (default: true)
+
+    Returns:
+        Dictionary with:
+        - files: list of FileInfo objects
+        - total: total number of files (after filtering)
+        - limit: page size
+        - offset: current offset
+    """
+    await check_agent_access(db, current_user, agent_id)
+
+    # Validate and clamp parameters
+    limit = min(max(1, limit), 50)  # Between 1 and 50
+    offset = max(0, offset)
+
+    base = _agent_base_dir(agent_id)
+
+    # Collect all files
+    all_files = _collect_all_files(agent_id, base)
+
+    # Filter out code files if requested
+    if exclude_code:
+        all_files = [f for f in all_files if not _is_code_file(f.name)]
+
+    # Sort by modification time (newest first)
+    all_files.sort(key=lambda f: float(f.modified_at), reverse=True)
+
+    # Get total count
+    total = len(all_files)
+
+    # Apply pagination
+    paginated_files = all_files[offset:offset + limit]
+
+    return {
+        "files": paginated_files,
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
+
+
 @router.get("/", response_model=list[FileInfo])
 async def list_files(
     agent_id: uuid.UUID,
@@ -430,6 +535,31 @@ async def write_file(
     target.parent.mkdir(parents=True, exist_ok=True)
     async with aiofiles.open(target, "w", encoding="utf-8") as f:
         await f.write(data.content)
+
+    # Notify WebSocket clients about the new file
+    try:
+        from app.api.websocket import manager
+        # Check if this is a code file (should be filtered out)
+        is_code = _is_code_file(target.name)
+
+        # Send WebSocket notification
+        await manager.send_message(
+            str(agent_id),
+            {
+                "type": "file_created",
+                "file": {
+                    "name": target.name,
+                    "path": path,
+                    "size": target.stat().st_size,
+                    "modified_at": str(target.stat().st_mtime),
+                    "is_code": is_code,
+                    "url": f"/api/agents/{agent_id}/files/download?path={path}"
+                }
+            }
+        )
+        logger.info(f"[FileWrite] Sent WebSocket notification for file: {path}")
+    except Exception as e:
+        logger.warning(f"[FileWrite] Failed to send WebSocket notification: {e}")
 
     return {"status": "ok", "path": path}
 

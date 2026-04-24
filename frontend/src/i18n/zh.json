@@ -414,6 +414,18 @@
       "toolCallChain": "使用工具",
       "analysing": "分析中"
     },
+    "recentFiles": {
+      "title": "最近文件",
+      "empty": "Agent生成的文件\n会显示在这里",
+      "justNow": "刚刚",
+      "minsAgo": "{{mins}}分钟前",
+      "hoursAgo": "{{hours}}小时前",
+      "daysAgo": "{{days}}天前",
+      "download": "下载",
+      "preview": "预览",
+      "previous": "上一页",
+      "next": "下一页"
+    },
     "activityLog": {
       "title": "工作日志",
       "noRecords": "暂无工作日志",

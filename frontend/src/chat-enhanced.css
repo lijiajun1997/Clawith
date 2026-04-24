@@ -1523,3 +1523,93 @@
   box-shadow: var(--shadow-sm);
   transform: translateX(2px);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   最近文件面板样式 (Recent Files Panel)
+   ═══════════════════════════════════════════════════════════ */
+
+/* 文件项滑入动画 */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+/* 文件项悬停显示操作按钮 */
+.recent-files-panel .file-actions {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.recent-files-panel .file-actions:hover {
+  opacity: 1;
+}
+
+/* 面板展开/收起过渡 */
+.recent-files-panel {
+  transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 文件项悬停效果 */
+.recent-files-panel .file-item:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--border-subtle);
+  transform: translateX(2px);
+}
+
+/* 文件类型图标样式 */
+.recent-files-panel .file-icon {
+  transition: transform 180ms ease;
+}
+
+.recent-files-panel .file-item:hover .file-icon {
+  transform: scale(1.05);
+}
+
+/* 响应式布局 - 与AgentBay Live Panel协调 */
+@media (max-width: 1400px) {
+  .chat-container.chat-with-live-panel .recent-files-panel.expanded {
+    width: 220px;
+  }
+}
+
+@media (max-width: 1000px) {
+  .chat-container.chat-with-live-panel .recent-files-panel:not(.user-expanded) {
+    width: 48px;
+  }
+
+  .chat-container.chat-with-live-panel .recent-files-panel.expanded {
+    position: absolute;
+    left: 0;
+    z-index: 50;
+    box-shadow: 4px 0 24px rgba(15, 23, 42, 0.15);
+  }
+}
+
+/* 滚动条样式优化 */
+.recent-files-panel.expanded > div[style*="overflow-y: auto"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+.recent-files-panel.expanded > div[style*="overflow-y: auto"]::-webkit-scrollbar {
+  width: 6px;
+}
+
+.recent-files-panel.expanded > div[style*="overflow-y: auto"]::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.recent-files-panel.expanded > div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 3px;
+}
+
+.recent-files-panel.expanded > div[style*="overflow-y: auto"]::-webkit-scrollbar-thumb:hover {
+  background: var(--border-default);
+}
