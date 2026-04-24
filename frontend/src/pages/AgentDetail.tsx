@@ -18,6 +18,7 @@ import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
 import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
+import FileCanvasPanel from '../components/FileCanvasPanel';
 import {
     IconSettings,
     IconAlertTriangle,
@@ -1809,6 +1810,15 @@ function AgentDetailInner() {
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    // Canvas-style file generation panel
+    const [generatingFiles, setGeneratingFiles] = useState<Map<string, {
+        name: string;
+        status: 'generating' | 'done' | 'error';
+        progress?: number;
+        content?: string;
+        path?: string;
+    }>>(new Map());
+    const [canvasPanelVisible, setCanvasPanelVisible] = useState(true);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
     const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
@@ -2064,6 +2074,31 @@ function AgentDetailInner() {
                     return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'tool_call') {
+                // ── Canvas-style file generation tracking ──
+                const fileToolNames = ['write_file', 'edit_file', 'python_run_file', 'run_python_file', 'create_file'];
+                if (fileToolNames.includes(d.name)) {
+                    const fileName = d.args?.file_path || d.args?.path || d.args?.filename || 'untitled_file';
+                    const fileKey = `${d.name}-${fileName}`;
+                    if (d.status === 'running') {
+                        setGeneratingFiles(prev => {
+                            const next = new Map(prev);
+                            next.set(fileKey, { name: fileName, status: 'generating' });
+                            return next;
+                        });
+                        setCanvasPanelVisible(true);
+                    } else if (d.status === 'done') {
+                        setGeneratingFiles(prev => {
+                            const next = new Map(prev);
+                            next.set(fileKey, {
+                                name: fileName,
+                                status: 'done',
+                                content: (d.result || '').substring(0, 2000),
+                                path: d.args?.file_path || d.args?.path,
+                            });
+                            return next;
+                        });
+                    }
+                }
                 if (d.live_preview) {
                     const lp = d.live_preview;
                     setLiveState(prev => {
@@ -4899,6 +4934,13 @@ function AgentDetailInner() {
                                         }}
                                     />
                                 )}
+                                {/* Canvas-style File Generation Panel */}
+                                <FileCanvasPanel
+                                    files={generatingFiles}
+                                    visible={canvasPanelVisible}
+                                    onToggle={() => setCanvasPanelVisible(v => !v)}
+                                    agentId={id}
+                                />
                             </div>
                         </div>
                     )
