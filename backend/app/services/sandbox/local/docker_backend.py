@@ -142,9 +142,30 @@ class DockerBackend(BaseSandboxBackend):
 
         # Build command
         if language == "python":
-            cmd = ["python3", "-c", code]
+            # Pre-process: if code contains pip install, convert to bash command
+            # because python -c cannot execute pip install
+            import re
+            if re.search(r'^\s*!?\s*pip\s+install|subprocess.*pip.*install', code, re.MULTILINE | re.IGNORECASE):
+                # Switch to bash execution for pip install
+                language = "bash"
+                cmd = ["bash", "-c", f"python3 -m pip install --target /data/shared-deps/pip {code.split('install')[-1] if 'install' in code else code}"]
+                logger.info(f"[DockerBackend] Converted pip install to bash command")
+            else:
+                cmd = ["python3", "-c", code]
         elif language == "bash":
             cmd = ["bash", "-c", code]
+            # Auto-convert pip install to install to shared-deps
+            import re
+            if re.search(r'^\s*!?\s*pip\s+install', code, re.MULTILINE | re.IGNORECASE):
+                code = re.sub(
+                    r'^\s*!?\s*(pip)\s+(install\s+)',
+                    r'python3 -m \1 \2--target /data/shared-deps/pip ',
+                    code,
+                    count=1,
+                    flags=re.MULTILINE | re.IGNORECASE
+                )
+                cmd = ["bash", "-c", code]
+                logger.info(f"[DockerBackend] Auto-converted pip command to install to shared-deps: {code.strip()}")
         elif language == "node":
             cmd = ["node", "-e", code]
         else:

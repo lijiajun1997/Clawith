@@ -195,13 +195,20 @@ class SubprocessBackend(BaseSandboxBackend):
         elif language == "bash":
             ext = ".sh"
             cmd_prefix = ["bash"]
-            # Auto-convert pip install commands: pip install -> python3 -m pip install
+            # Auto-convert pip install commands: pip install -> python3 -m pip install --target /data/shared-deps/pip
             # Supports both formats: `pip install` or `!pip install` (Jupyter style)
             import re
             if re.search(r'^\s*!?\s*pip\s+install', code, re.MULTILINE | re.IGNORECASE):
-                # Replace only 'pip' with 'python3 -m pip', keep the rest intact
-                code = re.sub(r'^\s*!?\s*(pip)\s+', r'python3 -m \1 ', code, count=1, flags=re.MULTILINE | re.IGNORECASE)
-                logger.info(f"[SubprocessBackend] Auto-converted pip command to: {code.strip()}")
+                # Replace 'pip install' with 'python3 -m pip install --target /data/shared-deps/pip'
+                # This ensures packages are installed to shared-deps directory accessible by all agents
+                code = re.sub(
+                    r'^\s*!?\s*(pip)\s+(install\s+)',
+                    r'python3 -m \1 \2--target /data/shared-deps/pip ',
+                    code,
+                    count=1,
+                    flags=re.MULTILINE | re.IGNORECASE
+                )
+                logger.info(f"[SubprocessBackend] Auto-converted pip command to install to shared-deps: {code.strip()}")
         elif language == "node":
             ext = ".js"
             cmd_prefix = ["node"]
