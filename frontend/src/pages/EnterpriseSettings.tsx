@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { enterpriseApi, skillApi } from '../services/api';
+import { enterpriseApi, skillApi, agentApi } from '../services/api';
 import PromptModal from '../components/PromptModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
@@ -1856,6 +1856,12 @@ export default function EnterpriseSettings() {
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
 
+    // Company config (system prompt & heartbeat instruction)
+    const [companySystemPrompt, setCompanySystemPrompt] = useState('');
+    const [companyHeartbeatInstruction, setCompanyHeartbeatInstruction] = useState('');
+    const [companyConfigSaving, setCompanyConfigSaving] = useState(false);
+    const [companyConfigSaved, setCompanyConfigSaved] = useState(false);
+
 
     // Company intro key: always per-tenant scoped
     const companyIntroKey = selectedTenantId ? `company_intro_${selectedTenantId}` : 'company_intro';
@@ -1873,6 +1879,14 @@ export default function EnterpriseSettings() {
                 // No fallback — each company starts empty with placeholder watermark
             })
             .catch(() => { });
+
+        // Load company config (system prompt & heartbeat instruction)
+        fetchJson<any>(`/tenants/${selectedTenantId}/company-config`)
+            .then(d => {
+                if (d.system_prompt !== undefined) setCompanySystemPrompt(d.system_prompt || '');
+                if (d.heartbeat_instruction !== undefined) setCompanyHeartbeatInstruction(d.heartbeat_instruction || '');
+            })
+            .catch(() => { });
     }, [selectedTenantId]);
 
     const saveCompanyIntro = async () => {
@@ -1885,6 +1899,26 @@ export default function EnterpriseSettings() {
             setTimeout(() => setCompanyIntroSaved(false), 2000);
         } catch (e) { }
         setCompanyIntroSaving(false);
+    };
+
+    const saveCompanyConfig = async () => {
+        if (!selectedTenantId) return;
+        setCompanyConfigSaving(true);
+        setCompanyConfigSaved(false);
+        try {
+            await fetchJson(`/tenants/${selectedTenantId}/company-config`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    system_prompt: companySystemPrompt,
+                    heartbeat_instruction: companyHeartbeatInstruction,
+                }),
+            });
+            setCompanyConfigSaved(true);
+            setTimeout(() => setCompanyConfigSaved(false), 2000);
+        } catch (e: any) {
+            alert(e.message || 'Failed to save company config');
+        }
+        setCompanyConfigSaving(false);
     };
     const [auditFilter, setAuditFilter] = useState<'all' | 'background' | 'actions'>('all');
     const [infoRefresh, setInfoRefresh] = useState(0);
@@ -1912,6 +1946,15 @@ export default function EnterpriseSettings() {
     const [editingConfig, setEditingConfig] = useState<Record<string, any>>({});
 
     const [configCategory, setConfigCategory] = useState<string | null>(null);
+
+    // Batch tool management states
+    const [showBatchToolManager, setShowBatchToolManager] = useState(false);
+    const [batchToolId, setBatchToolId] = useState<string | null>(null);
+    const [batchToolName, setBatchToolName] = useState<string>('');
+    const [agentsWithToolStatus, setAgentsWithToolStatus] = useState<any[]>([]);
+    const [batchLoading, setBatchLoading] = useState(false);
+    const [selectedAgentIds, setSelectedAgentIds] = useState<string[]>([]);
+    const [batchOperationResult, setBatchOperationResult] = useState<any>(null);
 
     // Category-level config schemas: tools sharing the same key have config on category header
     const GLOBAL_CATEGORY_CONFIG_SCHEMAS: Record<string, { title: string; fields: any[] }> = {
@@ -1991,7 +2034,94 @@ export default function EnterpriseSettings() {
             body: JSON.stringify({ value: {} }),
         });
         setJinaKeyMasked('');
-        setJinaKey('');
+    };
+
+    // Batch tool management functions
+    const openBatchToolManager = async (toolId: string, toolName: string) => {
+        setBatchToolId(toolId);
+        setBatchToolName(toolName);
+        setBatchLoading(true);
+        setShowBatchToolManager(true);
+        setSelectedAgentIds([]);
+        setBatchOperationResult(null);
+
+        try {
+            // Get all agents
+            const agents = await agentApi.list();
+            const token = localStorage.getItem('token');
+
+            // Get tool status for each agent
+            const agentStatuses = await Promise.all(
+                agents.map(async (agent: any) => {
+                    try {
+                        const res = await fetch(`/api/tools/agents/${agent.id}`, {
+                            headers: { Authorization: `Bearer ${token}` }
+                        });
+                        const tools = await res.json();
+                        const tool = tools.find((t: any) => t.id === toolId);
+                        return {
+                            agent_id: agent.id,
+                            agent_name: agent.name,
+                            agent_role: agent.role_description || '',
+                            enabled: tool?.enabled || false
+                        };
+                    } catch (error) {
+                        return {
+                            agent_id: agent.id,
+                            agent_name: agent.name,
+                            agent_role: agent.role_description || '',
+                            enabled: false,
+                            error: 'Failed to load'
+                        };
+                    }
+                })
+            );
+
+            setAgentsWithToolStatus(agentStatuses);
+        } catch (error) {
+            console.error('Failed to load agent statuses:', error);
+            alert('Failed to load agent statuses');
+        } finally {
+            setBatchLoading(false);
+        }
+    };
+
+    const handleBatchToggle = async (enabled: boolean) => {
+        if (selectedAgentIds.length === 0) {
+            alert('Please select at least one agent');
+            return;
+        }
+
+        const token = localStorage.getItem('token');
+        let successCount = 0;
+        let failedAgents: any[] = [];
+
+        for (const agentId of selectedAgentIds) {
+            try {
+                await fetch(`/api/tools/agents/${agentId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                    body: JSON.stringify([{ tool_id: batchToolId, enabled }])
+                });
+                successCount++;
+            } catch (error) {
+                const agent = agentsWithToolStatus.find(a => a.agent_id === agentId);
+                failedAgents.push({
+                    agent_id: agentId,
+                    agent_name: agent?.agent_name || agentId,
+                    error: String(error)
+                });
+            }
+        }
+
+        setBatchOperationResult({
+            success_count: successCount,
+            failed_count: failedAgents.length,
+            failed_agents: failedAgents
+        });
+
+        // Refresh the agent statuses
+        await openBatchToolManager(batchToolId!, batchToolName);
     };
 
 
@@ -2526,6 +2656,113 @@ export default function EnterpriseSettings() {
                             </div>
                         </div>
 
+                        {/* ── 3. Company System Prompt Configuration ── */}
+                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyConfig.systemPromptTitle', 'Company System Prompt')}</h3>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                            {t('enterprise.companyConfig.systemPromptDesc', 'Define common system prompt content for all agents, such as tool calling rules, agent loop logic, and behavioral guidelines. This is automatically injected into every agent\'s system prompt.')}
+                        </p>
+                        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+                            <textarea
+                                className="form-input"
+                                value={companySystemPrompt}
+                                onChange={e => setCompanySystemPrompt(e.target.value)}
+                                placeholder={`## Tool Calling Rules
+
+1. Always use tools for data retrieval and actions
+2. Never fabricate tool results
+3. Verify tool outputs before proceeding
+
+## Agent Loop Logic
+
+1. Analyze the user's request
+2. Plan the execution steps
+3. Execute tools as needed
+4. Review and refine results
+5. Provide clear, actionable responses
+
+## Behavioral Guidelines
+
+- Be professional and concise
+- Ask clarifying questions when needed
+- Provide context for your responses
+- Admit uncertainty when appropriate`}
+                                style={{
+                                    minHeight: '300px', resize: 'vertical',
+                                    fontFamily: 'var(--font-mono)', fontSize: '13px',
+                                    lineHeight: '1.6', whiteSpace: 'pre-wrap',
+                                }}
+                            />
+                            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <button className="btn btn-primary" onClick={saveCompanyConfig} disabled={companyConfigSaving}>
+                                    {companyConfigSaving ? t('common.loading') : t('common.save', 'Save')}
+                                </button>
+                                {companyConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                                    💡 {t('enterprise.companyConfig.systemPromptHint', 'This content is injected into all agents\' system prompts. Changes sync to agents within 5 minutes.')}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* ── 4. Company Heartbeat Instruction ── */}
+                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyConfig.heartbeatTitle', 'Company Heartbeat Instruction')}</h3>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
+                            {t('enterprise.companyConfig.heartbeatDesc', 'Define the heartbeat instruction for all agents. This instruction controls what agents do during their periodic heartbeat cycles (autonomous exploration, plaza posts, etc.).')}
+                        </p>
+                        <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
+                            <textarea
+                                className="form-input"
+                                value={companyHeartbeatInstruction}
+                                onChange={e => setCompanyHeartbeatInstruction(e.target.value)}
+                                placeholder={`# Heartbeat Protocol
+
+You are entering a **heartbeat cycle** — a periodic moment of autonomous awareness.
+
+## Phase 1: Review Context
+
+1. Read \`memory/reflections.md\` — Recall your recent hypotheses and ongoing threads
+2. Read \`soul.md\` — Remind yourself of your core role and expertise
+3. Check recent interactions — Review your latest conversations
+
+## Phase 2: Autonomous Exploration
+
+Use web searches strategically to explore topics relevant to your role:
+- Generate hypotheses before searching
+- Search with intent to answer specific questions
+- Evaluate findings for genuine value
+
+## Phase 3: Record & Share
+
+- Update \`memory/reflections.md\` with findings
+- Post valuable insights to Plaza (with source URLs)
+- Send direct messages to relevant colleagues
+
+## Phase 4: Plan Ahead
+
+Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for continuity.
+
+## Guidelines
+
+- Quality over quantity
+- Stay in character
+- Be honest about what you find
+- Cite sources for web information`}
+                                style={{
+                                    minHeight: '300px', resize: 'vertical',
+                                    fontFamily: 'var(--font-mono)', fontSize: '13px',
+                                    lineHeight: '1.6', whiteSpace: 'pre-wrap',
+                                }}
+                            />
+                            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <button className="btn btn-primary" onClick={saveCompanyConfig} disabled={companyConfigSaving}>
+                                    {companyConfigSaving ? t('common.loading') : t('common.save', 'Save')}
+                                </button>
+                                {companyConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                                    💡 {t('enterprise.companyConfig.heartbeatHint', 'This instruction applies to all agents. Agents can override it with their own HEARTBEAT.md file. Changes sync within 5 minutes.')}
+                                </span>
+                            </div>
+                        </div>
+
                         {/* ── 2. Company Knowledge Base ── */}
                         <h3 style={{ marginBottom: '8px' }}>{t('enterprise.kb.title')}</h3>
                         <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>
@@ -2779,6 +3016,30 @@ export default function EnterpriseSettings() {
                     <div>
                         {/* Sub-tab pills */}
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '8px' }}>
+                            {/* 测试批量管理按钮 */}
+                            <button
+                                onClick={() => {
+                                    console.log('🧪 测试批量管理按钮被点击！');
+                                    alert('批量管理功能已加载！现在每个工具卡片上都有"🤖 管理Agent"按钮。');
+                                }}
+                                style={{
+                                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                    border: 'none',
+                                    borderRadius: '8px',
+                                    padding: '8px 16px',
+                                    fontSize: '14px',
+                                    cursor: 'pointer',
+                                    color: '#fff',
+                                    fontWeight: 600,
+                                    boxShadow: '0 4px 6px rgba(102, 126, 234, 0.4)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '8px'
+                                }}
+                            >
+                                🤖 批量管理Agent工具（测试）
+                            </button>
+                            {/* 子标签按钮 */}
                             {([['global', t('enterprise.tools.globalTools')], ['agent-installed', t('enterprise.tools.agentInstalled')]] as const).map(([key, label]) => (
                                 <button key={key} onClick={() => { setToolsView(key as any); if (key === 'agent-installed') loadAgentInstalledTools(); }} style={{
                                     padding: '4px 14px', borderRadius: '12px', fontSize: '12px', fontWeight: 500, cursor: 'pointer', border: 'none',
@@ -3086,6 +3347,26 @@ export default function EnterpriseSettings() {
                                                                                     </div>
                                                                                 </div>
                                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                                    <button
+                                                                                        onClick={() => {
+                                                                                            console.log('🤖 MCP Batch manager clicked!', { toolId: tool.id, toolName: tool.display_name || tool.name });
+                                                                                            openBatchToolManager(tool.id, tool.display_name || tool.name);
+                                                                                        }}
+                                                                                        style={{
+                                                                                            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                                                                            border: 'none',
+                                                                                            borderRadius: '6px',
+                                                                                            padding: '4px 10px',
+                                                                                            fontSize: '10px',
+                                                                                            cursor: 'pointer',
+                                                                                            color: '#fff',
+                                                                                            fontWeight: 600,
+                                                                                            boxShadow: '0 2px 4px rgba(102, 126, 234, 0.3)',
+                                                                                        }}
+                                                                                        title="批量管理Agent工具"
+                                                                                    >
+                                                                                        🤖 <span>管理</span>
+                                                                                    </button>
                                                                                     <button className="btn btn-danger" style={{ padding: '3px 7px', fontSize: '10px' }} onClick={async () => {
                                                                                         if (!confirm(`${t('common.delete')} ${tool.display_name}?`)) return;
                                                                                         await fetchJson(`/tools/${tool.id}`, { method: 'DELETE' });
@@ -3122,6 +3403,26 @@ export default function EnterpriseSettings() {
                                                                                         </div>
                                                                                     </div>
                                                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                                        <button
+                                                                                            onClick={() => {
+                                                                                                console.log('🤖 Custom Batch manager clicked!', { toolId: tool.id, toolName: tool.display_name || tool.name });
+                                                                                                openBatchToolManager(tool.id, tool.display_name || tool.name);
+                                                                                            }}
+                                                                                            style={{
+                                                                                                background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                                                                                border: 'none',
+                                                                                                borderRadius: '6px',
+                                                                                                padding: '4px 10px',
+                                                                                                fontSize: '11px',
+                                                                                                cursor: 'pointer',
+                                                                                                color: '#fff',
+                                                                                                fontWeight: 600,
+                                                                                                boxShadow: '0 2px 4px rgba(102, 126, 234, 0.3)',
+                                                                                            }}
+                                                                                            title="批量管理Agent工具"
+                                                                                        >
+                                                                                            🤖 <span>管理</span>
+                                                                                        </button>
                                                                                         {hasOwnConfig && (
                                                                                             <button style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }} onClick={() => { setEditingToolId(tool.id); setEditingConfig({ ...tool.config }); }}>Configure</button>
                                                                                         )}
@@ -3178,6 +3479,15 @@ export default function EnterpriseSettings() {
                                                                     ⚙️ {t('enterprise.tools.configure', 'Configure')}
                                                                 </button>
                                                             )}
+                                                            {catTools.length === 1 && (
+                                                                <button
+                                                                    onClick={() => openBatchToolManager(catTools[0].id, catTools[0].display_name || catTools[0].name)}
+                                                                    style={{ background: 'none', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                                                                    title="Batch manage agents for this tool"
+                                                                >
+                                                                    🤖 Manage Agents
+                                                                </button>
+                                                            )}
                                                             {/* Category Bulk Toggle */}
                                                             <label style={{ position: 'relative', display: 'inline-block', width: '40px', height: '22px', cursor: 'pointer', flexShrink: 0 }} title={`Enable/Disable all ${categoryLabels[category] || category} tools`}>
                                                                 <input type="checkbox"
@@ -3231,6 +3541,27 @@ export default function EnterpriseSettings() {
                                                                         </div>
 
                                                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                                            {/* Batch manage agents button */}
+                                                                            <button
+                                                                                onClick={() => {
+                                                                                    console.log('🤖 Batch manager clicked!', { toolId: tool.id, toolName: tool.display_name || tool.name });
+                                                                                    openBatchToolManager(tool.id, tool.display_name || tool.name);
+                                                                                }}
+                                                                                style={{
+                                                                                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                                                                    border: 'none',
+                                                                                    borderRadius: '6px',
+                                                                                    padding: '4px 10px',
+                                                                                    fontSize: '11px',
+                                                                                    cursor: 'pointer',
+                                                                                    color: '#fff',
+                                                                                    fontWeight: 600,
+                                                                                    boxShadow: '0 2px 4px rgba(102, 126, 234, 0.3)',
+                                                                                }}
+                                                                                title="批量管理Agent工具"
+                                                                            >
+                                                                                🤖 <span>管理Agent</span>
+                                                                            </button>
                                                                             {/* Per-tool config button: only if the tool has its own schema AND is NOT part of a category config */}
                                                                             {hasOwnConfig && (
                                                                                 <button
@@ -3503,7 +3834,7 @@ export default function EnterpriseSettings() {
                                     </div>
                                 </div>
                             )}
-                        </>}
+                        </div>
                     </div>
                 )}
 
@@ -3513,6 +3844,198 @@ export default function EnterpriseSettings() {
                 {/* ── Invitation Codes Tab ── */}
                 {activeTab === 'invites' && <InvitationCodes />}
             </div>
+
+            {/* Batch Tool Agent Manager Modal */}
+            {showBatchToolManager && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+                }} onClick={(e) => { if (e.target === e.currentTarget) setShowBatchToolManager(false); }}>
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: '12px', width: '90%', maxWidth: '800px',
+                        maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+                        boxShadow: '0 10px 40px rgba(0,0,0,0.3)', border: '1px solid var(--border-subtle)',
+                    }} onClick={(e) => e.stopPropagation()}>
+                        {/* Header */}
+                        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>批量管理Agent工具</h3>
+                                <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                    工具: {batchToolName}
+                                </p>
+                            </div>
+                            <button
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px', borderRadius: '4px', color: 'var(--text-secondary)' }}
+                                onClick={() => setShowBatchToolManager(false)}
+                            >
+                                ✕
+                            </button>
+                        </div>
+
+                        {/* Content */}
+                        <div style={{ flex: 1, overflow: 'auto', padding: '20px' }}>
+                            {batchLoading ? (
+                                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
+                                    {t('common.loading')}...
+                                </div>
+                            ) : (
+                                <>
+                                    {/* Stats */}
+                                    <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
+                                        <div style={{ flex: 1, padding: '16px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                                            <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--success)' }}>
+                                                {agentsWithToolStatus.filter((a: any) => a.enabled).length}
+                                            </div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                                已启用
+                                            </div>
+                                        </div>
+                                        <div style={{ flex: 1, padding: '16px', background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+                                            <div style={{ fontSize: '24px', fontWeight: 600, color: 'var(--text-tertiary)' }}>
+                                                {agentsWithToolStatus.filter((a: any) => !a.enabled).length}
+                                            </div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                                未启用
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Operation result notification */}
+                                    {batchOperationResult && (
+                                        <div style={{
+                                            padding: '12px 16px', marginBottom: '16px', borderRadius: '8px',
+                                            background: 'rgba(34, 197, 94, 0.1)', border: '1px solid rgba(34, 197, 94, 0.2)',
+                                        }}>
+                                            <div style={{ fontWeight: 500, color: 'var(--success)', marginBottom: '8px' }}>
+                                                操作完成
+                                            </div>
+                                            <div style={{ fontSize: '13px' }}>
+                                                成功: {batchOperationResult.success_count}，失败: {batchOperationResult.failed_count}
+                                            </div>
+                                            {batchOperationResult.failed_agents.length > 0 && (
+                                                <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                    失败的Agent:
+                                                    <ul style={{ margin: '4px 0 0 20px' }}>
+                                                        {batchOperationResult.failed_agents.map((fa: any, i: number) => (
+                                                            <li key={i}>{fa.agent_name}: {fa.error}</li>
+                                                        ))}
+                                                    </ul>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {/* Action buttons */}
+                                    {selectedAgentIds.length > 0 && (
+                                        <div style={{ padding: '12px 16px', marginBottom: '16px', borderRadius: '8px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                            <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                                已选择 {selectedAgentIds.length} 个Agent
+                                            </span>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                <button
+                                                    className="btn btn-primary"
+                                                    style={{ padding: '6px 12px', fontSize: '12px' }}
+                                                    onClick={() => handleBatchToggle(true)}
+                                                >
+                                                    启用选中
+                                                </button>
+                                                <button
+                                                    className="btn btn-danger"
+                                                    style={{ padding: '6px 12px', fontSize: '12px' }}
+                                                    onClick={() => handleBatchToggle(false)}
+                                                >
+                                                    禁用选中
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Select all */}
+                                    <div style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedAgentIds.length === agentsWithToolStatus.length && agentsWithToolStatus.length > 0}
+                                            onChange={(e) => setSelectedAgentIds(e.target.checked ? agentsWithToolStatus.map((a: any) => a.agent_id) : [])}
+                                            style={{ cursor: 'pointer' }}
+                                        />
+                                        <span style={{ fontSize: '13px', color: 'var(--text-secondary)', cursor: 'pointer' }} onClick={() => {
+                                            if (selectedAgentIds.length === agentsWithToolStatus.length) {
+                                                setSelectedAgentIds([]);
+                                            } else {
+                                                setSelectedAgentIds(agentsWithToolStatus.map((a: any) => a.agent_id));
+                                            }
+                                        }}>
+                                            全选 ({agentsWithToolStatus.length})
+                                        </span>
+                                    </div>
+
+                                    {/* Agent list */}
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        {agentsWithToolStatus.map((agent: any) => (
+                                            <div
+                                                key={agent.agent_id}
+                                                style={{
+                                                    padding: '12px 16px', borderRadius: '8px',
+                                                    background: agent.enabled ? 'rgba(34, 197, 94, 0.05)' : 'var(--bg-secondary)',
+                                                    border: agent.enabled ? '1px solid rgba(34, 197, 94, 0.2)' : '1px solid var(--border-subtle)',
+                                                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                                    transition: 'all 0.15s', cursor: 'pointer',
+                                                }}
+                                                onClick={() => {
+                                                    if (selectedAgentIds.includes(agent.agent_id)) {
+                                                        setSelectedAgentIds(prev => prev.filter(id => id !== agent.agent_id));
+                                                    } else {
+                                                        setSelectedAgentIds(prev => [...prev, agent.agent_id]);
+                                                    }
+                                                }}
+                                            >
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedAgentIds.includes(agent.agent_id)}
+                                                        onChange={(e) => {
+                                                            if (e.target.checked) {
+                                                                setSelectedAgentIds(prev => [...prev, agent.agent_id]);
+                                                            } else {
+                                                                setSelectedAgentIds(prev => prev.filter(id => id !== agent.agent_id));
+                                                            }
+                                                        }}
+                                                        style={{ cursor: 'pointer' }}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                    />
+                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                                        <div style={{ fontWeight: 500, fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {agent.agent_name}
+                                                        </div>
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {agent.agent_role || '暂无描述'}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                                                    {agent.error ? (
+                                                        <span style={{ fontSize: '12px', color: 'var(--error)', padding: '2px 6px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.1)' }}>
+                                                            {agent.error}
+                                                        </span>
+                                                    ) : (
+                                                        <span style={{
+                                                            fontSize: '12px', padding: '2px 8px', borderRadius: '4px',
+                                                            background: agent.enabled ? 'rgba(34, 197, 94, 0.1)' : 'rgba(156, 163, 175, 0.1)',
+                                                            color: agent.enabled ? 'var(--success)' : 'var(--text-tertiary)',
+                                                        }}>
+                                                            {agent.enabled ? '已启用' : '未启用'}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {
                 kbToast && (
