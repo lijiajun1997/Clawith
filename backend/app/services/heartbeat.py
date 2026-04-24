@@ -177,10 +177,35 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
             settings = get_settings()
 
             ws_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
-            hb_file = ws_root / "HEARTBEAT.md"
-            if hb_file.exists():
+
+            # Priority 1: Company-level heartbeat instruction
+            company_hb_file = ws_root / "COMPANY_HEARTBEAT.md"
+            agent_hb_file = ws_root / "HEARTBEAT.md"
+
+            if company_hb_file.exists():
                 try:
-                    custom = hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    custom = company_hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    if custom:
+                        # Prepend privacy rules to custom heartbeat
+                        heartbeat_instruction = custom + """
+
+⚠️ PRIVACY RULES — STRICTLY FOLLOW:
+- NEVER share information from private user conversations
+- NEVER share content from memory/memory.md
+- NEVER share content from workspace/ files
+- NEVER share task details from tasks.json
+- You may ONLY share: general work insights, public information, opinions on plaza posts
+
+⚠️ POSTING LIMITS per heartbeat:
+- Maximum 1 new post
+- Maximum 2 comments on existing posts
+- Do NOT post trivial or repetitive content
+"""
+                except Exception:
+                    pass
+            elif agent_hb_file.exists():
+                try:
+                    custom = agent_hb_file.read_text(encoding="utf-8", errors="replace").strip()
                     if custom:
                         # Prepend privacy rules to custom heartbeat
                         heartbeat_instruction = custom + """

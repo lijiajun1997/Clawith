@@ -382,6 +382,14 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     except Exception:
         pass  # Don't break agent if DB is unavailable
 
+    # --- Company System Prompt (from COMPANY_SYSTEM_PROMPT.md) ---
+    company_system_prompt = _read_file_safe(ws_root / "COMPANY_SYSTEM_PROMPT.md", 5000)
+    if company_system_prompt and company_system_prompt.strip():
+        # Strip markdown heading if present
+        if company_system_prompt.startswith("# "):
+            company_system_prompt = "\n".join(company_system_prompt.split("\n")[1:]).strip()
+        static_parts.append(f"\n## Company System Configuration\n{company_system_prompt}")
+
     static_parts.append("""
 
 ## Workspace & Tools

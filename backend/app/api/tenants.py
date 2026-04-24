@@ -53,6 +53,16 @@ class TenantUpdate(BaseModel):
     a2a_async_enabled: bool | None = None
 
 
+class CompanyConfigUpdate(BaseModel):
+    system_prompt: str | None = None
+    heartbeat_instruction: str | None = None
+
+
+class CompanyConfigOut(BaseModel):
+    system_prompt: str | None = None
+    heartbeat_instruction: str | None = None
+
+
 # ─── Helpers ────────────────────────────────────────────
 
 def _slugify(name: str) -> str:
@@ -486,3 +496,96 @@ async def assign_user_to_tenant(
     user.role = role
     await db.flush()
     return {"status": "ok", "user_id": str(user_id), "tenant_id": str(tenant_id), "role": role}
+
+
+# ─── Company Configuration ─────────────────────────────
+
+@router.get("/{tenant_id}/company-config", response_model=CompanyConfigOut)
+async def get_company_config(
+    tenant_id: uuid.UUID,
+    current_user: User = Depends(require_role("org_admin", "platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get company-level configuration (system prompt, heartbeat instruction)."""
+    from app.models.tenant_setting import TenantSetting
+
+    # Permission check
+    if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    result = await db.execute(
+        select(TenantSetting).where(
+            TenantSetting.tenant_id == tenant_id,
+            TenantSetting.key.in_(["company_system_prompt", "company_heartbeat_instruction"])
+        )
+    )
+    settings_records = result.scalars().all()
+
+    config = {}
+    for record in settings_records:
+        if record.value and "content" in record.value:
+            if record.key == "company_system_prompt":
+                config["system_prompt"] = record.value["content"]
+            elif record.key == "company_heartbeat_instruction":
+                config["heartbeat_instruction"] = record.value["content"]
+
+    return CompanyConfigOut(**config)
+
+
+@router.put("/{tenant_id}/company-config", response_model=CompanyConfigOut)
+async def update_company_config(
+    tenant_id: uuid.UUID,
+    data: CompanyConfigUpdate,
+    current_user: User = Depends(require_role("org_admin", "platform_admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update company-level configuration (system prompt, heartbeat instruction)."""
+    from app.models.tenant_setting import TenantSetting
+
+    # Permission check
+    if current_user.role == "org_admin" and str(current_user.tenant_id) != str(tenant_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    config = {}
+
+    # Update system prompt if provided
+    if data.system_prompt is not None:
+        result = await db.execute(
+            select(TenantSetting).where(
+                TenantSetting.tenant_id == tenant_id,
+                TenantSetting.key == "company_system_prompt"
+            )
+        )
+        setting = result.scalar_one_or_none()
+        if setting:
+            setting.value = {"content": data.system_prompt}
+        else:
+            db.add(TenantSetting(
+                tenant_id=tenant_id,
+                key="company_system_prompt",
+                value={"content": data.system_prompt}
+            ))
+        config["system_prompt"] = data.system_prompt
+
+    # Update heartbeat instruction if provided
+    if data.heartbeat_instruction is not None:
+        result = await db.execute(
+            select(TenantSetting).where(
+                TenantSetting.tenant_id == tenant_id,
+                TenantSetting.key == "company_heartbeat_instruction"
+            )
+        )
+        setting = result.scalar_one_or_none()
+        if setting:
+            setting.value = {"content": data.heartbeat_instruction}
+        else:
+            db.add(TenantSetting(
+                tenant_id=tenant_id,
+                key="company_heartbeat_instruction",
+                value={"content": data.heartbeat_instruction}
+            ))
+        config["heartbeat_instruction"] = data.heartbeat_instruction
+
+    await db.commit()
+
+    return CompanyConfigOut(**config)
