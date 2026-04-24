@@ -2075,10 +2075,20 @@ function AgentDetailInner() {
                 });
             } else if (d.type === 'tool_call') {
                 // ── Canvas-style file generation tracking ──
-                const fileToolNames = ['write_file', 'edit_file', 'python_run_file', 'run_python_file', 'create_file'];
+                const fileToolNames = ['write_file', 'edit_file', 'create_file', 'python_run_file', 'run_python_file', 'python_exec', 'python', 'execute_python', 'run_code'];
                 if (fileToolNames.includes(d.name)) {
-                    const fileName = d.args?.file_path || d.args?.path || d.args?.filename || 'untitled_file';
-                    const fileKey = `${d.name}-${fileName}`;
+                    let fileName = d.args?.file_path || d.args?.path || d.args?.filename || '';
+                    // For Python tools, try to extract created files from result
+                    if (!fileName && (d.name.includes('python') || d.name.includes('exec') || d.name.includes('run_code'))) {
+                        // Extract filename from result text like "Created file: xxx" or "Written to xxx"
+                        const resultText = d.result || '';
+                        const match = resultText.match(/(?:created|written|saved|generated|output)[\s:]+([^\s]+\.\w+)/i);
+                        if (match) fileName = match[1];
+                        else fileName = 'python_output.txt';
+                    }
+                    if (!fileName) fileName = 'untitled_file';
+
+                    const fileKey = `file-${fileName}`;
                     if (d.status === 'running') {
                         setGeneratingFiles(prev => {
                             const next = new Map(prev);
@@ -2092,7 +2102,7 @@ function AgentDetailInner() {
                             next.set(fileKey, {
                                 name: fileName,
                                 status: 'done',
-                                content: (d.result || '').substring(0, 2000),
+                                content: d.result || '',
                                 path: d.args?.file_path || d.args?.path,
                             });
                             return next;

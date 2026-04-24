@@ -1069,12 +1069,11 @@ export default function Chat() {
                     />
                 )}
 
-                {/* Canvas-style File Generation Panel */}
+                {/* CANVAS_MARKER_2024_TEST */}
                 <FileCanvasPanel
                     files={generatingFiles}
                     visible={canvasPanelVisible}
                     onToggle={() => setCanvasPanelVisible(v => !v)}
-                    onPreviewFile={(file) => console.log('Preview file:', file)}
                     agentId={id}
                 />
 
