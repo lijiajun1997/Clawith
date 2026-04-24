@@ -3085,7 +3085,8 @@ Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for c
                             </div>
                         )}
 
-                        {toolsView === 'global' && <>
+                        {toolsView === 'global' && (
+                            <>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                 <h3>{t('enterprise.tools.title')}</h3>
                                 <button className="btn btn-primary" onClick={() => setShowAddMCP(true)}>+ {t('enterprise.tools.addMcpServer')}</button>
@@ -3834,7 +3835,8 @@ Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for c
                                     </div>
                                 </div>
                             )}
-                        </div>
+                        </>
+                        )}
                     </div>
                 )}
 
