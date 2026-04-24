@@ -26,7 +26,7 @@ BUILTIN_TOOLS = [
     {
         "name": "read_file",
         "display_name": "Read File",
-        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks.",
+        "description": "Read file contents from the workspace. Can read tasks.json, soul.md, memory/memory.md, skills/, and enterprise_info/. Use offset and limit for reading large files in chunks. For PDFs and images, supports OCR (optical character recognition) to extract text from scanned documents.",
         "category": "file",
         "icon": "📄",
         "is_default": True,
@@ -36,13 +36,40 @@ BUILTIN_TOOLS = [
                 "path": {"type": "string", "description": "File path, e.g.: tasks.json, soul.md, memory/memory.md"},
                 "offset": {"type": "integer", "description": "Starting line number (0-indexed, default 0). Use with limit for pagination."},
                 "limit": {"type": "integer", "description": "Maximum number of lines to read (default 2000). Use with offset for pagination."},
+                "ocr": {"type": "boolean", "description": "Enable OCR for PDF and image files (default: false). Automatically enabled for scanned PDFs and images."},
             },
             "required": ["path"],
         },
-        "config": {"max_file_size_kb": 500},
+        "config": {
+            "max_file_size_kb": 500,
+            "ocr_enabled": False,
+            "ocr_url": "http://localhost:6008/ocr/file",
+            "ocr_api_key": "",
+        },
         "config_schema": {
             "fields": [
                 {"key": "max_file_size_kb", "label": "Max file size (KB)", "type": "number", "default": 500},
+                {
+                    "key": "ocr_enabled",
+                    "label": "启用 OCR",
+                    "type": "checkbox",
+                    "default": False,
+                    "description": "是否启用 OCR 功能（光学字符识别）用于提取 PDF 和图片中的文本",
+                },
+                {
+                    "key": "ocr_url",
+                    "label": "OCR 服务地址",
+                    "type": "string",
+                    "default": "http://localhost:6008/ocr/file",
+                    "description": "OCR 服务的 API 地址",
+                },
+                {
+                    "key": "ocr_api_key",
+                    "label": "OCR API Key",
+                    "type": "password",
+                    "default": "",
+                    "description": "OCR 服务的 API 密钥",
+                },
             ]
         },
     },

@@ -191,7 +191,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks.",
+            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks. For PDFs and images, supports OCR (optical character recognition) to extract text from scanned documents.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -206,6 +206,10 @@ AGENT_TOOLS = [
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of lines to read (default 2000). Use with offset for pagination.",
+                    },
+                    "ocr": {
+                        "type": "boolean",
+                        "description": "Enable OCR for PDF and image files (default: false). Automatically enabled for scanned PDFs and images when OCR is configured in tool settings.",
                     },
                 },
                 "required": ["path"],
@@ -2255,7 +2259,8 @@ async def execute_tool(
                 return "❌ Missing required argument 'path' for read_file"
             offset = int(arguments.get("offset", 0))
             limit = int(arguments.get("limit", 2000))
-            result = _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit)
+            use_ocr = arguments.get("ocr", False)
+            result = await _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit, use_ocr=use_ocr, agent_id=agent_id)
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
@@ -3586,7 +3591,15 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     return header + "\n".join(items)
 
 
-def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: int = 0, limit: int = 2000) -> str:
+async def _read_file(
+    ws: Path,
+    rel_path: str,
+    tenant_id: str | None = None,
+    offset: int = 0,
+    limit: int = 2000,
+    use_ocr: bool = False,
+    agent_id: uuid.UUID | None = None
+) -> str:
     """Read file contents with optional line range support.
 
     Args:
@@ -3595,6 +3608,8 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
         tenant_id: Optional tenant ID for enterprise_info
         offset: Starting line number (0-indexed)
         limit: Maximum number of lines to read
+        use_ocr: Enable OCR for PDF and image files
+        agent_id: Agent ID for tool config lookup
 
     Returns:
         File content with line numbers, or error message
@@ -3619,6 +3634,48 @@ def _read_file(ws: Path, rel_path: str, tenant_id: str | None = None, offset: in
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
+
+        ext = file_path.suffix.lower()
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+        is_ocr_target = ext == ".pdf" or ext in image_exts
+
+        if is_ocr_target:
+            # Load OCR config from tool settings
+            ocr_config = {}
+            try:
+                config = await _get_tool_config(agent_id, "read_file") if agent_id else None
+                if config:
+                    ocr_config = {
+                        "ocr_enabled": config.get("ocr_enabled", False),
+                        "ocr_url": config.get("ocr_url", ""),
+                        "ocr_api_key": config.get("ocr_api_key", ""),
+                    }
+            except Exception:
+                pass
+
+            ocr_enabled = ocr_config.get("ocr_enabled", False)
+            should_ocr = use_ocr or ocr_enabled
+
+            if should_ocr and ocr_config.get("ocr_url"):
+                try:
+                    from app.services.text_extractor import extract_text_with_ocr_if_needed
+
+                    file_bytes = file_path.read_bytes()
+                    extracted = await extract_text_with_ocr_if_needed(
+                        file_bytes, file_path.name, use_ocr=True, ocr_config=ocr_config
+                    )
+                    if extracted:
+                        content = extracted
+                        logger.info(f"[ReadFile] OCR extraction successful for {rel_path}")
+                    else:
+                        return f"❌ OCR did not extract text from {rel_path}"
+                except Exception as e:
+                    logger.warning(f"[ReadFile] OCR failed for {rel_path}: {e}")
+                    return f"❌ OCR failed for {rel_path}: {e}"
+            elif is_ocr_target and not ocr_config.get("ocr_url"):
+                # Image/PDF but no OCR configured - return binary warning
+                return f"⚠️ {rel_path} is a binary {ext} file. Enable OCR in Read File tool settings to extract text."
+
         lines = content.splitlines()
         total_lines = len(lines)
 
