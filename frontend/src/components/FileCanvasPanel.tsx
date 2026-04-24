@@ -202,7 +202,7 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
     useEffect(() => {
         if (!activeFile || !activeFile.path || !agentId) return;
         if (activeFile.status !== 'done') return;
-        if (activeFile.content || fetchedContent[activeTab!]) return;
+        if (fetchedContent[activeTab!]) return; // already fetched
         const token = localStorage.getItem('token');
         fetch(`/api/agents/${agentId}/files/content?path=${encodeURIComponent(activeFile.path)}`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -211,7 +211,7 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
         }).catch(() => {});
     }, [activeTab, activeFile?.status, activeFile?.path]);
 
-    const displayContent = activeFile?.content || (activeTab ? fetchedContent[activeTab] : undefined);
+    const displayContent = activeTab ? fetchedContent[activeTab] : undefined;
 
     // ── MD editing ──
     const [editing, setEditing] = useState(false);

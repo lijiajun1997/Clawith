@@ -1810,7 +1810,7 @@ function AgentDetailInner() {
             m.set(`file-${fileName}`, {
                 name: fileName,
                 status: msg.toolStatus === 'running' ? 'generating' : 'done',
-                content: msg.toolResult || '',
+                content: '', // content fetched via API in FileCanvasPanel
                 path: msg.toolArgs?.file_path || msg.toolArgs?.path,
             });
         }
