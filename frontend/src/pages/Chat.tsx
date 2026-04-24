@@ -5,6 +5,7 @@ import { useParams } from 'react-router-dom';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import RecentFilesPanel from '../components/RecentFilesPanel';
+import FileCanvasPanel from '../components/FileCanvasPanel';
 import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
@@ -280,6 +281,15 @@ export default function Chat() {
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
     const [wsSessionId, setWsSessionId] = useState<string>('');
+    // Canvas-style file generation panel
+    const [generatingFiles, setGeneratingFiles] = useState<Map<string, {
+        name: string;
+        status: 'generating' | 'done' | 'error';
+        progress?: number;
+        content?: string;
+        path?: string;
+    }>>(new Map());
+    const [canvasPanelVisible, setCanvasPanelVisible] = useState(true);
     const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -493,6 +503,41 @@ export default function Chat() {
                     });
                 } else if (data.type === 'tool_call') {
                     console.log('[ToolCall]', data.name, data.status);
+
+                    // ── Canvas-style file generation tracking ──
+                    const isFileTool = ['write_file', 'edit_file', 'python_run_file', 'run_python_file'].includes(data.name);
+                    if (isFileTool) {
+                        const fileName = data.args?.file_path || data.args?.path || data.args?.filename ||
+                                        (data.args?.command ? 'script_output' : 'untitled_file');
+                        const fileKey = `${data.name}-${fileName}`;
+
+                        if (data.status === 'running') {
+                            setGeneratingFiles(prev => {
+                                const next = new Map(prev);
+                                next.set(fileKey, { name: fileName, status: 'generating' });
+                                return next;
+                            });
+                            setCanvasPanelVisible(true);
+                        } else if (data.status === 'done') {
+                            setGeneratingFiles(prev => {
+                                const next = new Map(prev);
+                                next.set(fileKey, {
+                                    name: fileName,
+                                    status: 'done',
+                                    content: data.result?.substring?.(0, 2000) || data.result,
+                                    path: data.args?.file_path || data.args?.path,
+                                });
+                                return next;
+                            });
+                        } else if (data.status === 'error') {
+                            setGeneratingFiles(prev => {
+                                const next = new Map(prev);
+                                next.set(fileKey, { name: fileName, status: 'error' });
+                                return next;
+                            });
+                        }
+                    }
+
                     if (data.status === 'running') {
                         // Tool execution started — show in-progress in tool group
                         const tc: ToolCall = { name: data.name, args: data.args || {} };
@@ -581,6 +626,7 @@ export default function Chat() {
                     streamContent.current = '';
                     thinkingContent.current = '';
                     setStreaming(false);
+                    setGeneratingFiles(new Map());
                     setMessages(prev => {
                         const updated = [...prev];
                         // Replace the last streaming assistant message
@@ -789,7 +835,7 @@ export default function Chat() {
                 </div>
             </div>
 
-            <div className={`chat-container ${hasLiveData ? 'chat-with-live-panel' : ''}`} {...chatDropProps} style={{ position: 'relative', display: 'flex', flexDirection: 'row' }}>
+            <div className={`chat-container chat-with-live-panel`} {...chatDropProps} style={{ position: 'relative', display: 'flex', flexDirection: 'row' }}>
                 {/* Drop overlay */}
                 {isChatDragging && (
                     <div className="drop-zone-overlay">
@@ -1022,6 +1068,15 @@ export default function Chat() {
                         }}
                     />
                 )}
+
+                {/* Canvas-style File Generation Panel */}
+                <FileCanvasPanel
+                    files={generatingFiles}
+                    visible={canvasPanelVisible}
+                    onToggle={() => setCanvasPanelVisible(v => !v)}
+                    onPreviewFile={(file) => console.log('Preview file:', file)}
+                    agentId={id}
+                />
 
                 {/* Recent Files Panel */}
                 <RecentFilesPanel
