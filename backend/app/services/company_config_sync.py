@@ -43,26 +43,40 @@ async def sync_company_config_to_agent(agent_id: uuid.UUID, config: dict) -> boo
     written = False
 
     # Write system prompt
-    if KEY_SYSTEM_PROMPT in config and config[KEY_SYSTEM_PROMPT]:
+    if KEY_SYSTEM_PROMPT in config:
         content = config[KEY_SYSTEM_PROMPT]
-        if content.strip():
-            file_path = ws_root / FILE_SYSTEM_PROMPT
+        file_path = ws_root / FILE_SYSTEM_PROMPT
+        if content and content.strip():
             try:
                 file_path.write_text(content, encoding="utf-8")
                 written = True
             except Exception as e:
                 logger.warning(f"[CompanyConfigSync] Failed to write {FILE_SYSTEM_PROMPT} for agent {agent_id}: {e}")
+        elif file_path.exists():
+            try:
+                file_path.unlink()
+                written = True
+                logger.info(f"[CompanyConfigSync] Removed empty {FILE_SYSTEM_PROMPT} for agent {agent_id}")
+            except Exception as e:
+                logger.warning(f"[CompanyConfigSync] Failed to remove {FILE_SYSTEM_PROMPT} for agent {agent_id}: {e}")
 
     # Write heartbeat instruction
-    if KEY_HEARTBEAT_INSTRUCTION in config and config[KEY_HEARTBEAT_INSTRUCTION]:
+    if KEY_HEARTBEAT_INSTRUCTION in config:
         content = config[KEY_HEARTBEAT_INSTRUCTION]
-        if content.strip():
-            file_path = ws_root / FILE_HEARTBEAT_INSTRUCTION
+        file_path = ws_root / FILE_HEARTBEAT_INSTRUCTION
+        if content and content.strip():
             try:
                 file_path.write_text(content, encoding="utf-8")
                 written = True
             except Exception as e:
                 logger.warning(f"[CompanyConfigSync] Failed to write {FILE_HEARTBEAT_INSTRUCTION} for agent {agent_id}: {e}")
+        elif file_path.exists():
+            try:
+                file_path.unlink()
+                written = True
+                logger.info(f"[CompanyConfigSync] Removed empty {FILE_HEARTBEAT_INSTRUCTION} for agent {agent_id}")
+            except Exception as e:
+                logger.warning(f"[CompanyConfigSync] Failed to remove {FILE_HEARTBEAT_INSTRUCTION} for agent {agent_id}: {e}")
 
     return written
 

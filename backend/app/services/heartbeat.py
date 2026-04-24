@@ -178,15 +178,16 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
             ws_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
 
-            # Priority 1: Company-level heartbeat instruction
-            company_hb_file = ws_root / "COMPANY_HEARTBEAT.md"
+            # Priority 1: Agent-level heartbeat instruction (user custom override)
+            # Priority 2: Company-level heartbeat instruction (tenant default)
+            # Priority 3: DEFAULT_HEARTBEAT_INSTRUCTION (hardcoded fallback)
             agent_hb_file = ws_root / "HEARTBEAT.md"
+            company_hb_file = ws_root / "COMPANY_HEARTBEAT.md"
 
-            if company_hb_file.exists():
+            if agent_hb_file.exists():
                 try:
-                    custom = company_hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    custom = agent_hb_file.read_text(encoding="utf-8", errors="replace").strip()
                     if custom:
-                        # Prepend privacy rules to custom heartbeat
                         heartbeat_instruction = custom + """
 
 ⚠️ PRIVACY RULES — STRICTLY FOLLOW:
@@ -203,11 +204,10 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 """
                 except Exception:
                     pass
-            elif agent_hb_file.exists():
+            elif company_hb_file.exists():
                 try:
-                    custom = agent_hb_file.read_text(encoding="utf-8", errors="replace").strip()
+                    custom = company_hb_file.read_text(encoding="utf-8", errors="replace").strip()
                     if custom:
-                        # Prepend privacy rules to custom heartbeat
                         heartbeat_instruction = custom + """
 
 ⚠️ PRIVACY RULES — STRICTLY FOLLOW:

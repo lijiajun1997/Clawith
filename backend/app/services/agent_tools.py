@@ -26,6 +26,10 @@ from loguru import logger
 from sqlalchemy import select, or_
 
 from app.database import async_session
+
+# Sanitized tool name -> original tool name mapping (populated by get_agent_tools_for_llm)
+_SANITIZED_TOOL_NAME_MAP: dict[str, str] = {}
+
 from app.models.task import Task
 from app.models.agent import Agent as AgentModel
 from app.models.org import AgentRelationship, OrgMember, AgentAgentRelationship
@@ -191,7 +195,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks. For PDFs and images, supports OCR (optical character recognition) to extract text from scanned documents.",
+            "description": "Read file contents from the workspace. Can read tasks.json for tasks, soul.md for personality, memory/memory.md for memory, skills/ for skill files, and enterprise_info/ for shared company info. Use offset and limit for reading large files in chunks. Supports OCR for PDF and image files (.png, .jpg, .jpeg, .gif, .webp, .bmp, .tiff, .tif) to extract text from scanned documents. OCR results are automatically saved as Markdown files in workspace/converted/ for subsequent paginated reading.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -629,14 +633,26 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_document",
-            "description": "Read office document contents (PDF, Word, Excel, PPT, etc.) and extract text. Suitable for reading knowledge base documents.",
+            "description": "Read office documents (PDF, Word, Excel, PPT) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents when OCR is configured. Automatically saves parsed content as Markdown in workspace/converted/ for efficient subsequent reading. Use start/count for pagination on long documents.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "Document file path, e.g.: workspace/knowledge_base/report.pdf, enterprise_info/knowledge_base/policy.docx",
-                    }
+                    },
+                    "start": {
+                        "type": "integer",
+                        "description": "Start page (1-indexed, for PDF/Word/PPT) or row (for Excel). Default: 1.",
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "Number of pages/rows to read. Default: 50 for documents, 200 for Excel.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum characters to return (default: 15000, max: 50000).",
+                    },
                 },
                 "required": ["path"],
             },
@@ -1935,6 +1951,14 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
 
             result = []
             db_tool_names = set()
+
+            def _sanitize_tool_name(name: str) -> str:
+                """Sanitize tool name for OpenAI compatibility: replace invalid chars with underscore."""
+                import re
+                return re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+
+            _name_map = {}  # sanitized -> original, for dispatch lookup
+
             for t in all_tools:
                 tid = str(t.id)
                 at = assignments.get(tid)
@@ -1947,34 +1971,33 @@ async def get_agent_tools_for_llm(agent_id: uuid.UUID) -> list[dict]:
                     continue
 
                 # Build OpenAI function-calling format
+                safe_name = _sanitize_tool_name(t.name)
+                if safe_name != t.name:
+                    _name_map[safe_name] = t.name
+                    logger.info(f"[Tools] Sanitized tool name: '{t.name}' -> '{safe_name}'")
                 tool_def = {
                     "type": "function",
                     "function": {
-                        "name": t.name,
+                        "name": safe_name,
                         "description": t.description,
                         "parameters": t.parameters_schema or {"type": "object", "properties": {}},
                     },
                 }
                 # Defensive dedup: skip if this name was already added.
-                # Normally the UNIQUE constraint on tool.name prevents duplicate
-                # rows, but old DB dumps (pre-constraint) may have them. Without
-                # this guard, the LLM would receive duplicate tool names and
-                # return HTTP 400 "Tool names must be unique".
-                if t.name in db_tool_names:
+                if safe_name in db_tool_names:
                     logger.warning(
-                        f"[Tools] Duplicate tool name '{t.name}' found in DB "
-                        f"(id={t.id}). Skipping to avoid LLM error. "
-                        "Run: DELETE FROM tools WHERE id IN (SELECT id FROM "
-                        "(SELECT id, ROW_NUMBER() OVER (PARTITION BY name "
-                        "ORDER BY created_at DESC) AS rn FROM tools) t WHERE rn > 1);"
+                        f"[Tools] Duplicate tool name '{safe_name}' (original: '{t.name}') found in DB "
+                        f"(id={t.id}). Skipping to avoid LLM error."
                     )
                     continue
 
                 result.append(tool_def)
-                db_tool_names.add(t.name)
+                db_tool_names.add(safe_name)
 
 
             if result:
+                # Update global sanitized name map for dispatch lookup
+                _SANITIZED_TOOL_NAME_MAP.update(_name_map)
                 # Append always-available system tools that aren't already in the DB list
                 for t in _always_tools:
                     if t["function"]["name"] not in db_tool_names:
@@ -2009,6 +2032,9 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     (ws / "workspace").mkdir(exist_ok=True)
     (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
     (ws / "memory").mkdir(exist_ok=True)
+
+    # Conversation logs (auto-logged chat history)
+    (ws / "conversations").mkdir(exist_ok=True)
 
     # Tool artifacts: auto-persisted tool call results
     for _sub in ("search", "web_pages", "code_outputs", "misc"):
@@ -2207,6 +2233,9 @@ async def execute_tool(
     """
     _agent_tenant_id = await _get_agent_tenant_id(agent_id)
 
+    # Reverse-map sanitized name back to original for dispatch
+    _original_name = _SANITIZED_TOOL_NAME_MAP.get(tool_name, tool_name)
+
     ws = await ensure_workspace(agent_id, tenant_id=_agent_tenant_id)
 
     # ── Autonomy boundary check ──
@@ -2265,8 +2294,13 @@ async def execute_tool(
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_document"
-            max_chars = min(int(arguments.get("max_chars", 8000)), 20000)
-            result = await _read_document(ws, path, max_chars=max_chars, tenant_id=_agent_tenant_id)
+            max_chars = min(int(arguments.get("max_chars", 15000)), 50000)
+            start = int(arguments.get("start", 1))
+            count = int(arguments.get("count", 50))
+            result = await _read_document(
+                ws, path, max_chars=max_chars, tenant_id=_agent_tenant_id,
+                start=start, count=count, agent_id=agent_id,
+            )
         elif tool_name == "write_file":
             path = arguments.get("path")
             content = arguments.get("content")
@@ -2496,8 +2530,8 @@ async def execute_tool(
         elif tool_name == "sec_edgar_advanced":
             result = await sec_edgar_advanced(arguments, agent_id, user_id)
         else:
-            # Try MCP tool execution
-            result = await _execute_mcp_tool(tool_name, arguments, agent_id=agent_id)
+            # Try MCP tool execution (use original name for MCP server lookup)
+            result = await _execute_mcp_tool(_original_name, arguments, agent_id=agent_id)
 
         # Log tool call activity (skip noisy read operations)
         if tool_name not in ("list_files", "read_file", "read_document"):
@@ -3591,6 +3625,61 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     return header + "\n".join(items)
 
 
+def _resolve_workspace_file(ws: Path, rel_path: str, tenant_id: str | None = None) -> tuple[Path, str | None]:
+    """Resolve a relative path to absolute Path, with enterprise_info tenant support.
+
+    Returns (resolved_path, error_message). If error_message is set, caller should return it.
+    """
+    if rel_path and rel_path.startswith("enterprise_info"):
+        if tenant_id:
+            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
+        else:
+            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
+        sub = rel_path[len("enterprise_info"):].lstrip("/")
+        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not str(file_path).startswith(str(enterprise_root)):
+            return file_path, "Access denied for this path"
+    else:
+        file_path = (ws / rel_path).resolve()
+        if not str(file_path).startswith(str(ws.resolve())):
+            return file_path, "Access denied for this path"
+    return file_path, None
+
+
+async def _load_ocr_config(agent_id: uuid.UUID | None) -> dict:
+    """Load OCR config from read_file tool settings (shared across tools)."""
+    try:
+        config = await _get_tool_config(agent_id, "read_file") if agent_id else None
+        if config:
+            return {
+                "ocr_enabled": config.get("ocr_enabled", False),
+                "ocr_url": config.get("ocr_url", ""),
+                "ocr_api_key": config.get("ocr_api_key", ""),
+            }
+    except Exception:
+        pass
+    return {}
+
+
+def _get_converted_md_path(ws: Path, original_file: Path) -> Path:
+    """Get the converted MD cache path for a file."""
+    return ws / "converted" / f"{original_file.stem}{original_file.suffix}.md"
+
+
+def _save_converted_md(ws: Path, original_file: Path, content: str) -> str | None:
+    """Save content as converted MD. Returns relative path hint string or None."""
+    if not content or not content.strip() or len(content) < 2000:
+        return None
+    converted_dir = ws / "converted"
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    md_path = _get_converted_md_path(ws, original_file)
+    md_path.write_text(content, encoding="utf-8")
+    total_lines = content.count("\n") + 1
+    md_rel = f"workspace/converted/{md_path.name}"
+    logger.info(f"[DocConvert] Saved: {md_rel} ({total_lines} lines)")
+    return md_rel
+
+
 async def _read_file(
     ws: Path,
     rel_path: str,
@@ -3600,238 +3689,269 @@ async def _read_file(
     use_ocr: bool = False,
     agent_id: uuid.UUID | None = None
 ) -> str:
-    """Read file contents with optional line range support.
-
-    Args:
-        ws: Workspace root path
-        rel_path: Relative file path
-        tenant_id: Optional tenant ID for enterprise_info
-        offset: Starting line number (0-indexed)
-        limit: Maximum number of lines to read
-        use_ocr: Enable OCR for PDF and image files
-        agent_id: Agent ID for tool config lookup
-
-    Returns:
-        File content with line numbers, or error message
-    """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
-
+    """Read file contents with optional OCR and line range support."""
+    file_path, err = _resolve_workspace_file(ws, rel_path, tenant_id)
+    if err:
+        return err
     if not file_path.exists():
         return f"File not found: {rel_path}"
 
     try:
         content = file_path.read_text(encoding="utf-8", errors="replace")
+        _ocr_md_rel = None
 
         ext = file_path.suffix.lower()
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
         is_ocr_target = ext == ".pdf" or ext in image_exts
 
         if is_ocr_target:
-            # Load OCR config from tool settings
-            ocr_config = {}
-            try:
-                config = await _get_tool_config(agent_id, "read_file") if agent_id else None
-                if config:
-                    ocr_config = {
-                        "ocr_enabled": config.get("ocr_enabled", False),
-                        "ocr_url": config.get("ocr_url", ""),
-                        "ocr_api_key": config.get("ocr_api_key", ""),
-                    }
-            except Exception:
-                pass
+            ocr_config = await _load_ocr_config(agent_id)
+            should_ocr = use_ocr or ocr_config.get("ocr_enabled", False)
 
-            ocr_enabled = ocr_config.get("ocr_enabled", False)
-            should_ocr = use_ocr or ocr_enabled
-
-            if should_ocr and ocr_config.get("ocr_url"):
+            # Check cache first (images/PDFs are rarely modified)
+            md_path = _get_converted_md_path(ws, file_path)
+            if should_ocr and md_path.exists():
+                content = md_path.read_text(encoding="utf-8")
+                _ocr_md_rel = f"workspace/converted/{md_path.name}"
+                logger.info(f"[ReadFile] Using cached OCR: {md_path.name}")
+            elif should_ocr and ocr_config.get("ocr_url"):
                 try:
                     from app.services.text_extractor import extract_text_with_ocr_if_needed
 
-                    file_bytes = file_path.read_bytes()
                     extracted = await extract_text_with_ocr_if_needed(
-                        file_bytes, file_path.name, use_ocr=True, ocr_config=ocr_config
+                        file_path.read_bytes(), file_path.name,
+                        use_ocr=True, ocr_config=ocr_config,
                     )
                     if extracted:
                         content = extracted
-                        logger.info(f"[ReadFile] OCR extraction successful for {rel_path}")
+                        _ocr_md_rel = _save_converted_md(ws, file_path, extracted)
                     else:
-                        return f"❌ OCR did not extract text from {rel_path}"
+                        return f"❌ OCR did not extract text from {rel_path}. OCR service may be offline. Try call_model with vision as a fallback."
                 except Exception as e:
                     logger.warning(f"[ReadFile] OCR failed for {rel_path}: {e}")
-                    return f"❌ OCR failed for {rel_path}: {e}"
-            elif is_ocr_target and not ocr_config.get("ocr_url"):
-                # Image/PDF but no OCR configured - return binary warning
-                return f"⚠️ {rel_path} is a binary {ext} file. Enable OCR in Read File tool settings to extract text."
+                    return f"❌ OCR failed for {rel_path}: {e}. OCR service may be offline. Try call_model with vision as a fallback."
+            else:
+                return f"⚠️ {rel_path} is a binary {ext} file. Enable OCR in Read File tool settings, or try call_model with vision."
 
         lines = content.splitlines()
         total_lines = len(lines)
-
-        # Apply offset and limit
         start = max(0, offset)
         end = min(total_lines, start + limit)
 
         if start >= total_lines:
             return f"Offset {offset} exceeds file length ({total_lines} lines total)"
 
-        selected_lines = lines[start:end]
+        result = [f"{i+1:6}\t{line}" for i, line in enumerate(lines[start:end], start=start)]
+        output = f"📄 {rel_path} (lines {start+1}-{end} of {total_lines})\n" + "\n".join(result)
 
-        # Format with line numbers (like cat -n)
-        result = []
-        for i, line in enumerate(selected_lines, start=start):
-            result.append(f"{i+1:6}\t{line}")
-
-        output = "\n".join(result)
-
-        # Add pagination info if file is larger than what we show
         if total_lines > end:
             output += f"\n\n... [{total_lines - end} more lines not shown, lines {end+1}-{total_lines}]"
 
-        # Add header with file info
-        header = f"📄 {rel_path} (lines {start+1}-{end} of {total_lines})\n"
-        return header + output
+        if _ocr_md_rel:
+            output += f"\n\n---\n📋 OCR result cached at: {_ocr_md_rel} ({total_lines} lines)\nUse read_file with path=\"{_ocr_md_rel}\" and offset/limit to read specific sections."
+
+        return output
 
     except Exception as e:
         return f"Read failed: {e}"
 
 
-async def _read_document(ws: Path, rel_path: str, max_chars: int = 8000, tenant_id: str | None = None) -> str:
-    """Read content from office documents (PDF, DOCX, XLSX, PPTX)."""
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
-    if rel_path and rel_path.startswith("enterprise_info"):
-        if tenant_id:
-            enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
-        else:
-            enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
-        sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
-        if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
-    else:
-        file_path = (ws / rel_path).resolve()
-        if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
-
+async def _read_document(
+    ws: Path,
+    rel_path: str,
+    max_chars: int = 15000,
+    tenant_id: str | None = None,
+    start: int = 1,
+    count: int = 50,
+    agent_id: uuid.UUID | None = None,
+) -> str:
+    """Read office documents with pagination and OCR fallback. Saves parsed content as MD for subsequent reading."""
+    file_path, err = _resolve_workspace_file(ws, rel_path, tenant_id)
+    if err:
+        return err
     if not file_path.exists():
         return f"File not found: {rel_path}"
 
     ext = file_path.suffix.lower()
+    max_chars = min(max_chars, 50000)
+    content = ""
+    page_info = ""
+    used_cache = False
+
     try:
         if ext == ".pdf":
-            import pdfplumber
-            text_parts = []
-            with pdfplumber.open(str(file_path)) as pdf:
-                for i, page in enumerate(pdf.pages[:50]):  # Limit to 50 pages
-                    page_text = page.extract_text() or ""
-                    if page_text:
-                        text_parts.append(f"--- Page {i+1} ---\n{page_text}")
-            content = "\n\n".join(text_parts) if text_parts else "(PDF is empty or text extraction failed)"
+            content, page_info, used_cache = await _read_pdf(
+                ws, file_path, ocr_config=await _load_ocr_config(agent_id),
+                start=start, count=count,
+            )
 
         elif ext == ".docx":
-            from docx import Document
-            from docx.oxml.ns import qn
-            doc = Document(str(file_path))
-            lines: list[str] = []
-
-            def _extract_para_text(para) -> str:
-                return para.text.strip()
-
-            def _extract_table(table) -> str:
-                """Flatten a table into readable text."""
-                rows = []
-                for row in table.rows:
-                    cells = [cell.text.strip() for cell in row.cells]
-                    # Remove duplicate adjacent cells (merged cells repeat)
-                    deduped = [cells[0]] + [c for i, c in enumerate(cells[1:]) if c != cells[i]]
-                    row_str = " | ".join(c for c in deduped if c)
-                    if row_str:
-                        rows.append(row_str)
-                return "\n".join(rows)
-
-            # 1. Main paragraphs
-            for para in doc.paragraphs:
-                t = _extract_para_text(para)
-                if t:
-                    lines.append(t)
-
-            # 2. Tables in main body
-            for table in doc.tables:
-                t = _extract_table(table)
-                if t:
-                    lines.append(t)
-
-            # 3. Text boxes / drawing shapes (wmf/shapes in body XML)
-            for shape in doc.element.body.iter(qn("w:txbxContent")):
-                for child in shape.iter(qn("w:t")):
-                    if child.text and child.text.strip():
-                        lines.append(child.text.strip())
-
-            # 4. Headers and footers
-            for section in doc.sections:
-                for hf in [section.header, section.footer]:
-                    if hf and hf.is_linked_to_previous is False:
-                        for para in hf.paragraphs:
-                            t = para.text.strip()
-                            if t:
-                                lines.append(t)
-
-            content = "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
+            content = await _extract_docx(file_path)
 
         elif ext == ".xlsx":
-            from openpyxl import load_workbook
-            wb = load_workbook(str(file_path), read_only=True, data_only=True)
-            sheets = []
-            for ws_name in wb.sheetnames[:10]:  # Limit to 10 sheets
-                sheet = wb[ws_name]
-                rows = []
-                for row in sheet.iter_rows(max_row=200, values_only=True):
-                    row_str = "\t".join(str(c) if c is not None else "" for c in row)
-                    if row_str.strip():
-                        rows.append(row_str)
-                if rows:
-                    sheets.append(f"=== Sheet: {ws_name} ===\n" + "\n".join(rows))
-            wb.close()
-            content = "\n\n".join(sheets) if sheets else "(Excel is empty)"
+            content = _extract_xlsx(file_path, start, count)
 
         elif ext == ".pptx":
-            from pptx import Presentation
-            prs = Presentation(str(file_path))
-            slides = []
-            for i, slide in enumerate(prs.slides[:50]):
-                texts = []
-                for shape in slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        texts.append(shape.text)
-                if texts:
-                    slides.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
-            content = "\n\n".join(slides) if slides else "(PPT is empty)"
+            content, page_info = _extract_pptx(file_path, start, count)
 
         elif ext in (".txt", ".md", ".json", ".csv", ".log"):
             content = file_path.read_text(encoding="utf-8", errors="replace")
 
         else:
-            return f"Unsupported file format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV"
+            return f"Unsupported format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV"
 
-        if len(content) > max_chars:
-            content = content[:max_chars] + f"\n\n...[truncated, {len(content)} chars total]"
-        return content
+        if not content or not content.strip():
+            return "(Document is empty or text extraction failed)"
+
+        # Save as MD for subsequent paginated reading
+        md_hint = ""
+        if not used_cache:
+            md_rel = _save_converted_md(ws, file_path, content)
+            if md_rel:
+                total_lines = content.count("\n") + 1
+                md_hint = f"\n\n---\n📋 Full content saved to: {md_rel} ({total_lines} lines)\nUse read_file with path=\"{md_rel}\" and offset/limit to read specific sections."
+
+        # Truncate
+        total_chars = len(content)
+        if total_chars > max_chars:
+            content = content[:max_chars] + f"\n\n...[truncated, {total_chars} chars total]{page_info}"
+        else:
+            content += page_info
+
+        return content + md_hint
 
     except ImportError as e:
         return f"Missing dependency: {e}. Install: pip install pdfplumber python-docx openpyxl python-pptx"
     except Exception as e:
         return f"Document read failed: {str(e)[:200]}"
+
+
+async def _read_pdf(
+    ws: Path, file_path: Path, ocr_config: dict,
+    start: int = 1, count: int = 50,
+) -> tuple[str, str, bool]:
+    """Read PDF with pdfplumber + OCR fallback + MD cache.
+
+    Returns (content, page_info, used_cache).
+    """
+    import pdfplumber
+
+    # Check cache first
+    md_path = _get_converted_md_path(ws, file_path)
+    if md_path.exists():
+        cached = md_path.read_text(encoding="utf-8").strip()
+        if cached:
+            logger.info(f"[ReadDocument] Using cached PDF: {md_path.name}")
+            return cached, " (from cached OCR result)", True
+
+    # Extract with pdfplumber
+    text_parts = []
+    with pdfplumber.open(str(file_path)) as pdf:
+        total_pages = len(pdf.pages)
+        sp = max(1, start)
+        ep = min(total_pages, sp + count - 1)
+        for i, page in enumerate(pdf.pages[sp - 1:ep]):
+            text_parts.append(f"--- Page {sp + i} ---\n{page.extract_text() or ''}")
+
+    extracted = "\n\n".join(text_parts)
+    page_info = f" (pages {sp}-{ep} of {total_pages})"
+
+    # If text is sparse, try OCR
+    total_text = sum(len(p.split("--- Page")[-1].strip()) for p in text_parts)
+    if total_text < 100 and ocr_config.get("ocr_enabled") and ocr_config.get("ocr_url"):
+        try:
+            from app.services.text_extractor import extract_text_with_ocr
+
+            ocr_text = await extract_text_with_ocr(
+                file_path.read_bytes(), file_path.name,
+                ocr_url=ocr_config["ocr_url"],
+                ocr_api_key=ocr_config.get("ocr_api_key", ""),
+            )
+            if ocr_text and len(ocr_text) > total_text:
+                logger.info(f"[ReadDocument] OCR used for scanned PDF: {file_path.name}")
+                return ocr_text, page_info, False
+        except Exception as e:
+            logger.warning(f"[ReadDocument] OCR fallback failed: {e}")
+            return f"(PDF is empty or text extraction failed)\n⚠️ OCR service unavailable. Try call_model with vision.", page_info, False
+
+    return extracted or "(PDF is empty or text extraction failed)", page_info, False
+
+
+async def _extract_docx(file_path: Path) -> str:
+    """Extract text from DOCX including paragraphs, tables, text boxes, headers/footers."""
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(str(file_path))
+    lines: list[str] = []
+
+    for para in doc.paragraphs:
+        t = para.text.strip()
+        if t:
+            lines.append(t)
+
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            deduped = [cells[0]] + [c for i, c in enumerate(cells[1:]) if c != cells[i]]
+            row_str = " | ".join(c for c in deduped if c)
+            if row_str:
+                rows.append(row_str)
+        if rows:
+            lines.append("\n".join(rows))
+
+    for shape in doc.element.body.iter(qn("w:txbxContent")):
+        for child in shape.iter(qn("w:t")):
+            if child.text and child.text.strip():
+                lines.append(child.text.strip())
+
+    for section in doc.sections:
+        for hf in [section.header, section.footer]:
+            if hf and hf.is_linked_to_previous is False:
+                for para in hf.paragraphs:
+                    t = para.text.strip()
+                    if t:
+                        lines.append(t)
+
+    return "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
+
+
+def _extract_xlsx(file_path: Path, start: int = 1, count: int = 50) -> str:
+    """Extract text from XLSX with pagination support."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(file_path), read_only=True, data_only=True)
+    sheets = []
+    for ws_name in wb.sheetnames[:10]:
+        sheet = wb[ws_name]
+        rows = []
+        sr = max(1, start)
+        er = sr + count - 1
+        for row in sheet.iter_rows(min_row=sr, max_row=er, values_only=True):
+            row_str = "\t".join(str(c) if c is not None else "" for c in row)
+            if row_str.strip():
+                rows.append(row_str)
+        if rows:
+            sheets.append(f"=== Sheet: {ws_name} ===\n" + "\n".join(rows))
+    wb.close()
+    return "\n\n".join(sheets) if sheets else "(Excel is empty)"
+
+
+def _extract_pptx(file_path: Path, start: int = 1, count: int = 50) -> tuple[str, str]:
+    """Extract text from PPTX with pagination. Returns (content, page_info)."""
+    from pptx import Presentation
+
+    prs = Presentation(str(file_path))
+    total = len(prs.slides)
+    sp = max(1, start)
+    ep = min(total, sp + count - 1)
+    slides = []
+    for i in range(sp - 1, ep):
+        texts = [shape.text for shape in prs.slides[i].shapes if hasattr(shape, "text") and shape.text.strip()]
+        if texts:
+            slides.append(f"--- Slide {i+1} ---\n" + "\n".join(texts))
+    return "\n\n".join(slides) if slides else "(PPT is empty)", f" (slides {sp}-{ep} of {total})"
 
 
 def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = None) -> str:

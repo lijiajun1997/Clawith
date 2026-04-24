@@ -17,6 +17,7 @@ from app.models.agent import Agent
 from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
+from app.services.conversation_logger import ConversationLogger, resolve_user_name
 
 router = APIRouter(tags=["websocket"])
 
@@ -331,7 +332,7 @@ async def call_llm(
                 break  # success
             except Exception as e:
                 _last_err = e
-                logger.warning(f"[Retry] Round {round_i+1} attempt {_attempt+1} failed: {type(e).__name__}: {str(e)[:150]}")
+                logger.warning(f"[Retry] Round {round_i+1} attempt {_attempt+1} failed: {type(e).__name__}: {str(e)[:300]}")
                 if _attempt >= _max_retries - 1:
                     if agent_id and _accumulated_tokens > 0:
                         await record_token_usage(agent_id, _accumulated_tokens)
@@ -673,6 +674,16 @@ async def websocket_chat(
     manager.active_connections[agent_id_str].append((websocket, conv_id))
     logger.info(f"[WS] Ready! Agent={agent_name}")
 
+    # ── Conversation Logger ────────────────────────────────────
+    _conv_logger_user_name = await resolve_user_name(user_id)
+    _conv_logger = ConversationLogger(
+        agent_id=agent_id,
+        user_id=user_id,
+        user_name=_conv_logger_user_name,
+        conv_id=conv_id,
+    )
+    await _conv_logger.start()
+
     # Send session_id to frontend so Take Control can reference the correct session
     await websocket.send_json({"type": "connected", "session_id": conv_id})
 
@@ -741,6 +752,27 @@ async def websocket_chat(
             display_content = data.get("display_content", "")  # User-facing display text
             file_name = data.get("file_name", "")  # Original file name for attachment display
             logger.info(f"[WS] Received: {content[:50]}")
+
+            # ── Refresh model if changed (e.g. user switched model in Settings) ──
+            try:
+                from sqlalchemy.orm import load_only
+                async with async_session() as _mdb:
+                    _agent_r = await _mdb.execute(
+                        select(Agent).where(Agent.id == agent_id).options(
+                            load_only(Agent.primary_model_id, Agent.fallback_model_id)
+                        )
+                    )
+                    _agent_fresh = _agent_r.scalar_one_or_none()
+                    if _agent_fresh and _agent_fresh.primary_model_id != (llm_model.id if llm_model else None):
+                        _new_model_r = await _mdb.execute(
+                            select(LLMModel).where(LLMModel.id == _agent_fresh.primary_model_id)
+                        )
+                        _new_model = _new_model_r.scalar_one_or_none()
+                        if _new_model and _new_model.enabled:
+                            llm_model = _new_model
+                            logger.info(f"[WS] Model switched to: {_new_model.model}")
+            except Exception as _me:
+                logger.debug(f"[WS] Model refresh failed (non-fatal): {_me}")
 
             if not content:
                 continue
@@ -815,6 +847,7 @@ async def websocket_chat(
                         _sess.title = clean_title[:40] if clean_title else content[:40]
                 await db.commit()
             logger.info("[WS] User message saved")
+            await _conv_logger.log_user_message(saved_content)
 
 
             # ── OpenClaw routing: insert into gateway_messages instead of LLM ──
@@ -916,7 +949,12 @@ async def websocket_chat(
                                     await _tc_db.commit()
                             except Exception as _tc_err:
                                 logger.warning(f"[WS] Failed to save tool_call: {_tc_err}")
-                    
+                            await _conv_logger.log_tool_call(
+                                tool_name=data.get("name", ""),
+                                args=data.get("args"),
+                                result=data.get("result"),
+                            )
+
                     # Track thinking content for storage
                     thinking_content = []
                     
@@ -1054,6 +1092,7 @@ async def websocket_chat(
                 db.add(asst_msg)
                 await db.commit()
             logger.info("[WS] Assistant message saved")
+            await _conv_logger.log_assistant_message(assistant_response)
 
             # Send done signal with final content (for non-streaming clients)
             await websocket.send_json({
@@ -1065,11 +1104,13 @@ async def websocket_chat(
 
     except WebSocketDisconnect:
         logger.info(f"[WS] Client disconnected: {agent_name}")
+        await _conv_logger.close()
         manager.disconnect(agent_id_str, websocket)
     except Exception as e:
         logger.error(f"[WS] Error in message loop: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
+        await _conv_logger.close()
         manager.disconnect(agent_id_str, websocket)
         try:
             await websocket.close(code=1011)

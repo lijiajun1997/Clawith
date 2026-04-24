@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+from loguru import logger
+
 from app.core.security import get_current_user, require_role, get_authenticated_user
 from app.database import get_db
 from app.models.tenant import Tenant
@@ -61,6 +64,8 @@ class CompanyConfigUpdate(BaseModel):
 class CompanyConfigOut(BaseModel):
     system_prompt: str | None = None
     heartbeat_instruction: str | None = None
+    default_system_prompt: str | None = None
+    default_heartbeat_instruction: str | None = None
 
 
 # ─── Helpers ────────────────────────────────────────────
@@ -529,6 +534,22 @@ async def get_company_config(
             elif record.key == "company_heartbeat_instruction":
                 config["heartbeat_instruction"] = record.value["content"]
 
+    # Return default content when no saved config exists
+    if "system_prompt" not in config:
+        try:
+            from pathlib import Path as _P
+            _tpl = _P(__file__).parent.parent / "templates" / "DEFAULT_COMPANY_SYSTEM_PROMPT.md"
+            if _tpl.exists():
+                config["default_system_prompt"] = _tpl.read_text(encoding="utf-8")
+        except Exception:
+            pass
+    if "heartbeat_instruction" not in config:
+        try:
+            from app.services.heartbeat import DEFAULT_HEARTBEAT_INSTRUCTION
+            config["default_heartbeat_instruction"] = DEFAULT_HEARTBEAT_INSTRUCTION
+        except Exception:
+            pass
+
     return CompanyConfigOut(**config)
 
 
@@ -587,5 +608,23 @@ async def update_company_config(
         config["heartbeat_instruction"] = data.heartbeat_instruction
 
     await db.commit()
+
+    # Trigger immediate sync to all agent workspaces (non-blocking)
+    if config:
+        sync_config = {}
+        if "system_prompt" in config:
+            sync_config["company_system_prompt"] = config["system_prompt"]
+        if "heartbeat_instruction" in config:
+            sync_config["company_heartbeat_instruction"] = config["heartbeat_instruction"]
+
+        if sync_config:
+            async def _background_sync():
+                try:
+                    from app.services.company_config_sync import sync_all_agents_for_tenant
+                    updated = await sync_all_agents_for_tenant(tenant_id, sync_config)
+                    logger.info(f"[CompanyConfig] Synced config to {updated} agents on save for tenant {tenant_id}")
+                except Exception as e:
+                    logger.warning(f"[CompanyConfig] Sync after save failed (non-fatal): {e}")
+            asyncio.create_task(_background_sync())
 
     return CompanyConfigOut(**config)

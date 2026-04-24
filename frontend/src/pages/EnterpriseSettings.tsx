@@ -1883,8 +1883,16 @@ export default function EnterpriseSettings() {
         // Load company config (system prompt & heartbeat instruction)
         fetchJson<any>(`/tenants/${selectedTenantId}/company-config`)
             .then(d => {
-                if (d.system_prompt !== undefined) setCompanySystemPrompt(d.system_prompt || '');
-                if (d.heartbeat_instruction !== undefined) setCompanyHeartbeatInstruction(d.heartbeat_instruction || '');
+                if (d.system_prompt) {
+                    setCompanySystemPrompt(d.system_prompt);
+                } else if (d.default_system_prompt) {
+                    setCompanySystemPrompt(d.default_system_prompt);
+                }
+                if (d.heartbeat_instruction) {
+                    setCompanyHeartbeatInstruction(d.heartbeat_instruction);
+                } else if (d.default_heartbeat_instruction) {
+                    setCompanyHeartbeatInstruction(d.default_heartbeat_instruction);
+                }
             })
             .catch(() => { });
     }, [selectedTenantId]);
@@ -2635,7 +2643,7 @@ export default function EnterpriseSettings() {
                         </p>
                         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
                             <textarea
-                                className="form-input"
+                                className="form-textarea"
                                 value={companyIntro}
                                 onChange={e => setCompanyIntro(e.target.value)}
                                 placeholder={`# Company Name\nProud Copilot\n\n# About\nOpenClaw\uD83E\uDD9E For Teams\nOpen Source \u00B7 Multi-OpenClaw Collaboration\n\nOpenClaw empowers individuals.\nProud Copilot scales it to frontier organizations.`}
@@ -2663,7 +2671,7 @@ export default function EnterpriseSettings() {
                         </p>
                         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
                             <textarea
-                                className="form-input"
+                                className="form-textarea"
                                 value={companySystemPrompt}
                                 onChange={e => setCompanySystemPrompt(e.target.value)}
                                 placeholder={`## Tool Calling Rules
@@ -2698,7 +2706,7 @@ export default function EnterpriseSettings() {
                                 </button>
                                 {companyConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
                                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-                                    💡 {t('enterprise.companyConfig.systemPromptHint', 'This content is injected into all agents\' system prompts. Changes sync to agents within 5 minutes.')}
+                                    💡 {t('enterprise.companyConfig.systemPromptHint', 'This content is injected into all agents\' system prompts. Changes take effect immediately upon saving.')}
                                 </span>
                             </div>
                         </div>
@@ -2710,7 +2718,7 @@ export default function EnterpriseSettings() {
                         </p>
                         <div className="card" style={{ padding: '16px', marginBottom: '24px' }}>
                             <textarea
-                                className="form-input"
+                                className="form-textarea"
                                 value={companyHeartbeatInstruction}
                                 onChange={e => setCompanyHeartbeatInstruction(e.target.value)}
                                 placeholder={`# Heartbeat Protocol
@@ -2758,7 +2766,7 @@ Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for c
                                 </button>
                                 {companyConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
                                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-                                    💡 {t('enterprise.companyConfig.heartbeatHint', 'This instruction applies to all agents. Agents can override it with their own HEARTBEAT.md file. Changes sync within 5 minutes.')}
+                                    💡 {t('enterprise.companyConfig.heartbeatHint', 'This instruction applies to all agents as default. Agents can override it with their own HEARTBEAT.md file. Changes take effect immediately upon saving.')}
                                 </span>
                             </div>
                         </div>

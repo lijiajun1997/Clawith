@@ -58,6 +58,7 @@ class AgentManager:
             (agent_dir / "workspace" / "knowledge_base").mkdir(exist_ok=True)
             (agent_dir / "memory").mkdir(exist_ok=True)
             (agent_dir / "skills").mkdir(exist_ok=True)
+            (agent_dir / "conversations").mkdir(exist_ok=True)
             (agent_dir / "tasks.json").write_text("[]", encoding="utf-8")
 
         # Customize soul.md
