@@ -1325,12 +1325,9 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             user_msg_content = f"[用户发送了图片]\n{_image_marker}"
         else:
             user_msg_content = f"[file:{filename}]"
-        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
-                           content=user_msg_content if msg_type != "image" else f"[file:{filename}]",
-                           conversation_id=session_conv_id))
-        _sess.last_message_at = _dt.now(_tz.utc)
 
-        # Load conversation history for LLM context
+        # Load conversation history for LLM context (BEFORE saving current message for images,
+        # so that _call_agent_llm won't get two consecutive user messages)
         from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
         ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
         _hist_r = await db.execute(
@@ -1341,11 +1338,17 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         )
         _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
 
+        # Save user message to DB after loading history
+        db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
+                           content=user_msg_content if msg_type != "image" else f"[file:{filename}]",
+                           conversation_id=session_conv_id))
+        _sess.last_message_at = _dt.now(_tz.utc)
         await db.commit()
 
     # For images: call LLM so vision models can actually see the image
     if msg_type == "image":
         import json as _json_card_img
+        import traceback as _img_tb
 
         # Send initial loading card
         _reply_to = chat_id if chat_type == "group" else sender_open_id
@@ -1434,57 +1437,75 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
         if _patch_msg_id:
             _img_heartbeat_task = asyncio.create_task(_img_heartbeat())
 
-        # Call LLM with image marker — vision models will parse it
-        async with _async_session() as _db_img:
-            try:
-                reply_text = await _call_agent_llm(
-                    _db_img, agent_id, user_msg_content, history=_history,
-                    user_id=platform_user_id, on_chunk=_img_on_chunk,
+        try:
+            # Call LLM with image marker — vision models will parse it
+            async with _async_session() as _db_img:
+                try:
+                    reply_text = await _call_agent_llm(
+                        _db_img, agent_id, user_msg_content, history=_history,
+                        user_id=platform_user_id, on_chunk=_img_on_chunk,
+                    )
+                finally:
+                    _img_llm_done = True
+                    if _img_heartbeat_task:
+                        _img_heartbeat_task.cancel()
+                        try:
+                            await _img_heartbeat_task
+                        except Exception:
+                            pass
+
+            logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
+
+            # Send final card or fallback text
+            if _patch_msg_id:
+                try:
+                    await _img_patch_queue.drain()
+                except Exception as _e_drain:
+                    logger.warning(f"[Feishu] Image patch queue drain failed: {_e_drain}")
+                _final_card = _build_card(
+                    reply_text or "...",
+                    streaming=False,
+                    agent_name=_agent_name,
                 )
-            finally:
-                _img_llm_done = True
-                if _img_heartbeat_task:
-                    _img_heartbeat_task.cancel()
-                    try:
-                        await _img_heartbeat_task
-                    except Exception:
-                        pass
-
-        logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
-
-        # Send final card or fallback text
-        if _patch_msg_id:
-            try:
-                await _img_patch_queue.drain()
-            except Exception as _e_drain:
-                logger.warning(f"[Feishu] Image patch queue drain failed: {_e_drain}")
-            # Build final card via shared builder (consistent with text streaming path).
-            _final_card = _build_card(
-                reply_text or "...",
-                streaming=False,
-                agent_name=_agent_name,
-            )
-            await feishu_service.patch_message(
-                config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card), stage="image_stream_final"
-            )
-        else:
-            try:
-                await feishu_service.send_message(
-                    config.app_id, config.app_secret, _reply_to, "text",
-                    json.dumps({"text": reply_text}), receive_id_type=_rid_type, stage="image_stream_fallback_text",
+                await feishu_service.patch_message(
+                    config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card), stage="image_stream_final"
                 )
-            except Exception as _e_fb:
-                logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
+            else:
+                try:
+                    await feishu_service.send_message(
+                        config.app_id, config.app_secret, _reply_to, "text",
+                        json.dumps({"text": reply_text}), receive_id_type=_rid_type, stage="image_stream_fallback_text",
+                    )
+                except Exception as _e_fb:
+                    logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
 
-        # Save assistant reply in DB
-        async with _async_session() as _db_save:
-            _db_save.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
-                                     content=reply_text, conversation_id=session_conv_id))
-            await _db_save.commit()
+            # Save assistant reply in DB
+            async with _async_session() as _db_save:
+                _db_save.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="assistant",
+                                         content=reply_text, conversation_id=session_conv_id))
+                await _db_save.commit()
 
-        # Log activity
-        from app.services.activity_logger import log_activity
-        await log_activity(agent_id, "chat_reply", f"回复了飞书图片消息: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
+            # Log activity
+            from app.services.activity_logger import log_activity
+            await log_activity(agent_id, "chat_reply", f"回复了飞书图片消息: {reply_text[:80]}", detail={"channel": "feishu", "type": "image"})
+
+        except Exception as _img_err:
+            logger.error(f"[Feishu] Image processing failed: {_img_err}\n{_img_tb.format_exc()}")
+            # Update the card to show error instead of leaving "识别图片中..." forever
+            if _patch_msg_id:
+                try:
+                    _err_card = _build_card(
+                        f"⚠️ 图片识别失败: {(str(_img_err) or '未知错误')[:200]}",
+                        streaming=False,
+                        agent_name=_agent_name,
+                    )
+                    await feishu_service.patch_message(
+                        config.app_id, config.app_secret, _patch_msg_id,
+                        _json_card_img.dumps(_err_card), stage="image_stream_error"
+                    )
+                except Exception:
+                    pass
+
         return
 
     # For non-image files: send simple ack as before

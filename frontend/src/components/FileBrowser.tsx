@@ -377,6 +377,8 @@ export default function FileBrowser({
     // Pagination
     const [currentPage, setCurrentPage] = useState(1);
     const pageSize = 50;
+    const totalPages = Math.ceil(files.length / pageSize);
+    const paginatedFiles = files.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
     // Debounced search query
     const debouncedSearchQuery = useDebounce(searchQuery, 300);
@@ -959,10 +961,15 @@ export default function FileBrowser({
                     {/* Action buttons */}
                     <div className="file-browser-toolbar-actions" style={{ display: 'flex', gap: '6px' }}>
                         {upload && api.upload && (
-                            <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '6px 12px', height: '34px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={handleUpload}>
-                                <IconUpload size={16} />
-                                <span>上传文件</span>
-                            </button>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '6px 12px', height: '34px', display: 'flex', alignItems: 'center', gap: '4px' }} onClick={handleUpload}>
+                                    <IconUpload size={16} />
+                                    <span>上传文件</span>
+                                </button>
+                                <span style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)' }}>
+                                    ⚠️ 工作文件必须脱敏后上传
+                                </span>
+                            </div>
                         )}
                         {newFolder && (
                             <button className="btn btn-secondary" style={{ fontSize: '12px', padding: '6px 12px', height: '34px', display: 'flex', alignItems: 'center', gap: '4px' }}
@@ -1316,7 +1323,7 @@ export default function FileBrowser({
                             </div>
 
                             {/* Table rows */}
-                            {files.map((f) => {
+                            {paginatedFiles.map((f) => {
                                 const filePath = f.path || `${currentPath}/${f.name}`;
                                 const isSelected = selectedFiles.has(filePath);
 
@@ -1503,7 +1510,7 @@ export default function FileBrowser({
                     {/* GRID/CARD VIEW */}
                     {viewMode === 'grid' && (
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '16px' }}>
-                            {files.map((f) => {
+                            {paginatedFiles.map((f) => {
                                 const filePath = f.path || `${currentPath}/${f.name}`;
                                 const isSelected = selectedFiles.has(filePath);
 

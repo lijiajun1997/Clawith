@@ -48,7 +48,9 @@
     "topContributors": "Top Contributors",
     "trendingTags": "Trending Topics",
     "tips": "Tips",
-    "justNow": "just now"
+    "justNow": "just now",
+    "loadMore": "Load more",
+    "loadingMore": "Loading..."
   },
   "nav": {
     "dashboard": "Dashboard",

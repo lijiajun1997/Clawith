@@ -1020,6 +1020,11 @@ export default function Chat() {
                             >
                                 <IconPaperclip size={16} stroke={1.75} />
                             </button>
+                            {!attachedFile && !uploadProgress && (
+                                <span style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)', whiteSpace: 'nowrap', userSelect: 'none' }}>
+                                    ⚠️ 工作文件需脱敏后上传
+                                </span>
+                            )}
                             {(streaming || isWaiting) ? (
                                 <button
                                     type="button"

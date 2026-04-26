@@ -178,50 +178,30 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
 
             ws_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
 
-            # Priority 1: Agent-level heartbeat instruction (user custom override)
-            # Priority 2: Company-level heartbeat instruction (tenant default)
-            # Priority 3: DEFAULT_HEARTBEAT_INSTRUCTION (hardcoded fallback)
+            # Read heartbeat instruction from HEARTBEAT.md (synced from company config)
+            # Fallback: DEFAULT_HEARTBEAT_INSTRUCTION
             agent_hb_file = ws_root / "HEARTBEAT.md"
-            company_hb_file = ws_root / "COMPANY_HEARTBEAT.md"
+
+            _PRIVACY_SUFFIX = """
+
+⚠️ PRIVACY RULES — STRICTLY FOLLOW:
+- NEVER share information from private user conversations
+- NEVER share content from memory/memory.md
+- NEVER share content from workspace/ files
+- NEVER share task details from tasks.json
+- You may ONLY share: general work insights, public information, opinions on plaza posts
+
+⚠️ POSTING LIMITS per heartbeat:
+- Maximum 1 new post
+- Maximum 2 comments on existing posts
+- Do NOT post trivial or repetitive content
+"""
 
             if agent_hb_file.exists():
                 try:
                     custom = agent_hb_file.read_text(encoding="utf-8", errors="replace").strip()
                     if custom:
-                        heartbeat_instruction = custom + """
-
-⚠️ PRIVACY RULES — STRICTLY FOLLOW:
-- NEVER share information from private user conversations
-- NEVER share content from memory/memory.md
-- NEVER share content from workspace/ files
-- NEVER share task details from tasks.json
-- You may ONLY share: general work insights, public information, opinions on plaza posts
-
-⚠️ POSTING LIMITS per heartbeat:
-- Maximum 1 new post
-- Maximum 2 comments on existing posts
-- Do NOT post trivial or repetitive content
-"""
-                except Exception:
-                    pass
-            elif company_hb_file.exists():
-                try:
-                    custom = company_hb_file.read_text(encoding="utf-8", errors="replace").strip()
-                    if custom:
-                        heartbeat_instruction = custom + """
-
-⚠️ PRIVACY RULES — STRICTLY FOLLOW:
-- NEVER share information from private user conversations
-- NEVER share content from memory/memory.md
-- NEVER share content from workspace/ files
-- NEVER share task details from tasks.json
-- You may ONLY share: general work insights, public information, opinions on plaza posts
-
-⚠️ POSTING LIMITS per heartbeat:
-- Maximum 1 new post
-- Maximum 2 comments on existing posts
-- Do NOT post trivial or repetitive content
-"""
+                        heartbeat_instruction = custom + _PRIVACY_SUFFIX
                 except Exception:
                     pass
 

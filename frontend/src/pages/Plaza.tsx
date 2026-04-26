@@ -474,10 +474,14 @@ export default function Plaza() {
     const { user } = useAuthStore();
     const queryClient = useQueryClient();
     const [searchParams] = useSearchParams();
+    const PAGE_SIZE = 20;
     const [newPost, setNewPost] = useState('');
     const [expandedPost, setExpandedPost] = useState<string | null>(searchParams.get('post') || null);
     const [newComment, setNewComment] = useState('');
     const [deleteModalPostId, setDeleteModalPostId] = useState<string | null>(null);
+    const [olderPosts, setOlderPosts] = useState<Post[]>([]);
+    const [nextOffset, setNextOffset] = useState(PAGE_SIZE);
+    const [loadingMore, setLoadingMore] = useState(false);
     const tenantId = localStorage.getItem('current_tenant_id') || '';
 
     useEffect(() => {
@@ -491,11 +495,37 @@ export default function Plaza() {
         }
     }, [searchParams]);
 
-    const { data: posts = [], isLoading } = useQuery<Post[]>({
+    const { data: postsResponse, isLoading } = useQuery<{ items: Post[]; total: number }>({
         queryKey: ['plaza-posts', tenantId],
-        queryFn: () => fetchJson(`/api/plaza/posts?limit=50${tenantId ? `&tenant_id=${tenantId}` : ''}`),
+        queryFn: () => fetchJson(`/api/plaza/posts?limit=${PAGE_SIZE}&offset=0${tenantId ? `&tenant_id=${tenantId}` : ''}`),
         refetchInterval: 15000,
     });
+
+    const totalCount = postsResponse?.total ?? 0;
+    const latestPosts = postsResponse?.items ?? [];
+    // Merge latest (auto-refreshed) + older (loaded via "Load More"), deduplicate by id
+    const posts = (() => {
+        const seen = new Set<string>();
+        const result: Post[] = [];
+        for (const p of [...latestPosts, ...olderPosts]) {
+            if (!seen.has(p.id)) { seen.add(p.id); result.push(p); }
+        }
+        return result;
+    })();
+    const hasMore = posts.length < totalCount;
+
+    const handleLoadMore = async () => {
+        setLoadingMore(true);
+        try {
+            const data = await fetchJson<{ items: Post[]; total: number }>(
+                `/api/plaza/posts?limit=${PAGE_SIZE}&offset=${nextOffset}${tenantId ? `&tenant_id=${tenantId}` : ''}`
+            );
+            setOlderPosts(prev => [...prev, ...data.items]);
+            setNextOffset(prev => prev + PAGE_SIZE);
+        } finally {
+            setLoadingMore(false);
+        }
+    };
 
     const { data: stats } = useQuery<PlazaStats>({
         queryKey: ['plaza-stats', tenantId],
@@ -693,7 +723,7 @@ export default function Plaza() {
                             {posts.map((post, idx) => (
                                 <div key={post.id} id={`post-${post.id}`} style={{
                                     padding: '14px 16px',
-                                    borderBottom: idx < posts.length - 1 ? '1px solid var(--border-subtle)' : 'none',
+                                    borderBottom: (idx < posts.length - 1 || hasMore) ? '1px solid var(--border-subtle)' : 'none',
                                     transition: 'background var(--transition-fast)',
                                     background: expandedPost === post.id ? 'var(--bg-hover)' : 'transparent',
                                 }}
@@ -840,6 +870,33 @@ export default function Plaza() {
                                     )}
                                 </div>
                             ))}
+                            {/* Load More */}
+                            {hasMore && (
+                                <div style={{
+                                    textAlign: 'center', padding: '12px 16px',
+                                    borderTop: '1px solid var(--border-subtle)',
+                                }}>
+                                    <button
+                                        className="btn btn-secondary"
+                                        onClick={handleLoadMore}
+                                        disabled={loadingMore}
+                                        style={{
+                                            fontSize: 'var(--text-xs)', padding: '6px 20px',
+                                            color: 'var(--text-secondary)',
+                                        }}
+                                    >
+                                        {loadingMore
+                                            ? t('plaza.loadingMore', 'Loading...')
+                                            : t('plaza.loadMore', 'Load more')}
+                                    </button>
+                                    <span style={{
+                                        display: 'block', marginTop: '6px',
+                                        fontSize: '10px', color: 'var(--text-tertiary)',
+                                    }}>
+                                        {posts.length} / {totalCount}
+                                    </span>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>

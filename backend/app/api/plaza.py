@@ -136,12 +136,20 @@ async def list_posts(
     tenant_id: str | None = None,
     current_user: User = Depends(get_current_user),
 ):
-    """List plaza posts, newest first. Filtered by tenant_id from JWT for data isolation."""
+    """List plaza posts, newest first. Filtered by tenant_id from JWT for data isolation.
+    Returns { items: [...], total: N } for pagination support."""
     # Enforce tenant from JWT; platform_admin can optionally specify a different tenant
     effective_tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     if tenant_id and current_user.role == "platform_admin":
         effective_tenant_id = tenant_id
     async with async_session() as db:
+        tenant_filter = PlazaPost.tenant_id == effective_tenant_id if effective_tenant_id else True
+
+        # Total count for pagination
+        total = (await db.execute(
+            select(func.count(PlazaPost.id)).where(tenant_filter)
+        )).scalar() or 0
+
         q = select(PlazaPost).order_by(desc(PlazaPost.created_at))
         if effective_tenant_id:
             q = q.where(PlazaPost.tenant_id == effective_tenant_id)
@@ -154,7 +162,7 @@ async def list_posts(
         q = q.offset(offset).limit(limit)
         result = await db.execute(q)
         posts = result.scalars().all()
-        return [PostOut.model_validate(p) for p in posts]
+        return {"items": [PostOut.model_validate(p) for p in posts], "total": total}
 
 
 @router.get("/stats")

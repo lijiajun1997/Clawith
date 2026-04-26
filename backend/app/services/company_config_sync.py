@@ -23,7 +23,7 @@ KEY_HEARTBEAT_INSTRUCTION = "company_heartbeat_instruction"
 
 # Target filenames in agent workspace
 FILE_SYSTEM_PROMPT = "COMPANY_SYSTEM_PROMPT.md"
-FILE_HEARTBEAT_INSTRUCTION = "COMPANY_HEARTBEAT.md"
+FILE_HEARTBEAT_INSTRUCTION = "HEARTBEAT.md"
 
 
 async def sync_company_config_to_agent(agent_id: uuid.UUID, config: dict) -> bool:
