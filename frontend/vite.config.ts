@@ -21,6 +21,7 @@ export default defineConfig({
     plugins: [react()],
     define: {
         __APP_VERSION__: JSON.stringify(version),
+        __BUILD_ID__: JSON.stringify(Date.now().toString()),
     },
     resolve: {
         alias: {

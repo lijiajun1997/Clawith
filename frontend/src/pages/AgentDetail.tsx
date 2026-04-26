@@ -1893,6 +1893,7 @@ function AgentDetailInner() {
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
     const { isMobile } = useIsMobile();
+    const [mobileSessionMenu, setMobileSessionMenu] = useState(false);
 
     // Auto-collapse session sidebar on mobile
     useEffect(() => {
@@ -2882,6 +2883,45 @@ function AgentDetailInner() {
             <div>
                 {/* Header */}
                 <div className="page-header">
+                    {/* Mobile chat mode: simplified header with session buttons */}
+                    {isMobile && activeTab === 'chat' ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, position: 'relative', zIndex: 50 }}>
+                            {/* Agent avatar + current session title */}
+                            <span style={{ width: '28px', height: '28px', borderRadius: '8px', background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', flexShrink: 0 }}>{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</span>
+                            <span style={{ flex: 1, fontSize: '14px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {activeSession?.title || agent.name}
+                            </span>
+                            {/* New session button */}
+                            <button
+                                onClick={createNewSession}
+                                style={{
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px',
+                                    padding: '6px 10px', cursor: 'pointer', color: 'var(--text-primary)', fontSize: '14px', flexShrink: 0,
+                                    minHeight: '32px', minWidth: '32px',
+                                }}
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                                </svg>
+                            </button>
+                            {/* Switch session button */}
+                            <button
+                                onClick={(e) => { e.stopPropagation(); setMobileSessionMenu(true); }}
+                                style={{
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px',
+                                    padding: '6px 10px', cursor: 'pointer', color: 'var(--text-primary)', fontSize: '14px', flexShrink: 0,
+                                    minHeight: '32px', minWidth: '32px',
+                                }}
+                            >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
+                                </svg>
+                            </button>
+                        </div>
+                    ) : (
+                    <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{(Array.from(agent.name || 'A')[0] as string || 'A').toUpperCase()}</div>
                         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
@@ -2999,9 +3039,12 @@ function AgentDetailInner() {
                             </>
                         )}
                     </div>
+                    </div>
+                    )}
                 </div>
 
-                {/* Tabs */}
+                {/* Tabs - hide on mobile when in chat mode */}
+                {!(isMobile && activeTab === 'chat') && (
                 <div className="tabs">
                     {TABS.filter(tab => {
                         // Workspace tab: only show if user has permission
@@ -3021,6 +3064,7 @@ function AgentDetailInner() {
                         </div>
                     ))}
                 </div>
+                )}
 
                 {/* ── Enhanced Status Tab ── */}
                 {activeTab === 'status' && (() => {
@@ -4316,9 +4360,9 @@ function AgentDetailInner() {
                                 gap: 0,
                                 flex: 1,
                                 minHeight: 0,
-                                height: 'calc(100vh - 206px)',
-                                border: '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
-                                borderRadius: '12px',
+                                height: isMobile ? 'calc(100dvh - 52px)' : 'calc(100vh - 206px)',
+                                border: isMobile ? 'none' : '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
+                                borderRadius: isMobile ? '0' : '12px',
                                 overflow: 'hidden',
                             }}
                         >
@@ -4999,13 +5043,15 @@ function AgentDetailInner() {
                                         }}
                                     />
                                 )}
-                                {/* Canvas-style File Generation Panel */}
+                                {/* Canvas-style File Generation Panel (hidden on mobile) */}
+                                {!isMobile && (
                                 <FileCanvasPanel
                                     files={canvasFiles}
                                     visible={canvasPanelVisible}
                                     onToggle={() => setCanvasPanelVisible(v => !v)}
                                     agentId={id}
                                 />
+                                )}
                             </div>
                         </div>
                     )
@@ -6207,6 +6253,71 @@ function AgentDetailInner() {
                     </div>
                 )
             }
+
+            {/* Mobile session switcher modal */}
+            {isMobile && mobileSessionMenu && (
+                <div
+                    style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end' }}
+                    onClick={() => setMobileSessionMenu(false)}
+                >
+                    <div
+                        style={{
+                            background: 'var(--bg-primary)', borderRadius: '16px 16px 0 0',
+                            width: '100%', maxHeight: '75vh', display: 'flex', flexDirection: 'column',
+                            borderTop: '1px solid var(--border-subtle)',
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        {/* Handle bar */}
+                        <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0 4px', flexShrink: 0 }}>
+                            <div style={{ width: '36px', height: '4px', borderRadius: '2px', background: 'var(--border-strong)' }} />
+                        </div>
+                        {/* Title */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 16px 12px', flexShrink: 0 }}>
+                            <span style={{ fontSize: '16px', fontWeight: 600 }}>{t('agent.chat.sessionListTitle')}</span>
+                            <button onClick={() => setMobileSessionMenu(false)} style={{ background: 'none', border: 'none', color: 'var(--text-tertiary)', fontSize: '20px', cursor: 'pointer', padding: '0 4px', lineHeight: 1 }}>×</button>
+                        </div>
+                        {/* Session list */}
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 16px', WebkitOverflowScrolling: 'touch' }}>
+                            {sessions.length === 0 ? (
+                                <div style={{ padding: '32px 16px', fontSize: '13px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
+                                    {t('agent.chat.noSessionsYet')}
+                                </div>
+                            ) : sessions.map((s: any) => {
+                                const isActive = activeSession?.id === s.id;
+                                return (
+                                    <div
+                                        key={s.id}
+                                        onClick={() => { selectSession(s, 'mine'); setMobileSessionMenu(false); }}
+                                        style={{
+                                            padding: '12px 14px', cursor: 'pointer', borderRadius: '8px',
+                                            background: isActive ? 'var(--bg-secondary)' : 'transparent',
+                                            marginBottom: '2px',
+                                        }}
+                                    >
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <span style={{ fontSize: '14px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                                                {s.title}
+                                            </span>
+                                            {isActive && (
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                                    <path d="M20 6L9 17l-5-5" />
+                                                </svg>
+                                            )}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                            {s.last_message_at
+                                                ? new Date(s.last_message_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                                : new Date(s.created_at).toLocaleString(i18n.language === 'zh' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric' })}
+                                            {s.message_count > 0 && <span style={{ marginLeft: '8px' }}>{s.message_count} msg</span>}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
 
         </>
     );

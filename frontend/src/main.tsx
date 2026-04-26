@@ -9,6 +9,10 @@ import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { loadSavedAccentColor } from './utils/theme';
 
+// Force build ID into bundle for cache busting
+declare const __BUILD_ID__: string;
+if (typeof __BUILD_ID__ !== 'undefined') console.debug('build:', __BUILD_ID__);
+
 // Apply saved theme color before first paint
 loadSavedAccentColor();
 
