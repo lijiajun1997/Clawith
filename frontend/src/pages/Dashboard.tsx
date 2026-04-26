@@ -440,39 +440,39 @@ function ActivityTrendChart({ activities }: { activities: any[] }) {
 /* ────── Conversation Stats (multi-channel line chart) ────── */
 
 const CHANNEL_COLORS: Record<string, string> = {
-    feishu: '#3b82f6', web: '#10b981', agent: '#8b5cf6', chat: '#06b6d4',
+    feishu: '#3b82f6', web: '#10b981', dingtalk: '#f59e0b', wecom: '#06b6d4', other: '#8b5cf6',
 };
-const CHANNEL_LABELS: Record<string, string> = {
-    feishu_msg_sent: 'feishu', web_msg_sent: 'web',
-    agent_msg_sent: 'agent', chat_reply: 'chat',
+const CHANNEL_NAMES: Record<string, string> = {
+    feishu: '飞书', web: 'Web', dingtalk: '钉钉', wecom: '企微', other: '其他',
 };
 
 function ConversationStatsChart({ activities, range }: { activities: any[]; range: number }) {
     const data = useMemo(() => {
         const now = new Date();
         const days = range;
-        const buckets: { day: string; feishu: number; web: number; agent: number; chat: number }[] = [];
+        const buckets: { day: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[] = [];
         for (let i = days - 1; i >= 0; i--) {
             const d = new Date(now.getTime() - i * 86400000);
             buckets.push({
                 day: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
-                feishu: 0, web: 0, agent: 0, chat: 0,
+                feishu: 0, web: 0, dingtalk: 0, wecom: 0, other: 0,
             });
         }
         activities.forEach(act => {
-            if (!act.created_at) return;
+            if (act.action_type !== 'chat_reply' || !act.created_at) return;
             const diffD = Math.floor((now.getTime() - new Date(act.created_at).getTime()) / 86400000);
             if (diffD >= 0 && diffD < days) {
-                const ch = CHANNEL_LABELS[act.action_type] || '';
-                if (ch && buckets[days - 1 - diffD]) {
-                    (buckets[days - 1 - diffD] as any)[ch]++;
-                }
+                // 渠道信息在 detail_json.channel 中
+                const ch = act.detail?.channel || act.detail_json?.channel || 'other';
+                const validCh = ['feishu', 'web', 'dingtalk', 'wecom'].includes(ch) ? ch : 'other';
+                const bucket = buckets[days - 1 - diffD];
+                if (bucket) (bucket as any)[validCh]++;
             }
         });
         return buckets;
     }, [activities, range]);
 
-    const channels = ['chat', 'feishu', 'web', 'agent'];
+    const channels = ['feishu', 'web', 'dingtalk', 'wecom', 'other'];
 
     return (
         <div style={{ height: '140px' }}>
@@ -481,10 +481,11 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border-subtle)" />
                     <XAxis dataKey="day" tick={{ fontSize: 9, fill: 'var(--text-tertiary)' }} tickLine={false} axisLine={false} />
                     <YAxis tick={{ fontSize: 9, fill: 'var(--text-tertiary)' }} tickLine={false} axisLine={false} allowDecimals={false} />
-                    <Tooltip contentStyle={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', fontSize: '11px' }} />
+                    <Tooltip contentStyle={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', fontSize: '11px' }}
+                        formatter={(v: any, name: any) => [v, CHANNEL_NAMES[String(name)] || String(name)]} />
                     {channels.map(ch => (
                         <Line key={ch} type="monotone" dataKey={ch} stroke={CHANNEL_COLORS[ch]} strokeWidth={1.5}
-                            dot={false} activeDot={{ r: 3 }} />
+                            dot={false} activeDot={{ r: 3 }} name={ch} />
                     ))}
                 </LineChart>
             </ResponsiveContainer>
@@ -492,17 +493,18 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
     );
 }
 
-/* ────── Token By Agent (horizontal bar) ────── */
+/* ────── Token By Agent (horizontal bar with day/month toggle) ────── */
 
-function TokenByAgentChart({ agents }: { agents: Agent[] }) {
-    const data = useMemo(() =>
-        [...agents].sort((a, b) => (b.tokens_used_today || 0) - (a.tokens_used_today || 0))
+function TokenByAgentChart({ agents, mode }: { agents: Agent[]; mode: 'day' | 'month' }) {
+    const data = useMemo(() => {
+        const key = mode === 'day' ? 'tokens_used_today' as const : 'tokens_used_month' as const;
+        return [...agents].sort((a, b) => (b[key] || 0) - (a[key] || 0))
             .slice(0, 6)
             .map(a => ({
                 name: a.name.length > 10 ? a.name.slice(0, 10) + '..' : a.name,
-                today: a.tokens_used_today || 0,
-            })),
-        [agents]);
+                tokens: a[key] || 0,
+            }));
+    }, [agents, mode]);
 
     if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
 
@@ -513,8 +515,8 @@ function TokenByAgentChart({ agents }: { agents: Agent[] }) {
                     <XAxis type="number" hide />
                     <YAxis dataKey="name" type="category" tick={{ fontSize: 10, fill: 'var(--text-secondary)' }} tickLine={false} axisLine={false} width={70} />
                     <Tooltip contentStyle={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', fontSize: '11px' }}
-                        formatter={(v: any) => [formatTokens(Number(v)), '今日 Token']} />
-                    <Bar dataKey="today" radius={[0, 3, 3, 0]} barSize={14}>
+                        formatter={(v: any) => [formatTokens(Number(v)), 'Token']} />
+                    <Bar dataKey="tokens" radius={[0, 3, 3, 0]} barSize={14}>
                         {data.map((_, i) => <Cell key={i} fill={['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#06b6d4', '#ec4899'][i]} />)}
                     </Bar>
                 </BarChart>
@@ -656,6 +658,58 @@ function AgentActivityRankChart({ agents, activities, timeRange }: {
     );
 }
 
+/* ────── Tool Call Statistics (per-tool calls + success rate) ────── */
+
+function ToolStatsChart({ activities }: { activities: any[] }) {
+    const data = useMemo(() => {
+        const toolStats: Record<string, { calls: number; success: number }> = {};
+        activities.forEach(a => {
+            if (a.action_type !== 'tool_call') return;
+            const toolName = a.detail?.tool || 'unknown';
+            if (!toolStats[toolName]) toolStats[toolName] = { calls: 0, success: 0 };
+            toolStats[toolName].calls++;
+            const result = a.detail?.result || '';
+            if (!result.startsWith('❌')) toolStats[toolName].success++;
+        });
+        return Object.entries(toolStats)
+            .map(([tool, s]) => ({
+                tool: tool.length > 14 ? tool.slice(0, 14) + '..' : tool,
+                calls: s.calls,
+                success: s.calls > 0 ? Math.round((s.success / s.calls) * 100) : 0,
+            }))
+            .sort((a, b) => b.calls - a.calls)
+            .slice(0, 10);
+    }, [activities]);
+
+    if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
+
+    const maxCalls = data[0]?.calls || 1;
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {data.map(d => (
+                <div key={d.tool} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ fontSize: '10px', color: 'var(--text-secondary)', width: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>{d.tool}</span>
+                    <div style={{ flex: 1, height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+                        <div style={{
+                            height: '100%', borderRadius: '3px',
+                            width: `${(d.calls / maxCalls) * 100}%`,
+                            background: d.success >= 90 ? '#22c55e' : d.success >= 70 ? '#f59e0b' : '#ef4444',
+                            opacity: 0.7,
+                            transition: 'width 0.3s',
+                        }} />
+                    </div>
+                    <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', width: '24px', textAlign: 'right' }}>{d.calls}</span>
+                    <span style={{
+                        fontSize: '9px', fontWeight: 600, width: '28px', textAlign: 'right',
+                        color: d.success >= 90 ? '#22c55e' : d.success >= 70 ? '#f59e0b' : '#ef4444',
+                    }}>{d.success}%</span>
+                </div>
+            ))}
+        </div>
+    );
+}
+
 /* ────── Model Distribution (agents by LLM model) ────── */
 
 const MODEL_COLORS = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899', '#64748b'];
@@ -706,12 +760,13 @@ function ModelDistributionChart({ agents, models }: { agents: Agent[]; models: a
 /* ────── Channel Activity (vertical bar chart) ────── */
 
 const CH_COLORS: Record<string, string> = {
-    feishu_msg_sent: '#3b82f6', web_msg_sent: '#10b981', agent_msg_sent: '#8b5cf6',
-    chat_reply: '#06b6d4', tool_call: '#f59e0b', schedule_run: '#ec4899',
+    chat_reply: '#06b6d4', tool_call: '#f59e0b', heartbeat: '#22c55e',
+    schedule_run: '#ec4899', error: '#ef4444', other: '#64748b',
 };
 const CH_LABELS: Record<string, string> = {
-    feishu_msg_sent: '飞书', web_msg_sent: 'Web', agent_msg_sent: 'Agent间',
-    chat_reply: '对话', tool_call: '工具', schedule_run: '定时',
+    chat_reply: '对话回复', tool_call: '工具调用', heartbeat: '心跳',
+    schedule_run: '定时任务', error: '错误', task_created: '任务创建',
+    task_updated: '任务更新', file_written: '文件写入', plaza_post: '广场发布',
 };
 
 function ChannelActivityChart({ activities }: { activities: any[] }) {
@@ -719,10 +774,15 @@ function ChannelActivityChart({ activities }: { activities: any[] }) {
         const counts: Record<string, number> = {};
         activities.forEach(a => {
             const ch = a.action_type;
-            if (CH_LABELS[ch]) counts[ch] = (counts[ch] || 0) + 1;
+            const label = CH_LABELS[ch] || '其他';
+            counts[label] = (counts[label] || 0) + 1;
         });
         return Object.entries(counts)
-            .map(([type, count]) => ({ name: CH_LABELS[type] || type, count, type }))
+            .map(([name, count]) => ({
+                name,
+                count,
+                type: Object.entries(CH_LABELS).find(([, v]) => v === name)?.[0] || 'other',
+            }))
             .sort((a, b) => b.count - a.count);
     }, [activities]);
 
@@ -1062,6 +1122,7 @@ export default function Dashboard() {
     const [activityRange, setActivityRange] = useState<'day' | 'week' | 'month'>('week');
     const [tokenRange, setTokenRange] = useState<'week' | 'month' | 'year'>('month');
     const [convRange, setConvRange] = useState(14);
+    const [tokenByAgentMode, setTokenByAgentMode] = useState<'day' | 'month'>('day');
 
     // Daily token usage time-series
     const tokenDays = tokenRange === 'week' ? 7 : tokenRange === 'month' ? 30 : 365;
@@ -1289,8 +1350,12 @@ export default function Dashboard() {
 
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                 {/* Token per Agent */}
-                                <SectionCard title={t('dashboard.tokenByAgent', 'Token 消耗分布')} icon={Icons.zap}>
-                                    <TokenByAgentChart agents={agents} />
+                                <SectionCard title={t('dashboard.tokenByAgent', 'Token 消耗分布')} icon={Icons.zap}
+                                    extra={<RangeTabs value={tokenByAgentMode} onChange={v => setTokenByAgentMode(v as any)} options={[
+                                        { key: 'day', label: t('dashboard.rangeDay', '日') },
+                                        { key: 'month', label: t('dashboard.rangeMonth', '月') },
+                                    ]} />}>
+                                    <TokenByAgentChart agents={agents} mode={tokenByAgentMode} />
                                 </SectionCard>
 
                                 {/* Token Today vs Month */}
@@ -1305,9 +1370,9 @@ export default function Dashboard() {
                                     <ModelDistributionChart agents={agents} models={llmModels} />
                                 </SectionCard>
 
-                                {/* Channel Activity */}
-                                <SectionCard title={t('dashboard.channelActivity', '渠道活动分布')} icon={Icons.messageSquare}>
-                                    <ChannelActivityChart activities={allActivities} />
+                                {/* Tool Call Statistics */}
+                                <SectionCard title={t('dashboard.toolStats', '工具调用统计')} icon={Icons.tool}>
+                                    <ToolStatsChart activities={allActivities} />
                                 </SectionCard>
                             </div>
 
