@@ -2386,3 +2386,45 @@
 .plaza-post:nth-child(3) { animation-delay: 60ms; }
 .plaza-post:nth-child(4) { animation-delay: 90ms; }
 .plaza-post:nth-child(5) { animation-delay: 120ms; }
+
+/* ── Mobile Chat Styles (max-width: 767px) ── */
+@media (max-width: 767px) {
+  /* Hide session sidebar on mobile */
+  .session-sidebar {
+    display: none !important;
+  }
+
+  /* Hide file-related panels */
+  .recent-files-panel {
+    display: none !important;
+  }
+  .file-canvas-panel {
+    display: none !important;
+  }
+
+  /* Chat bubbles wider on mobile */
+  .chat-bubble {
+    max-width: 90% !important;
+  }
+
+  /* Chat input area: safe area padding */
+  .chat-input-area {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* Hide live panel on mobile */
+  .live-panel,
+  .live-panel-toggle {
+    display: none !important;
+  }
+
+  /* Chat container no side padding */
+  .main-content.chat-page .chat-container {
+    padding: 0 !important;
+  }
+
+  /* Agent chat area fills remaining space */
+  .agent-chat-area {
+    height: calc(100dvh - 96px);
+  }
+}

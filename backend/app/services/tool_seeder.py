@@ -1840,6 +1840,25 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    # ── Download File Tool ────────────────────────────────────────────────────────
+    {
+        "name": "download_file",
+        "display_name": "Download File",
+        "description": "Download a file from URL and save to workspace/download directory. Supports any file type (documents, archives, images, etc). Uses browser-like headers for maximum compatibility with download sites.",
+        "category": "file",
+        "icon": "⬇️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL of the file to download"},
+                "filename": {"type": "string", "description": "Custom filename (optional, auto-detected from URL/Content-Disposition if omitted)"},
+            },
+            "required": ["url"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
     # ── Unified Fetch Advanced Tool ───────────────────────────────────────────────
     {
         "name": "fetch_advanced",

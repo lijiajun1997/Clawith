@@ -494,6 +494,57 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
 }
 
 /* ────── Token By Agent (horizontal bar with day/month toggle) ────── */
+/* ────── File Delivery Trend (send_channel_file per day) ────── */
+
+function FileDeliveryChart({ activities, range }: { activities: any[]; range: number }) {
+    const data = useMemo(() => {
+        const now = new Date();
+        const buckets: { day: string; deliveries: number }[] = [];
+        for (let i = range - 1; i >= 0; i--) {
+            const d = new Date(now.getTime() - i * 86400000);
+            buckets.push({
+                day: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
+                deliveries: 0,
+            });
+        }
+        activities.forEach(a => {
+            if (a.action_type !== 'tool_call' || !a.created_at) return;
+            if (a.detail?.tool !== 'send_channel_file') return;
+            const diffD = Math.floor((now.getTime() - new Date(a.created_at).getTime()) / 86400000);
+            if (diffD >= 0 && diffD < range) buckets[range - 1 - diffD].deliveries++;
+        });
+        return buckets;
+    }, [activities, range]);
+
+    const total = data.reduce((s, d) => s + d.deliveries, 0);
+
+    return (
+        <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>共 {total} 次交付</span>
+            </div>
+            <div style={{ height: '120px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={data} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+                        <defs>
+                            <linearGradient id="deliveryGrad" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                            </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border-subtle)" />
+                        <XAxis dataKey="day" tick={{ fontSize: 9, fill: 'var(--text-tertiary)' }} tickLine={false} axisLine={false} />
+                        <YAxis tick={{ fontSize: 9, fill: 'var(--text-tertiary)' }} tickLine={false} axisLine={false} allowDecimals={false} />
+                        <Tooltip contentStyle={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-subtle)', borderRadius: '6px', fontSize: '11px' }}
+                            formatter={(v: any) => [v, '交付次数']} />
+                        <Area type="monotone" dataKey="deliveries" stroke="#10b981" strokeWidth={1.5}
+                            fill="url(#deliveryGrad)" dot={{ r: 2, fill: '#10b981' }} activeDot={{ r: 3 }} />
+                    </AreaChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+}
 
 function TokenByAgentChart({ agents, mode }: { agents: Agent[]; mode: 'day' | 'month' }) {
     const data = useMemo(() => {
@@ -1123,6 +1174,7 @@ export default function Dashboard() {
     const [tokenRange, setTokenRange] = useState<'week' | 'month' | 'year'>('month');
     const [convRange, setConvRange] = useState(14);
     const [tokenByAgentMode, setTokenByAgentMode] = useState<'day' | 'month'>('day');
+    const [deliveryRange, setDeliveryRange] = useState(30);
 
     // Daily token usage time-series
     const tokenDays = tokenRange === 'week' ? 7 : tokenRange === 'month' ? 30 : 365;
@@ -1377,12 +1429,15 @@ export default function Dashboard() {
                             </div>
 
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                                {/* Error Trend */}
-                                <SectionCard title={t('dashboard.errorTrend', '错误率趋势')} icon={Icons.alertTriangle}>
-                                    <ErrorTrendChart activities={allActivities} />
+                                {/* File Delivery Trend */}
+                                <SectionCard title={t('dashboard.fileDelivery', '文件交付趋势')} icon={Icons.fileText}
+                                    extra={<RangeTabs value={String(deliveryRange)} onChange={v => setDeliveryRange(Number(v))} options={[
+                                        { key: '7', label: '7d' }, { key: '14', label: '14d' }, { key: '30', label: '30d' },
+                                    ]} />}>
+                                    <FileDeliveryChart activities={allActivities} range={deliveryRange} />
                                 </SectionCard>
 
-                                {/* Task Pipeline as bar chart */}
+                                {/* Task Pipeline */}
                                 <SectionCard title={t('dashboard.taskPipeline', '任务状态分布')} icon={Icons.tasks}>
                                     <TaskPipeline tasks={allTasks} />
                                 </SectionCard>

@@ -212,6 +212,7 @@
     "channelActivity": "工具调用统计",
     "toolStats": "工具调用统计",
     "errorTrend": "错误率趋势",
+    "fileDelivery": "文件交付趋势",
     "rangeDay": "日",
     "rangeWeek": "周",
     "rangeMonth": "月",

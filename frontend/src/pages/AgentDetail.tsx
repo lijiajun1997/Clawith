@@ -49,6 +49,7 @@ import {
     IconLockOpen
 } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
@@ -1352,7 +1353,11 @@ function AgentDetailInner() {
     const location = useLocation();
     const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
     const hashTab = location.hash?.replace('#', '');
-    const [activeTab, setActiveTabRaw] = useState<string>(hashTab && validTabs.includes(hashTab) ? hashTab : 'status');
+    const [activeTab, setActiveTabRaw] = useState<string>(() => {
+        if (hashTab && validTabs.includes(hashTab)) return hashTab;
+        if (window.innerWidth < 768) return 'chat';
+        return 'status';
+    });
 
     // Sync URL hash when tab changes
     const setActiveTab = (tab: string) => {
@@ -1887,6 +1892,13 @@ function AgentDetailInner() {
     const [livePanelVisible, setLivePanelVisible] = useState(false);
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
+    const { isMobile } = useIsMobile();
+
+    // Auto-collapse session sidebar on mobile
+    useEffect(() => {
+        if (isMobile) setSessionListCollapsed(true);
+    }, [isMobile]);
+
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);

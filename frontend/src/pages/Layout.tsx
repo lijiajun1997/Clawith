@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Outlet, NavLink, useNavigate, useMatch } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useMatch, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../stores';
@@ -31,6 +31,7 @@ import {
     IconCheck,
 } from '@tabler/icons-react';
 import { useAppStore } from '../stores';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 /* ────── Tabler Icons ────── */
 const SidebarIcons = {
@@ -239,6 +240,9 @@ export default function Layout() {
     const isChinese = i18n.language?.startsWith('zh');
     // Detect chat page: needs fixed-height main-content for inner scroll to work
     const isChatPage = !!useMatch('/agents/:id/chat');
+    const { isMobile } = useIsMobile();
+    const location = useLocation();
+    const currentAgentId = location.pathname.match(/^\/agents\/([^/]+)/)?.[1] || '';
 
     const [showAccountSettings, setShowAccountSettings] = useState(false);
     const [showAccountMenu, setShowAccountMenu] = useState(false);
@@ -533,6 +537,8 @@ export default function Layout() {
 
     return (
         <div className={`app-layout ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+            {/* Desktop sidebar */}
+            {!isMobile && (
             <nav className={`sidebar ${isSidebarCollapsed ? 'collapsed' : ''}`}>
                 <div className="sidebar-top">
                     <div className="sidebar-logo">
@@ -790,6 +796,113 @@ export default function Layout() {
                     </div>
                 </div>
             </nav>
+            )}
+
+            {/* Mobile top bar */}
+            {isMobile && (
+                <div className="mobile-top-bar">
+                    {/* Account menu trigger */}
+                    <button
+                        className="btn btn-ghost"
+                        onClick={() => setShowAccountMenu(v => !v)}
+                        style={{ padding: '4px 8px', display: 'flex', color: 'var(--text-secondary)' }}
+                    >
+                        <IconUser size={18} stroke={1.5} />
+                    </button>
+
+                    {/* Agent selector */}
+                    <select
+                        value={currentAgentId}
+                        onChange={(e) => {
+                            if (e.target.value) navigate(`/agents/${e.target.value}#chat`);
+                        }}
+                        style={{
+                            flex: 1,
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '6px',
+                            padding: '6px 10px',
+                            fontSize: '14px',
+                            color: 'var(--text-primary)',
+                            appearance: 'none',
+                            outline: 'none',
+                            cursor: 'pointer',
+                        }}
+                    >
+                        <option value="">{isChinese ? '选择 Agent...' : 'Select Agent...'}</option>
+                        {agents.map((a: any) => (
+                            <option key={a.id} value={a.id}>{a.name}</option>
+                        ))}
+                    </select>
+
+                    {/* Theme toggle */}
+                    <button
+                        className="btn btn-ghost"
+                        onClick={toggleTheme}
+                        style={{ padding: '4px 8px', display: 'flex', color: 'var(--text-secondary)' }}
+                    >
+                        {theme === 'dark' ? <IconSun size={18} /> : <IconMoon size={18} />}
+                    </button>
+
+                    {/* Logout */}
+                    <button
+                        className="btn btn-ghost"
+                        onClick={handleLogout}
+                        style={{ padding: '4px 8px', display: 'flex', color: 'var(--text-secondary)' }}
+                    >
+                        <IconLogout size={18} stroke={1.5} />
+                    </button>
+                </div>
+            )}
+
+            {/* Mobile account dropdown */}
+            {isMobile && showAccountMenu && (
+                <div
+                    style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.4)' }}
+                    onClick={() => setShowAccountMenu(false)}
+                >
+                    <div
+                        style={{
+                            position: 'absolute', top: '52px', left: '8px',
+                            background: 'var(--bg-primary)', borderRadius: '8px',
+                            border: '1px solid var(--border-subtle)', minWidth: '200px',
+                            boxShadow: '0 8px 24px rgba(0,0,0,0.2)', padding: '4px',
+                        }}
+                        onClick={e => e.stopPropagation()}
+                    >
+                        {APP_UI_LANGUAGES.map(({ code, nativeLabel }) => (
+                            <button
+                                key={code}
+                                className="account-dropdown-item"
+                                onClick={() => selectUiLanguage(code)}
+                                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '8px 12px', border: 'none', background: resolveUiLangCode(i18n.language) === code ? 'var(--bg-secondary)' : 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '13px', borderRadius: '4px' }}
+                            >
+                                <IconWorld size={15} stroke={1.5} />
+                                <span style={{ flex: 1 }}>{nativeLabel}</span>
+                                {resolveUiLangCode(i18n.language) === code && <IconCheck size={14} stroke={2} />}
+                            </button>
+                        ))}
+                        <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '4px 0' }} />
+                        <button
+                            className="account-dropdown-item"
+                            onClick={() => { setShowAccountSettings(true); setShowAccountMenu(false); }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '8px 12px', border: 'none', background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '13px', borderRadius: '4px' }}
+                        >
+                            <IconUser size={15} stroke={1.5} />
+                            <span>{isChinese ? '账户设置' : 'Account Settings'}</span>
+                        </button>
+                        <div style={{ height: '1px', background: 'var(--border-subtle)', margin: '4px 0' }} />
+                        <button
+                            className="account-dropdown-item account-dropdown-danger"
+                            onClick={() => { handleLogout(); setShowAccountMenu(false); }}
+                            style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', padding: '8px 12px', border: 'none', background: 'transparent', color: 'var(--error)', cursor: 'pointer', fontSize: '13px', borderRadius: '4px' }}
+                        >
+                            <IconLogout size={15} stroke={1.5} />
+                            <span>{t('layout.logout', 'Logout')}</span>
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* Tenant Switcher Modal */}
             {showTenantMenu && (

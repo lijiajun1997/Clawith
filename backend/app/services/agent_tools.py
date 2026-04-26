@@ -2031,6 +2031,7 @@ async def ensure_workspace(agent_id: uuid.UUID, tenant_id: str | None = None) ->
     (ws / "skills").mkdir(exist_ok=True)
     (ws / "workspace").mkdir(exist_ok=True)
     (ws / "workspace" / "knowledge_base").mkdir(exist_ok=True)
+    (ws / "workspace" / "download").mkdir(exist_ok=True)
     (ws / "memory").mkdir(exist_ok=True)
 
     # Conversation logs (auto-logged chat history)
@@ -2523,6 +2524,9 @@ async def execute_tool(
         # ── Unified Word Advanced Tool ──
         elif tool_name == "word_advanced":
             result = await word_advanced(arguments, agent_id, user_id)
+        # ── Download File Tool ──
+        elif tool_name == "download_file":
+            result = await _download_file(ws, arguments)
         # ── Unified Fetch Advanced Tool ──
         elif tool_name == "fetch_advanced":
             result = await fetch_advanced(arguments, agent_id, user_id)
@@ -11031,3 +11035,184 @@ async def sec_edgar_advanced(arguments: dict, agent_id: uuid.UUID | None = None,
             "error": str(e),
             "error_type": type(e).__name__
         }, ensure_ascii=False, indent=2)
+
+
+# ── Download File Tool ────────────────────────────────────────────────────────────
+
+_DOWNLOAD_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+
+_MAX_DOWNLOAD_SIZE = 500 * 1024 * 1024  # 500 MB
+
+
+def _extract_filename_from_content_disposition(header_value: str) -> str | None:
+    """从 Content-Disposition header 中提取文件名"""
+    if not header_value:
+        return None
+    import re
+    # 优先匹配 filename*= (RFC 5987)
+    m = re.search(r"filename\*=(?:UTF-8|utf-8)?''([^\s;]+)", header_value)
+    if m:
+        from urllib.parse import unquote
+        return unquote(m.group(1))
+    # 回退到 filename=
+    m = re.search(r'filename="?([^";\n]+)"?', header_value)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _sanitize_filename(name: str) -> str:
+    """清理文件名，移除不安全字符"""
+    import re
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
+    name = name.strip('. ')
+    return name or "download"
+
+
+def _filename_from_url(url: str) -> str | None:
+    """从 URL 路径提取文件名"""
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+    basename = path.rstrip('/').rsplit('/', 1)[-1]
+    if '.' in basename and len(basename) < 256:
+        return _sanitize_filename(basename)
+    return None
+
+
+async def _download_file(ws: Path, arguments: dict) -> str:
+    """从 URL 下载文件并保存到 workspace/download 目录"""
+    import httpx
+    from urllib.parse import urlparse
+    import datetime
+
+    url = arguments.get("url", "").strip()
+    custom_filename = arguments.get("filename", "").strip()
+
+    if not url:
+        return json.dumps({"success": False, "error": "url is required"}, ensure_ascii=False)
+
+    # 仅允许 http/https
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return json.dumps({"success": False, "error": f"Unsupported protocol: {parsed.scheme}. Only http/https allowed."}, ensure_ascii=False)
+
+    # 确保 download 目录存在
+    download_dir = ws / "workspace" / "download"
+    download_dir.mkdir(parents=True, exist_ok=True)
+
+    browser_headers = {
+        "User-Agent": _DOWNLOAD_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    if parsed.hostname:
+        browser_headers["Referer"] = f"{parsed.scheme}://{parsed.hostname}/"
+
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=httpx.Timeout(connect=30, read=120, write=30, pool=30),
+            headers=browser_headers,
+        ) as client:
+            async with client.stream("GET", url) as response:
+                if response.status_code >= 400:
+                    return json.dumps({
+                        "success": False,
+                        "error": f"HTTP {response.status_code}: {response.reason_phrase}",
+                        "url": url,
+                    }, ensure_ascii=False)
+
+                # 解析文件名
+                filename = None
+                if custom_filename:
+                    filename = _sanitize_filename(custom_filename)
+                if not filename or filename == "download":
+                    cd = response.headers.get("content-disposition", "")
+                    filename = _extract_filename_from_content_disposition(cd) or filename
+                if not filename or filename == "download":
+                    filename = _filename_from_url(str(response.url)) or filename
+                if not filename or filename == "download":
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ext = ""
+                    ct = response.headers.get("content-type", "")
+                    if "pdf" in ct:
+                        ext = ".pdf"
+                    elif "zip" in ct:
+                        ext = ".zip"
+                    elif "png" in ct:
+                        ext = ".png"
+                    elif "jpeg" in ct or "jpg" in ct:
+                        ext = ".jpg"
+                    elif "json" in ct:
+                        ext = ".json"
+                    elif "ms-excel" in ct or "spreadsheet" in ct:
+                        ext = ".xlsx"
+                    elif "msword" in ct or "wordprocessingml" in ct:
+                        ext = ".docx"
+                    filename = f"download_{timestamp}{ext}"
+
+                # 处理文件名冲突
+                target_path = download_dir / filename
+                if target_path.exists():
+                    stem = target_path.stem
+                    suffix = target_path.suffix
+                    counter = 1
+                    while target_path.exists():
+                        filename = f"{stem}_{counter}{suffix}"
+                        target_path = download_dir / filename
+                        counter += 1
+
+                # 流式下载 + 大小检查
+                total_size = 0
+                chunks = []
+                async for chunk in response.aiter_bytes(chunk_size=65536):
+                    total_size += len(chunk)
+                    if total_size > _MAX_DOWNLOAD_SIZE:
+                        return json.dumps({
+                            "success": False,
+                            "error": f"File exceeds maximum size limit ({_MAX_DOWNLOAD_SIZE // (1024*1024)}MB)",
+                            "url": url,
+                        }, ensure_ascii=False)
+                    chunks.append(chunk)
+
+                # 写入文件
+                with open(target_path, "wb") as f:
+                    for chunk in chunks:
+                        f.write(chunk)
+
+                content_type = response.headers.get("content-type", "application/octet-stream")
+                effective_url = str(response.url)
+
+                logger.info(f"[download_file] Saved {url} -> {target_path} ({total_size} bytes)")
+
+                return json.dumps({
+                    "success": True,
+                    "url": url,
+                    "effective_url": effective_url,
+                    "filename": filename,
+                    "file_path": f"workspace/download/{filename}",
+                    "size_bytes": total_size,
+                    "content_type": content_type.split(";")[0].strip(),
+                }, ensure_ascii=False, indent=2)
+
+    except httpx.TimeoutException as e:
+        logger.warning(f"[download_file] Timeout: {url} - {e}")
+        return json.dumps({"success": False, "error": f"Request timeout: {str(e)}", "url": url}, ensure_ascii=False)
+    except httpx.ConnectError as e:
+        logger.warning(f"[download_file] Connection failed: {url} - {e}")
+        return json.dumps({"success": False, "error": f"Connection failed: {str(e)}", "url": url}, ensure_ascii=False)
+    except Exception as e:
+        logger.exception(f"[download_file] Error: {url}")
+        return json.dumps({"success": False, "error": str(e), "error_type": type(e).__name__, "url": url}, ensure_ascii=False)
