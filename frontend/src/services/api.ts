@@ -405,6 +405,13 @@ export const enterpriseApi = {
         request(`/enterprise/knowledge-base/content?path=${encodeURIComponent(path)}`, {
             method: 'DELETE',
         }),
+
+    dailyTokenUsage: (days: number = 30) => {
+        const tid = localStorage.getItem('current_tenant_id');
+        return request<{ date: string; tokens: number }[]>(
+            `/enterprise/daily-token-usage?days=${days}${tid ? `&tenant_id=${tid}` : ''}`
+        ).catch(() => []);
+    },
 };
 
 // ─── Activity Logs ────────────────────────────────────

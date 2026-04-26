@@ -419,6 +419,42 @@ async def get_enterprise_stats(
     }
 
 
+# ─── Daily Token Usage Time-series ──────────────────────
+
+@router.get("/daily-token-usage")
+async def get_daily_token_usage(
+    days: int = 30,
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get daily token consumption for the tenant within the last N days."""
+    from datetime import datetime, timedelta, timezone
+    from app.models.activity_log import DailyTokenUsage
+    from sqlalchemy import cast, Date
+
+    tid = uuid.UUID(tenant_id) if tenant_id else current_user.tenant_id
+    start_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+    q = await db.execute(
+        select(
+            cast(DailyTokenUsage.date, Date).label('d'),
+            func.sum(DailyTokenUsage.tokens_used).label('tokens'),
+        )
+        .where(
+            DailyTokenUsage.tenant_id == tid,
+            DailyTokenUsage.date >= start_date,
+        )
+        .group_by('d')
+        .order_by('d')
+    )
+
+    return [
+        {"date": str(row.d), "tokens": row.tokens or 0}
+        for row in q.all()
+    ]
+
+
 # ─── Tenant Quota Settings ──────────────────────────────
 
 from app.models.tenant import Tenant
