@@ -1040,7 +1040,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "feishu_calendar_list",
-            "description": "查询飞书日历。**自动读取当前对话用户的真实忙碌时段（freebusy）**，同时列出 bot 创建的日程。用于查询某人是否有空、安排日程时避开冲突。",
+            "description": "查询飞书日历。**自动读取当前对话用户的真实日历事件（包括标题、时间、地点）**，同时列出 bot 创建的日程。显示具体日期和时间信息。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -8568,7 +8568,7 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
     start_iso = _to_iso(start_arg, now)
     end_iso = _to_iso(end_arg, now + _td(days=7))
 
-    # ── 1. Query sender's real freebusy from Feishu Calendar ─────────────────
+    # ── 1. Query user's actual calendar events (not just freebusy) ────────
     sender_open_id = channel_feishu_sender_open_id.get(None)
     # Allow explicit override via argument
     if arguments.get("user_open_id"):
@@ -8578,48 +8578,77 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         if resolved:
             sender_open_id = resolved
 
-    freebusy_section = ""
+    user_events_section = ""
     if sender_open_id:
         try:
-            async with httpx.AsyncClient(timeout=10) as fb_client:
-                fb_resp = await fb_client.post(
-                    "https://open.feishu.cn/open-apis/calendar/v4/freebusy/list",
+            # First, get user's primary calendar ID
+            async with httpx.AsyncClient(timeout=10) as cal_client:
+                cal_resp = await cal_client.get(
+                    "https://open.feishu.cn/open-apis/calendar/v4/calendars/primary",
                     headers={"Authorization": f"Bearer {token}"},
-                    params={"user_id_type": "open_id"},
-                    json={
-                        "time_min": start_iso,
-                        "time_max": end_iso,
-                        "user_id": sender_open_id,
-                    },
+                    params={"user_id_type": "open_id", "user_id": sender_open_id},
                 )
-            fb_data = fb_resp.json()
-            if fb_data.get("code") == 0:
-                busy_slots = fb_data.get("data", {}).get("freebusy_list", [])
-                if busy_slots:
-                    from datetime import datetime as _dt2
-                    from zoneinfo import ZoneInfo
-                    tz_cn = ZoneInfo("Asia/Shanghai")
-                    busy_lines = []
-                    for slot in sorted(busy_slots, key=lambda x: x.get("start_time", "")):
-                        try:
-                            s = _dt2.fromisoformat(slot["start_time"]).astimezone(tz_cn).strftime("%H:%M")
-                            e = _dt2.fromisoformat(slot["end_time"]).astimezone(tz_cn).strftime("%H:%M")
-                            busy_lines.append(f"  🔴 {s}–{e}")
-                        except Exception:
-                            busy_lines.append(f"  🔴 {slot.get('start_time')}–{slot.get('end_time')}")
-                    freebusy_section = f"\n📌 **用户真实日历（忙碌时段）**：\n" + "\n".join(busy_lines)
+            cal_data = cal_resp.json()
+            user_cal_id = None
+            if cal_data.get("code") == 0:
+                cals = cal_data.get("data", {}).get("calendars", [])
+                if cals:
+                    user_cal_id = cals[0].get("calendar", {}).get("calendar_id")
+
+            if user_cal_id:
+                # Query user's calendar events
+                params = {}
+                if start_ts:
+                    params["start_time"] = start_ts
+                if end_ts:
+                    params["end_time"] = end_ts
+
+                async with httpx.AsyncClient(timeout=20) as ev_client:
+                    ev_resp = await ev_client.get(
+                        f"https://open.feishu.cn/open-apis/calendar/v4/calendars/{user_cal_id}/events",
+                        headers={"Authorization": f"Bearer {token}"},
+                        params=params,
+                    )
+                ev_data = ev_resp.json()
+                if ev_data.get("code") == 0:
+                    items = ev_data.get("data", {}).get("items", [])
+                    if items:
+                        from datetime import datetime as _dt2
+                        from zoneinfo import ZoneInfo
+                        tz_cn = ZoneInfo("Asia/Shanghai")
+                        event_lines = []
+                        for ev in sorted(items, key=lambda x: x.get("start_time", {}).get("timestamp", 0)):
+                            summary = ev.get("summary", "(无标题)")
+                            start_ts_raw = ev.get("start_time", {}).get("timestamp", "")
+                            end_ts_raw = ev.get("end_time", {}).get("timestamp", "")
+                            location = ev.get("location", {}).get("name", "")
+                            try:
+                                if start_ts_raw:
+                                    s = _dt2.fromtimestamp(int(start_ts_raw), tz=timezone.utc).astimezone(tz_cn)
+                                    e = _dt2.fromtimestamp(int(end_ts_raw), tz=timezone.utc).astimezone(tz_cn) if end_ts_raw else s + _td(hours=1)
+                                    date_str = s.strftime("%Y-%m-%d")
+                                    time_str = s.strftime("%H:%M") + "–" + e.strftime("%H:%M")
+                                    loc_str = f" | 📍{location}" if location else ""
+                                    event_lines.append(f"  📅 {date_str} {time_str} | {summary}{loc_str}")
+                            except Exception:
+                                continue
+                        user_events_section = f"\n📌 **用户日历**：\n" + "\n".join(event_lines)
+                    else:
+                        user_events_section = "\n📌 **用户日历**：该时段没有日程。"
                 else:
-                    freebusy_section = "\n📌 **用户真实日历**：该时段全部空闲。"
-        except Exception as _fe:
-            freebusy_section = f"\n⚠️ Freebusy 查询异常: {_fe}"
+                    user_events_section = f"\n⚠️ 日历事件查询异常: {ev_data.get('msg')} (code {ev_data.get('code')})"
+            else:
+                user_events_section = f"\n⚠️ 无法获取用户主日历: {cal_data.get('msg')} (code {cal_data.get('code')})"
+        except Exception as _ue:
+            user_events_section = f"\n⚠️ 日历查询异常: {_ue}"
 
     # ── 2. Also list bot's own calendar events ───────────────────────────────
     agent_cal_id, cal_err = await _get_agent_calendar_id(token)
     if not agent_cal_id:
-        # Return freebusy results even if bot calendar fails
-        if freebusy_section:
-            return freebusy_section.strip()
-        return cal_err or "❌ Failed to retrieve agent's primary calendar ID."
+        # Return user events even if bot calendar fails
+        if user_events_section:
+            return user_events_section.strip()
+        return (user_events_section or "") + "\n" + (cal_err or "❌ Failed to retrieve agent's primary calendar ID.")
 
     # Note: page_size is NOT a valid param for this API — omit it entirely
     params: dict = {}
@@ -8637,12 +8666,12 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
 
     data = resp.json()
     if data.get("code") != 0:
-        if freebusy_section:
-            return freebusy_section.strip()
-        return f"❌ Calendar API error: {data.get('msg')} (code {data.get('code')})"
+        if user_events_section:
+            return user_events_section.strip()
+        return (user_events_section or "") + "\n" + f"❌ Calendar API error: {data.get('msg')} (code {data.get('code')})"
 
     items = data.get("data", {}).get("items", [])
-    if not items and not freebusy_section:
+    if not items and not user_events_section:
         return "📅 该时间段内没有日程。"
 
     lines = []
@@ -8663,8 +8692,8 @@ async def _feishu_calendar_list(agent_id: uuid.UUID, arguments: dict) -> str:
         loc_str = f" | 📍{location}" if location else ""
         lines.append(f"- **{summary}** | 🕐{s}–{e}{loc_str}  (ID: `{event_id}`)")
 
-    if freebusy_section:
-        lines.append(freebusy_section)
+    if user_events_section:
+        lines.append(user_events_section)
 
     return "\n".join(lines) if lines else "📅 该时间段内没有日程。"
 
