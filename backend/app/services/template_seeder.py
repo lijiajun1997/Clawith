@@ -225,7 +225,7 @@ DEFAULT_TEMPLATES = [
     {
         "name": "Project Copilot",
         "description": "审计项目管理模板 - 管理项目全周期、追踪Top Mission、监控底稿进度",
-        "icon": "PA",
+        "icon": "项目助手",
         "category": "audit",
         "is_builtin": True,
         "soul_template": PROJECT_COPILOT_SOUL,
@@ -242,7 +242,7 @@ DEFAULT_TEMPLATES = [
     {
         "name": "Personal Copilot",
         "description": "个人效率模板 - 管理日程任务、会议邮件、习惯学习",
-        "icon": "PeA",
+        "icon": "个人助手",
         "category": "personal",
         "is_builtin": True,
         "soul_template": PERSONAL_COPILOT_SOUL,

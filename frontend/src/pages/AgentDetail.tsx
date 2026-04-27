@@ -10,7 +10,9 @@ import ChannelConfig from '../components/ChannelConfig';
 import MarkdownRenderer from '../components/MarkdownRenderer';
 import PromptModal from '../components/PromptModal';
 import OpenClawSettings from './OpenClawSettings';
-import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
+import type { LivePreviewState } from '../components/AgentBayLivePanel';
+import AgentSidePanel, { SidePanelTab } from '../components/AgentSidePanel';
+import type { WorkspaceActivity, WorkspaceLiveDraft } from '../components/WorkspaceOperationPanel';
 import AgentCredentials from '../components/AgentCredentials';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
 import { useAppStore } from '../stores';
@@ -18,7 +20,6 @@ import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
 import { formatFileSize } from '../utils/formatFileSize';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
-import FileCanvasPanel from '../components/FileCanvasPanel';
 import {
     IconSettings,
     IconAlertTriangle,
@@ -52,6 +53,58 @@ import { useDropZone } from '../hooks/useDropZone';
 import { useIsMobile } from '../hooks/useIsMobile';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
+
+// Workspace tools that trigger live draft preview
+const WORKSPACE_TOOLS = new Set([
+    'write_file', 'edit_file', 'delete_file',
+    'convert_markdown_to_docx', 'convert_csv_to_xlsx',
+    'convert_markdown_to_pdf', 'convert_html_to_pdf', 'convert_html_to_pptx',
+]);
+
+function workspaceActionForTool(tool: string): WorkspaceLiveDraft['action'] {
+    if (tool === 'edit_file') return 'edit';
+    if (tool === 'delete_file') return 'delete';
+    if (tool.startsWith('convert_')) return 'convert';
+    return 'write';
+}
+
+function decodeJsonStringFragment(value: string): string {
+    try { return JSON.parse(`"${value.replace(/"/g, '\\"')}"`); }
+    catch { return value.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'); }
+}
+
+function readPartialJsonString(raw: string, key: string): string | undefined {
+    const marker = `"${key}"`;
+    const idx = raw.indexOf(marker);
+    if (idx < 0) return undefined;
+    const colonIdx = raw.indexOf(':', idx + marker.length);
+    if (colonIdx < 0) return undefined;
+    const q1 = raw.indexOf('"', colonIdx + 1);
+    if (q1 < 0) return undefined;
+    let escaped = false, value = '';
+    for (let i = q1 + 1; i < raw.length; i++) {
+        const ch = raw[i];
+        if (escaped) { value += `\\${ch}`; escaped = false; continue; }
+        if (ch === '\\') { escaped = true; continue; }
+        if (ch === '"') break;
+        value += ch;
+    }
+    return decodeJsonStringFragment(value);
+}
+
+function parseWorkspaceDraftArgs(tool: string, raw: string): Pick<WorkspaceLiveDraft, 'path' | 'content'> {
+    let parsed: any = null;
+    try { parsed = JSON.parse(raw || '{}'); } catch { parsed = null; }
+    const getString = (key: string) => {
+        const v = parsed?.[key];
+        if (typeof v === 'string') return v;
+        return readPartialJsonString(raw || '', key);
+    };
+    const path = getString('path') || getString('target_path') || getString('source_path');
+    let content = getString('content');
+    if (tool === 'edit_file') content = getString('new_string') || content;
+    return { path, content };
+}
 
 // Format large token numbers with K/M suffixes
 const formatTokens = (n: number) => {
@@ -1007,7 +1060,7 @@ function AnalysisCard({
                                                 <div style={{
                                                     fontFamily: 'var(--font-mono)', fontSize: '10px',
                                                     color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
-                                                    wordBreak: 'break-all', maxHeight: '80px', overflowY: 'auto',
+                                                    wordBreak: 'break-all', maxHeight: '200px', overflowY: 'auto',
                                                     background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
                                                     padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
                                                 }}>{argsStr}</div>
@@ -1016,11 +1069,11 @@ function AnalysisCard({
                                                 <div style={{
                                                     fontSize: '10px', color: 'var(--text-secondary)',
                                                     whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                                                    maxHeight: '120px', overflowY: 'auto',
+                                                    maxHeight: '400px', overflowY: 'auto',
                                                     borderTop: argsStr ? '1px solid rgba(99,102,241,0.10)' : 'none',
                                                     paddingTop: argsStr ? '4px' : 0,
                                                 }}>
-                                                    {tc.result.length > 500 ? tc.result.slice(0, 500) + '…' : tc.result}
+                                                    {tc.result}
                                                 </div>
                                             )}
                                         </div>
@@ -1041,6 +1094,48 @@ function AnalysisCard({
 
 
 
+
+type GroupedEntry =
+    | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
+    | { type: 'msg'; msg: any; i: number };
+
+function groupMessagesForDisplay(messages: any[]): GroupedEntry[] {
+    const len = messages.length;
+    const msgClass: ('analysis' | 'final')[] = new Array(len).fill('final');
+    let hasFutureTool = false;
+    for (let i = len - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m.role === 'tool_call') { msgClass[i] = 'analysis'; hasFutureTool = true; }
+        else if (m.role === 'user') { hasFutureTool = false; }
+        else if (m.role === 'assistant' && hasFutureTool) { msgClass[i] = 'analysis'; }
+    }
+    const grouped: GroupedEntry[] = [];
+    let curGroup: AnalysisItem[] | null = null;
+    let groupKey = 0;
+    const flush = () => {
+        if (curGroup && curGroup.length > 0) {
+            grouped.push({ type: 'analysis_group', items: curGroup, key: groupKey });
+            curGroup = null;
+        }
+    };
+    for (let i = 0; i < len; i++) {
+        const m = messages[i];
+        if (msgClass[i] === 'analysis') {
+            if (!curGroup) { curGroup = []; groupKey = i; }
+            if (m.role === 'tool_call') {
+                curGroup.push({ type: 'tool', name: m.toolName || 'tool', args: m.toolArgs || {}, status: m.toolStatus === 'running' ? 'running' : 'done', result: m.toolResult || undefined });
+            } else if (m.role === 'assistant') {
+                if (m.thinking) curGroup.push({ type: 'thinking', content: m.thinking });
+                if (m.content?.trim()) curGroup.push({ type: 'thinking', content: m.content.trim() });
+            }
+        } else {
+            flush();
+            grouped.push({ type: 'msg', msg: m, i });
+        }
+    }
+    flush();
+    return grouped;
+}
 
 function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; readOnly?: boolean }) {
     const { t } = useTranslation();
@@ -1464,6 +1559,8 @@ function AgentDetailInner() {
     const [activeSession, setActiveSession] = useState<any | null>(null);
     const [chatScope, setChatScope] = useState<'mine' | 'all'>('mine');
     const [allUserFilter, setAllUserFilter] = useState<string>('');  // filter by username in All Users
+    const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+    const [renameDraft, setRenameDraft] = useState('');
     const [historyMsgs, setHistoryMsgs] = useState<any[]>([]);
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
@@ -1798,87 +1895,6 @@ function AgentDetailInner() {
     };
     interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
-    // Extract file-generating tool calls from chatMessages for Canvas panel
-    const FILE_TOOL_NAMES = useMemo(() => new Set([
-        'write_file', 'edit_file', 'create_file', 'python_run_file', 'run_python_file',
-        'python_exec', 'python', 'execute_python', 'run_code',
-        'execute_code', 'execute_code_e2b',
-        'call_model', 'callmodel',
-    ]), []);
-    const canvasFiles = useMemo(() => {
-        const m = new Map<string, { name: string; status: 'generating' | 'done' | 'error'; content?: string; path?: string }>();
-
-        // Helper function to extract generated files from tool output
-        const extractGeneratedFiles = (toolResult: string): string[] => {
-            const files: string[] = [];
-            if (!toolResult) return files;
-
-            // Match multiple patterns:
-            // 1. Chinese format: ✅ PDF文档已生成: workspace/demo.pdf
-            // 2. English format: ✅ PDF generated: workspace/demo.pdf
-            // 3. Direct paths: workspace/demo.pdf or demo.pdf
-            // 4. Office file formats: .pdf, .pptx, .xlsx, .docx, etc.
-
-            const patterns = [
-                // Chinese/English format with emoji and indicators
-                /(?:✅|❌)?\s*(?:PDF|PPT|Excel|Word|文档|表格|演示文稿|文件)[^\s:]*[:：]\s*([^\s\n]+\.(?:pdf|pptx?|xlsx?|docx?))/gi,
-                // English format: generated/saved/created/written: path
-                /(?:generated|saved|created|written|output)[\s:]+([^\s\n]+\.(?:pdf|pptx?|xlsx?|docx?|png|jpe?g|gif|svg|html?|py|js|ts|jsx|tsx|json|yaml?|md|txt|csv))/gi,
-                // Direct workspace paths: workspace/filename.ext
-                /workspace\/[^\s\n]+\.(?:pdf|pptx?|xlsx?|docx?|png|jpe?g|gif|svg|html?|py|js|ts|jsx|tsx|json|yaml?|md|txt|csv)/gi,
-                // Direct filename with extension (fallback)
-                /[a-zA-Z0-9_\-\/]+\.(?:pdf|pptx?|xlsx?|docx?)/gi,
-            ];
-
-            for (const pattern of patterns) {
-                let match;
-                // Reset regex state
-                pattern.lastIndex = 0;
-                while ((match = pattern.exec(toolResult)) !== null) {
-                    let filePath = match[1] || match[0];
-                    // Extract just the filename from the path
-                    const fileName = filePath.split('/').pop() || filePath;
-                    // Normalize to lowercase for comparison
-                    const normalizedFileName = fileName.toLowerCase();
-                    // Avoid duplicates (case-insensitive)
-                    if (!files.some(f => f.toLowerCase() === normalizedFileName)) {
-                        files.push(fileName);
-                    }
-                }
-            }
-
-            return files;
-        };
-
-        for (const msg of chatMessages) {
-            if (msg.role !== 'tool_call' || !FILE_TOOL_NAMES.has(msg.toolName || '')) continue;
-
-            // Try to get filename from tool arguments first
-            let fileName = msg.toolArgs?.file_path || msg.toolArgs?.path || msg.toolArgs?.filename || '';
-
-            // If not found in arguments, extract from tool result
-            if (!fileName) {
-                const extractedFiles = extractGeneratedFiles(msg.toolResult || '');
-                if (extractedFiles.length > 0) {
-                    // Use the first extracted file as the primary file
-                    fileName = extractedFiles[0];
-                } else {
-                    fileName = 'untitled_file';
-                }
-            }
-
-            // Only add if we got a valid filename with extension
-            if (fileName && fileName !== 'untitled_file') {
-                m.set(`file-${fileName}`, {
-                    name: fileName,
-                    status: msg.toolStatus === 'running' ? 'generating' : 'done',
-                    content: '', // content fetched via API in FileCanvasPanel
-                    path: msg.toolArgs?.file_path || msg.toolArgs?.path || `workspace/${fileName}`,
-                });
-            }
-        }
-        return m;
-    }, [chatMessages, FILE_TOOL_NAMES]);
     // Stable expanded-state map for tool groups — keyed by groupStartIndex.
     // Stored in a ref so it survives parent re-renders without causing extra renders.
     const toolGroupExpandedRef = useRef<Map<number, boolean>>(new Map());
@@ -1890,6 +1906,13 @@ function AgentDetailInner() {
     };
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
+    const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('workspace');
+    const [workspaceActivePath, setWorkspaceActivePath] = useState<string | null>(null);
+    const [workspaceLockedPath, setWorkspaceLockedPath] = useState<string | null>(null);
+    const [workspaceActivities, setWorkspaceActivities] = useState<WorkspaceActivity[]>([]);
+    const [workspaceLiveDraft, setWorkspaceLiveDraft] = useState<WorkspaceLiveDraft | null>(null);
+    const workspaceEditingRef = useRef(false);
+    const workspaceLockedPathRef = useRef<string | null>(null);
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
     const { isMobile } = useIsMobile();
@@ -1900,15 +1923,33 @@ function AgentDetailInner() {
         if (isMobile) setSessionListCollapsed(true);
     }, [isMobile]);
 
+    // Workspace helpers
+    const workspacePreviewLocked = !!workspaceLockedPath;
+    useEffect(() => { workspaceLockedPathRef.current = workspaceLockedPath; }, [workspaceLockedPath]);
+    const allowWorkspaceAutoSwitch = useCallback((path: string | undefined) => {
+        if (workspaceEditingRef.current) return false;
+        if (!workspaceLockedPathRef.current) return true;
+        return workspaceLockedPathRef.current === path;
+    }, []);
+    const allowLivePanelAutoFocus = useCallback(() => !workspaceEditingRef.current && !workspaceLockedPathRef.current, []);
+
+    const handleWorkspaceSelectPath = useCallback((path: string) => { setWorkspaceActivePath(path); }, []);
+    const handleWorkspaceToggleLock = useCallback(() => {
+        setWorkspaceLockedPath((current) => current ? null : workspaceActivePath);
+    }, [workspaceActivePath]);
+    const handleWorkspaceEditingChange = useCallback((editing: boolean) => { workspaceEditingRef.current = editing; }, []);
+    const handleWorkspacePathDeleted = useCallback((path: string) => {
+        setAttachedFiles((prev) => prev.filter((file) => !(file.source === 'workspace_auto' && file.path === path)));
+        setWorkspaceLockedPath((current) => current === path ? null : current);
+    }, []);
+
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
-    // Canvas panel visibility (data comes from chatMessages via useMemo below)
-    const [canvasPanelVisible, setCanvasPanelVisible] = useState(true);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
-    const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string }[]>([]);
+    const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' }[]>([]);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -2160,10 +2201,48 @@ function AgentDetailInner() {
                     }
                     return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
                 });
+            } else if (d.type === 'workspace_draft') {
+                if (WORKSPACE_TOOLS.has(d.name)) {
+                    const parsedDraft = parseWorkspaceDraftArgs(d.name, d.arguments || '');
+                    const draft: WorkspaceLiveDraft = {
+                        id: d.id || `${d.name}-${d.index || 0}`,
+                        tool: d.name,
+                        action: workspaceActionForTool(d.name),
+                        status: 'drafting',
+                        ...parsedDraft,
+                    };
+                    setWorkspaceLiveDraft(draft);
+                    if (allowWorkspaceAutoSwitch(draft.path)) setWorkspaceActivePath(draft.path!);
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab('workspace');
+                        setLivePanelVisible(true);
+                        setSessionListCollapsed(true);
+                        useAppStore.setState({ sidebarCollapsed: true });
+                    }
+                }
             } else if (d.type === 'tool_call') {
-                // Auto-expand Canvas panel when file tools are used
-                if (d.status === 'running' && FILE_TOOL_NAMES.has(d.name)) {
-                    setCanvasPanelVisible(true);
+                if (WORKSPACE_TOOLS.has(d.name)) {
+                    if (d.status === 'running') {
+                        const rawArgs = typeof d.args === 'string' ? d.args : JSON.stringify(d.args || {});
+                        const parsedDraft = parseWorkspaceDraftArgs(d.name, rawArgs);
+                        const draft: WorkspaceLiveDraft = {
+                            id: d.id || `${d.name}-running`,
+                            tool: d.name,
+                            action: workspaceActionForTool(d.name),
+                            status: 'running',
+                            ...parsedDraft,
+                        };
+                        setWorkspaceLiveDraft(draft);
+                        if (allowWorkspaceAutoSwitch(draft.path)) setWorkspaceActivePath(draft.path!);
+                        if (allowLivePanelAutoFocus()) {
+                            setSidePanelTab('workspace');
+                            setLivePanelVisible(true);
+                            setSessionListCollapsed(true);
+                            useAppStore.setState({ sidebarCollapsed: true });
+                        }
+                    } else if (d.status === 'done') {
+                        setWorkspaceLiveDraft(null);
+                    }
                 }
                 if (d.live_preview) {
                     const lp = d.live_preview;
@@ -2172,15 +2251,37 @@ function AgentDetailInner() {
                         if ((lp.env === 'desktop' || lp.env === 'browser') && lp.screenshot_url) {
                             if (lp.env === 'desktop') next.desktop = { screenshotUrl: lp.screenshot_url };
                             else next.browser = { screenshotUrl: lp.screenshot_url };
+                            if (allowLivePanelAutoFocus()) setSidePanelTab(lp.env === 'desktop' ? 'desktop' : 'browser');
                         } else if (lp.env === 'code' && lp.output) {
                             const existing = prev.code?.output || '';
                             next.code = { output: existing + (existing ? '\n---\n' : '') + lp.output };
+                            if (allowLivePanelAutoFocus()) setSidePanelTab('code');
                         }
                         return next;
                     });
-                    setLivePanelVisible(true);
-                    setSessionListCollapsed(true);
-                    useAppStore.setState({ sidebarCollapsed: true });
+                    if (allowLivePanelAutoFocus()) {
+                        setLivePanelVisible(true);
+                        setSessionListCollapsed(true);
+                        useAppStore.setState({ sidebarCollapsed: true });
+                    }
+                }
+                if (d.workspace_activity) {
+                    const activity = d.workspace_activity as WorkspaceActivity;
+                    setWorkspaceLiveDraft(null);
+                    setWorkspaceActivities(prev => [activity, ...prev.filter(item => item.path !== activity.path)].slice(0, 20));
+                    if (activity.action === 'delete' && activity.ok !== false && !activity.pendingApproval) {
+                        handleWorkspacePathDeleted(activity.path);
+                    }
+                    if (activity.action !== 'delete' && activity.ok !== false && allowWorkspaceAutoSwitch(activity.path)) {
+                        setWorkspaceActivePath(activity.path);
+                    }
+                    if (allowLivePanelAutoFocus()) {
+                        setSidePanelTab('workspace');
+                        setLivePanelVisible(true);
+                        setSessionListCollapsed(true);
+                        useAppStore.setState({ sidebarCollapsed: true });
+                    }
+                    queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                 }
                 setChatMessages(prev => {
                     const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
@@ -4518,7 +4619,21 @@ function AgentDetailInner() {
                                                             onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
                                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
-                                                                    <div style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{s.title}</div>
+                                                                    {renamingSessionId === s.id ? (
+                                                                        <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
+                                                                            onBlur={async () => {
+                                                                                if (renameDraft.trim() && id) { await agentApi.renameSession(id, s.id, renameDraft.trim()); setSessions(prev => prev.map((ss: any) => ss.id === s.id ? { ...ss, title: renameDraft.trim() } : ss)); if (activeSession?.id === s.id) setActiveSession((prev: any) => prev ? { ...prev, title: renameDraft.trim() } : prev); }
+                                                                                setRenamingSessionId(null);
+                                                                            }}
+                                                                            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') { setRenamingSessionId(null); } }}
+                                                                            onClick={e => e.stopPropagation()}
+                                                                            style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', flex: 1, minWidth: 0, background: 'var(--bg-secondary)', border: '1px solid var(--accent-primary)', borderRadius: '3px', padding: '1px 4px', outline: 'none' }}
+                                                                        />
+                                                                    ) : (
+                                                                        <div onDoubleClick={(e) => { e.stopPropagation(); setRenamingSessionId(s.id); setRenameDraft(s.title); }}
+                                                                            title={t('agent.chat.doubleClickToRename', 'Double-click to rename')}
+                                                                            style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0, cursor: 'text' }}>{s.title}</div>
+                                                                    )}
                                                                     {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -4581,7 +4696,21 @@ function AgentDetailInner() {
                                                                 onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = 'var(--bg-secondary)'; }}
                                                                 onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
                                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '1px' }}>
-                                                                    <div style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1 }}>{s.title}</div>
+                                                                    {renamingSessionId === s.id ? (
+                                                                        <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
+                                                                            onBlur={async () => {
+                                                                                if (renameDraft.trim() && id) { await agentApi.renameSession(id, s.id, renameDraft.trim()); setAllSessions(prev => prev.map((ss: any) => ss.id === s.id ? { ...ss, title: renameDraft.trim() } : ss)); if (activeSession?.id === s.id) setActiveSession((prev: any) => prev ? { ...prev, title: renameDraft.trim() } : prev); }
+                                                                                setRenamingSessionId(null);
+                                                                            }}
+                                                                            onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingSessionId(null); }}
+                                                                            onClick={e => e.stopPropagation()}
+                                                                            style={{ fontSize: '11px', color: 'var(--text-primary)', flex: 1, background: 'var(--bg-secondary)', border: '1px solid var(--accent-primary)', borderRadius: '3px', padding: '1px 4px', outline: 'none' }}
+                                                                        />
+                                                                    ) : (
+                                                                        <div onDoubleClick={(e) => { e.stopPropagation(); setRenamingSessionId(s.id); setRenameDraft(s.title); }}
+                                                                            title={t('agent.chat.doubleClickToRename', 'Double-click to rename')}
+                                                                            style={{ fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)', flex: 1, cursor: 'text' }}>{s.title}</div>
+                                                                    )}
                                                                     {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', gap: '4px' }}>
@@ -4616,92 +4745,26 @@ function AgentDetailInner() {
                                 ) : !isWritableSession(activeSession) ? (
                                     /* ── Read-only history view (other user's session or agent-to-agent) ── */
                                     <>
-                                        <div
-                                            style={{
-                                                position: 'absolute',
-                                                top: '12px',
-                                                left: sessionListCollapsed ? '52px' : '16px',
-                                                zIndex: 10,
-                                                fontSize: '11px',
-                                                color: 'var(--text-tertiary)',
-                                                padding: '4px 8px',
-                                                background: 'var(--bg-secondary)',
-                                                borderRadius: '4px',
-                                                pointerEvents: 'none',
-                                            }}
-                                        >
-                                            {activeSession.source_channel === 'agent' ? <><IconRobot size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} />Agent Conversation · {activeSession.username || 'Agents'}</> : <>Read-only · {activeSession.username || 'User'}</>}
-                                        </div>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '48px 16px 12px' }}>
+                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 12px' }}>
                                             {(() => {
-                                                // For A2A sessions, determine which participant is "this agent" (left side)
-                                                // Use agent.name matching against sender_name from messages
                                                 const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
                                                 const isHumanReadonly = !isA2A && !activeSession.is_group;
                                                 const thisAgentName = (agent as any)?.name;
-                                                // Find this agent's participant_id from loaded messages
                                                 const thisAgentPid = isA2A && thisAgentName
                                                     ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
                                                     : null;
-                                                return historyMsgs.map((m: any, i: number) => {
-                                                    // Determine if this message is from "this agent" (left) or peer (right)
-                                                    // Actually, "this agent" should be on the RIGHT (like 'me'), and peer on the LEFT
-                                                    const isLeft = isA2A && thisAgentPid
-                                                        ? m.participant_id !== thisAgentPid
-                                                        : m.role === 'assistant';
-                                                    if (m.role === 'tool_call') {
-                                                        const tName = m.toolName || (() => { try { return JSON.parse(m.content || '{}').name; } catch { return 'tool'; } })();
-                                                        const tArgs = m.toolArgs || (() => { try { return JSON.parse(m.content || '{}').args; } catch { return {}; } })();
-                                                        const tResult = m.toolResult ?? (() => { try { return JSON.parse(m.content || '{}').result; } catch { return ''; } })();
-                                                        return (
-                                                            <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '6px', paddingLeft: '36px', minWidth: 0 }}>
-                                                                <details style={{ flex: 1, minWidth: 0, borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-subtle)', fontSize: '12px', overflow: 'hidden' }}>
-                                                                    <summary style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', userSelect: 'none', listStyle: 'none', overflow: 'hidden' }}>
-                                                                        <IconBolt size={13} />
-                                                                        <span style={{ fontWeight: 600, color: 'var(--accent-text)' }}>{tName}</span>
-                                                                        {tArgs && typeof tArgs === 'object' && Object.keys(tArgs).length > 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{`(${Object.entries(tArgs).map(([k, v]) => `${k}: ${typeof v === 'string' ? v.slice(0, 30) : JSON.stringify(v)}`).join(', ')})`}</span>}
-                                                                    </summary>
-                                                                    {tResult && <div style={{ padding: '4px 10px 8px' }}><div style={{ color: 'var(--text-secondary)', fontSize: '11px', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '240px', overflow: 'auto', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '4px 6px' }}>{tResult}</div></div>}
-                                                                </details>
-                                                            </div>
-                                                        );
-                                                    }
 
-                                                    {/* Assistant message with no content: show inline thinking or skip */ }
-                                                    if (m.role === 'assistant' && !m.content?.trim()) {
-                                                        if (m.thinking) {
-                                                            return (
-                                                                <div key={i} style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-                                                                    <details style={{
-                                                                        fontSize: '12px',
-                                                                        background: 'rgba(147, 130, 220, 0.08)', borderRadius: '6px',
-                                                                        border: '1px solid rgba(147, 130, 220, 0.15)',
-                                                                    }}>
-                                                                        <summary style={{
-                                                                            padding: '6px 10px', cursor: 'pointer',
-                                                                            color: 'rgba(147, 130, 220, 0.9)', fontWeight: 500,
-                                                                            userSelect: 'none', display: 'flex', alignItems: 'center', gap: '4px',
-                                                                        }}>Thinking</summary>
-                                                                        <div style={{
-                                                                            padding: '4px 10px 8px',
-                                                                            fontSize: '12px', lineHeight: '1.6',
-                                                                            color: 'var(--text-secondary)',
-                                                                            whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                                                            maxHeight: '300px', overflow: 'auto',
-                                                                        }}>{m.thinking}</div>
-                                                                    </details>
-                                                                </div>
-                                                            );
-                                                        }
-                                                        return null;
+                                                return groupMessagesForDisplay(historyMsgs).map((entry) => {
+                                                    if (entry.type === 'analysis_group') {
+                                                        return <AnalysisCard key={`hag-${entry.key}`} items={entry.items} t={t} expanded={!!toolGroupExpandedRef.current.get(entry.key)} onToggle={() => toggleToolGroup(entry.key)} isGroupRunning={false} />;
                                                     }
+                                                    const { msg, i } = entry;
+                                                    const isLeft = isA2A && thisAgentPid
+                                                        ? msg.participant_id !== thisAgentPid
+                                                        : msg.role === 'assistant';
                                                     return (
                                                         <ChatMessageItem
-                                                            key={i}
-                                                            msg={m}
-                                                            i={i}
-                                                            isLeft={isLeft}
-                                                            t={t}
+                                                            key={i} msg={msg} i={i} isLeft={isLeft} t={t}
                                                             senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
                                                             avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
                                                             forceSenderLabel={isHumanReadonly}
@@ -4733,101 +4796,7 @@ function AgentDetailInner() {
                                                 </div>
                                             )}
                                             {(() => {
-                                                // ── Grouping Algorithm (lookahead-based) ──
-                                                //
-                                                // Goal: merge all "analysis" steps (thinking + tool calls +
-                                                // mid-flow assistant text) into a single AnalysisCard, and
-                                                // only emit a real assistant bubble for the *final* answer.
-                                                //
-                                                // Problem with naive flushing:
-                                                //   Claude and minimax sometimes emit an assistant message with
-                                                //   real content (e.g. "Let me search…") BETWEEN reasoning and
-                                                //   tool calls. The old approach flushed the group on any
-                                                //   assistant content, producing multiple fragmented cards.
-                                                //
-                                                // Solution — two-pass lookahead:
-                                                //   Pass 1: pre-classify every message as either
-                                                //     "analysis"  — part of the internal reasoning/tool loop
-                                                //     "final"     — the actual answer to show the user
-                                                //   Classification rule: an assistant message (even with content)
-                                                //   is "analysis" if there is *at least one more tool_call
-                                                //   somewhere after it in the same sequence*.
-                                                //   Pass 2: build GroupedEntry[] based on classifications.
-
-                                                // Pass 1: mark each index as 'analysis' or 'final'
-                                                const msgClass: ('analysis' | 'final')[] = new Array(chatMessages.length).fill('final');
-
-                                                // Walk backwards: once we see a tool_call, all preceding
-                                                // assistant messages (until the previous user turn or start)
-                                                // are reclassified as 'analysis'.
-                                                let hasFutureTool = false;
-                                                for (let i = chatMessages.length - 1; i >= 0; i--) {
-                                                    const msg = chatMessages[i];
-                                                    if (msg.role === 'tool_call') {
-                                                        msgClass[i] = 'analysis';
-                                                        hasFutureTool = true;
-                                                    } else if (msg.role === 'user') {
-                                                        // User turn resets the lookahead boundary
-                                                        hasFutureTool = false;
-                                                    } else if (msg.role === 'assistant') {
-                                                        if (hasFutureTool) {
-                                                            // This assistant message (thinking-only or with content)
-                                                            // precedes more tool calls → it's part of the analysis
-                                                            msgClass[i] = 'analysis';
-                                                        }
-                                                        // else: it's a final answer, keep 'final'
-                                                    }
-                                                }
-
-                                                // Pass 2: build grouped entries
-                                                type GroupedEntry =
-                                                    | { type: 'analysis_group'; items: AnalysisItem[]; key: number }
-                                                    | { type: 'msg'; msg: any; i: number };
-                                                const grouped: GroupedEntry[] = [];
-                                                let currentGroup: AnalysisItem[] | null = null;
-                                                let groupStartKey = 0;
-                                                const flushGroup = () => {
-                                                    if (currentGroup && currentGroup.length > 0) {
-                                                        grouped.push({ type: 'analysis_group', items: currentGroup, key: groupStartKey });
-                                                        currentGroup = null;
-                                                    }
-                                                };
-                                                for (let i = 0; i < chatMessages.length; i++) {
-
-                                                    const msg = chatMessages[i];
-                                                    if (msgClass[i] === 'analysis') {
-                                                        // Open a new group if needed
-                                                        if (!currentGroup) { currentGroup = []; groupStartKey = i; }
-                                                        if (msg.role === 'tool_call') {
-                                                            currentGroup.push({
-                                                                type: 'tool',
-                                                                name: msg.toolName || 'tool',
-                                                                args: msg.toolArgs || {},
-                                                                status: msg.toolStatus === 'running' ? 'running' : 'done',
-                                                                result: msg.toolResult || undefined,
-                                                            });
-                                                        } else if (msg.role === 'assistant') {
-                                                            // Could be thinking-only OR has content (mid-flow text)
-                                                            const thinkingText = msg.thinking || '';
-                                                            const contentText = msg.content?.trim() || '';
-                                                            // Add thinking block first (if present)
-                                                            if (thinkingText) {
-                                                                currentGroup.push({ type: 'thinking', content: thinkingText });
-                                                            }
-                                                            // Add mid-flow content as a thinking block too
-                                                            // (displayed with slightly different style to distinguish)
-                                                            if (contentText) {
-                                                                currentGroup.push({ type: 'thinking', content: contentText });
-                                                            }
-                                                        }
-                                                    } else {
-                                                        // 'final': flush any open group first, then emit as chat bubble
-                                                        flushGroup();
-                                                        grouped.push({ type: 'msg', msg, i });
-                                                    }
-                                                }
-                                                flushGroup(); // flush any trailing group
-
+                                                const grouped = groupMessagesForDisplay(chatMessages);
 
                                                 return grouped.map((entry, entryIdx) => {
                                                     if (entry.type === 'analysis_group') {
@@ -5024,34 +4993,38 @@ function AgentDetailInner() {
                                     </div>
                                 )}
                                 </div>
-                                {/* Live Panel */}
-                                {!!(liveState.desktop || liveState.browser || liveState.code) && (
-                                    <AgentBayLivePanel
-                                        liveState={liveState}
-                                        visible={livePanelVisible}
-                                        onToggle={() => setLivePanelVisible(v => !v)}
-                                        agentId={id}
-                                        sessionId={wsSessionId}
-                                        onLiveUpdate={(env, screenshotDataUri) => {
-                                            // Refresh the live preview with the final screenshot
-                                            // captured by TakeControlPanel on close, so the panel
-                                            // reflects the state the user left the browser in.
-                                            setLiveState(prev => ({
-                                                ...prev,
-                                                [env]: { screenshotUrl: screenshotDataUri },
-                                            }));
-                                        }}
-                                    />
-                                )}
-                                {/* Canvas-style File Generation Panel (hidden on mobile) */}
-                                {!isMobile && (
-                                <FileCanvasPanel
-                                    files={canvasFiles}
-                                    visible={canvasPanelVisible}
-                                    onToggle={() => setCanvasPanelVisible(v => !v)}
+                                <AgentSidePanel
+                                    liveState={liveState}
+                                    workspaceActivePath={workspaceActivePath}
+                                    workspaceActivities={workspaceActivities}
+                                    workspaceLiveDraft={workspaceLiveDraft}
+                                    visible={livePanelVisible}
+                                    onToggle={() => {
+                                        if (!livePanelVisible) {
+                                            setSidePanelTab('workspace');
+                                            setLivePanelVisible(true);
+                                            setSessionListCollapsed(true);
+                                            useAppStore.setState({ sidebarCollapsed: true });
+                                        } else {
+                                            setLivePanelVisible(false);
+                                        }
+                                    }}
+                                    activeTab={sidePanelTab}
+                                    onTabChange={setSidePanelTab}
+                                    workspaceLocked={workspacePreviewLocked}
+                                    onWorkspaceSelectPath={handleWorkspaceSelectPath}
+                                    onWorkspaceToggleLock={handleWorkspaceToggleLock}
+                                    onWorkspaceEditingChange={handleWorkspaceEditingChange}
+                                    onWorkspacePathDeleted={handleWorkspacePathDeleted}
                                     agentId={id}
+                                    sessionId={wsSessionId}
+                                    onLiveUpdate={(env, screenshotDataUri) => {
+                                        setLiveState(prev => ({
+                                            ...prev,
+                                            [env]: { screenshotUrl: screenshotDataUri },
+                                        }));
+                                    }}
                                 />
-                                )}
                             </div>
                         </div>
                     )

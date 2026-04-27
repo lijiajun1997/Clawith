@@ -1007,6 +1007,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 _tool_status_running and a "done" line is appended to _tool_status_done,
                 ensuring finished tools never linger as ⏳ in the card.
                 """
+                nonlocal session_conv_id
                 tool_name = evt.get("name") or "unknown_tool"
                 # Use call_id when available (unique per invocation); fall back to name.
                 call_id = evt.get("call_id") or tool_name
@@ -1018,6 +1019,28 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     # Remove from running dict so the ⏳ icon disappears immediately.
                     _tool_status_running.pop(call_id, None)
                     _tool_status_done.append(f"✅ Tool done: `{tool_name}`")
+                    # Persist tool_call to DB (same as websocket handler)
+                    if session_conv_id:
+                        try:
+                            import json as _json_tc
+                            from app.database import async_session as _async_session
+                            async with _async_session() as _tc_db:
+                                _tc_db.add(ChatMessage(
+                                    agent_id=agent_id,
+                                    user_id=platform_user_id,
+                                    role="tool_call",
+                                    content=_json_tc.dumps({
+                                        "name": tool_name,
+                                        "args": evt.get("args"),
+                                        "status": "done",
+                                        "result": (evt.get("result") or "")[:500],
+                                    }),
+                                    conversation_id=session_conv_id,
+                                ))
+                                await _tc_db.commit()
+                        except Exception as _tc_err:
+                            import logging as _logging
+                            _logging.getLogger(__name__).warning(f"[Feishu] Failed to save tool_call: {_tc_err}")
                 else:
                     _tool_status_running.pop(call_id, None)
                     _tool_status_done.append(f"ℹ️ Tool update: `{tool_name}` ({status or 'unknown'})")
@@ -1560,6 +1583,7 @@ async def _call_agent_llm(
     user_text: str,
     history: list[dict] | None = None,
     user_id=None,
+    session_id: str | None = None,
     on_chunk=None,
     on_thinking=None,
     on_tool_call=None,

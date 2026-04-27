@@ -837,14 +837,13 @@ async def websocket_chat(
                 _sess = _sess_r.scalar_one_or_none()
                 if _sess:
                     _sess.last_message_at = _now
-                    if not history_messages and _sess.title.startswith("Session "):
-                        # Always use display_content for title (never expose raw base64)
+                    # Auto-update title to last user message unless user has custom title
+                    if not _sess.custom_title:
                         title_src = display_content if display_content else content
-                        # Clean up common prefixes from image/file messages
                         clean_title = title_src.replace("[图片] ", "📷 ").replace("[image_data:", "").strip()
                         if file_name and not clean_title:
                             clean_title = f"📎 {file_name}"
-                        _sess.title = clean_title[:40] if clean_title else content[:40]
+                        _sess.title = clean_title[:60] if clean_title else content[:60]
                 await db.commit()
             logger.info("[WS] User message saved")
             await _conv_logger.log_user_message(saved_content)

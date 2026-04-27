@@ -88,6 +88,7 @@ async def lifespan(app: FastAPI):
     from app.services.feishu_ws import feishu_ws_manager
     from app.services.dingtalk_stream import dingtalk_stream_manager
     from app.services.wecom_stream import wecom_stream_manager
+    from app.services.wechat_channel import wechat_poll_manager
     from app.services.discord_gateway import discord_gateway_manager
 
     # ── Step 0: Ensure all DB tables exist (idempotent, safe to run on every startup) ──
@@ -118,6 +119,7 @@ async def lifespan(app: FastAPI):
         import app.models.agent_credential  # noqa
 
         import app.models.identity       # noqa
+        import app.models.workspace      # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("[startup] Database tables ready")
@@ -223,6 +225,7 @@ async def lifespan(app: FastAPI):
             ("feishu_ws", feishu_ws_manager.start_all()),
             ("dingtalk_stream", dingtalk_stream_manager.start_all()),
             ("wecom_stream", wecom_stream_manager.start_all()),
+            ("wechat_poll", wechat_poll_manager.start_all()),
             ("discord_gw", discord_gateway_manager.start_all()),
         ]:
             task = asyncio.create_task(coro, name=name)
@@ -291,6 +294,7 @@ from app.api.slack import router as slack_router
 from app.api.discord_bot import router as discord_router
 from app.api.dingtalk import router as dingtalk_router
 from app.api.wecom import router as wecom_router
+from app.api.wechat import router as wechat_router
 from app.api.teams import router as teams_router
 from app.api.triggers import router as triggers_router
 
@@ -328,6 +332,7 @@ app.include_router(slack_router, prefix=settings.API_PREFIX)
 app.include_router(discord_router, prefix=settings.API_PREFIX)
 app.include_router(dingtalk_router, prefix=settings.API_PREFIX)
 app.include_router(wecom_router, prefix=settings.API_PREFIX)
+app.include_router(wechat_router, prefix=settings.API_PREFIX)
 app.include_router(teams_router, prefix=settings.API_PREFIX)
 
 app.include_router(atlassian_router, prefix=settings.API_PREFIX)

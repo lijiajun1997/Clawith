@@ -260,6 +260,9 @@ export const agentApi = {
 
     gatewayMessages: (id: string) =>
         request<any[]>(`/agents/${id}/gateway-messages`),
+
+    renameSession: (agentId: string, sessionId: string, title: string) =>
+        request<{ id: string; title: string }>(`/agents/${agentId}/sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
 };
 
 // ─── Tasks ────────────────────────────────────────────
@@ -348,15 +351,45 @@ export const fileApi = {
         });
     },
 
-    downloadUrl: (agentId: string, path: string) => {
+    downloadUrl: (agentId: string, path: string, opts?: { inline?: boolean }) => {
         const token = localStorage.getItem('token');
-        return `${API_BASE}/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+        const base = `${API_BASE}/agents/${agentId}/files/download?path=${encodeURIComponent(path)}&token=${token}`;
+        return opts?.inline ? `${base}&inline=true` : base;
     },
 
     downloadFolderUrl: (agentId: string, path: string) => {
         const token = localStorage.getItem('token');
         return `${API_BASE}/agents/${agentId}/files/download-folder?path=${encodeURIComponent(path)}&token=${token}`;
     },
+
+    preview: (agentId: string, path: string) =>
+        request<any>(`/agents/${agentId}/files/preview?path=${encodeURIComponent(path)}`),
+
+    autosave: (agentId: string, path: string, content: string, sessionId?: string) =>
+        request(`/agents/${agentId}/files/autosave?path=${encodeURIComponent(path)}`, {
+            method: 'PUT',
+            body: JSON.stringify({ content, session_id: sessionId }),
+        }),
+
+    lock: (agentId: string, path: string, sessionId?: string) =>
+        request(`/agents/${agentId}/files/locks?path=${encodeURIComponent(path)}`, {
+            method: 'POST',
+            body: JSON.stringify({ session_id: sessionId }),
+        }),
+
+    unlock: (agentId: string, path: string) =>
+        request(`/agents/${agentId}/files/locks?path=${encodeURIComponent(path)}`, {
+            method: 'DELETE',
+        }),
+
+    revisions: (agentId: string, path: string) =>
+        request<any[]>(`/agents/${agentId}/files/revisions?path=${encodeURIComponent(path)}`),
+
+    restoreRevision: (agentId: string, revisionId: string) =>
+        request(`/agents/${agentId}/files/restore`, {
+            method: 'POST',
+            body: JSON.stringify({ revision_id: revisionId }),
+        }),
 };
 
 // ─── Channel Config ───────────────────────────────────

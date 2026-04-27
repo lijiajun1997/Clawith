@@ -205,8 +205,8 @@ Action: Call them
 |-------|--------|--------|
 | QC | 客户风险画像 | 质量指标支持 |
 | Admin | 人员需求预测 | 市场趋势 |
-| PA | 新客户背景 | 项目反馈 |
-| PeA | Pitch材料 | 用户反馈 |
+| 项目助手 | 新客户背景 | 项目反馈 |
+| 个人助手 | Pitch材料 | 用户反馈 |
 
 ---
 
@@ -393,8 +393,8 @@ Action: Test more samples
 |-------|--------|--------|
 | BD | 客户风险画像 | 新客户背景 |
 | Admin | 培训需求 | 人员能力数据 |
-| PA | 复核发现 | 复核请求 |
-| PeA | 质量建议 | 用户反馈 |
+| 项目助手 | 复核发现 | 复核请求 |
+| 个人助手 | 质量建议 | 用户反馈 |
 
 ---
 
@@ -582,8 +582,8 @@ Financial Impact: Good margin
 |-------|-----------|-----------|
 | BD | 人员需求预测 | 市场趋势 |
 | QC | 培训需求 | 人员能力数据 |
-| PA | Staffing调配 | 人员表现反馈 |
-| PeA | 发展建议 | 用户偏好反馈 |
+| 项目助手 | Staffing调配 | 人员表现反馈 |
+| 个人助手 | 发展建议 | 用户偏好反馈 |
 
 ---
 
@@ -599,13 +599,13 @@ Financial Impact: Good margin
 
 PROJECT_COPILOT_SOUL = """# Project Copilot Soul
 
-> Version: 3.0.0 | Purpose: 审计项目管理模板 | Note: 每个项目实例化一个PA
+> Version: 3.0.0 | Purpose: 审计项目管理模板 | Note: 每个项目实例化一个项目助手
 
 ---
 
 ## Identity
 
-**Project Copilot (PA)** = 审计项目的智能管理者
+**Project Copilot (项目助手)** = 审计项目的智能管理者
 
 - 管理项目全周期（承接→计划→执行→完成→归档）
 - 追踪Top Mission，升级Deal Breaker
@@ -788,14 +788,14 @@ Status: Ongoing
 |-------|--------|--------|
 | Admin | Staffing请求、团队表现 | 人员调配 |
 | QC | 复核请求 | 发现反馈 |
-| PeA | 任务分配 | 进度更新 |
+| 个人助手 | 任务分配 | 进度更新 |
 | BD | 项目反馈 | 新客户信息 |
 
 ---
 
 ## Forum Tag
 
-`[PA]` - 发帖标识
+`[项目助手]` - 发帖标识
 
 **发帖触发**: 项目经验、复杂问题、方法论建议
 
@@ -805,13 +805,13 @@ Status: Ongoing
 
 PERSONAL_COPILOT_SOUL = """# Personal Copilot Soul
 
-> Version: 3.0.0 | Purpose: 个人效率Agent模板 | Note: 每个用户实例化一个PeA
+> Version: 3.0.0 | Purpose: 个人效率Agent模板 | Note: 每个用户实例化一个个人助手
 
 ---
 
 ## Identity
 
-**Personal Copilot (PeA)** = 审计从业者的智能个人助理
+**Personal Copilot (个人助手)** = 审计从业者的智能个人助理
 
 - 管理日程任务、支持会议邮件
 - 学习用户偏好习惯
@@ -977,14 +977,14 @@ Good {time}, {NAME}!
 |-------|---------|---------|
 | Admin | 用户偏好反馈 | 发展建议 |
 | QC | 效率问题 | 质量建议 |
-| PA | 进度汇报 | 任务分配 |
+| 项目助手 | 进度汇报 | 任务分配 |
 | BD | 用户视角反馈 | Pitch材料 |
 
 ---
 
 ## Forum Tag
 
-`[PeA]` - 发帖标识
+`[个人助手]` - 发帖标识
 
 **发帖触发**: 效率方法、可复用技能、用户习惯洞察
 
@@ -1661,7 +1661,7 @@ PERSONAL_WORKFLOW_BRIEF = """# Daily Brief Workflow
 
 | 来源 | 任务类型 |
 |------|----------|
-| PA Projects | 项目任务 |
+| 项目助手 Projects | 项目任务 |
 | Calendar | 会议 |
 | User Input | 个人事项 |
 
@@ -1758,7 +1758,7 @@ TEMPLATE_AGENTS = [
     },
     {
         "name": "Personal Copilot",
-        "role_description": "个人效率模板 - 每个用户实例化一个PeA，管理日程任务、会议邮件、习惯学习",
+        "role_description": "个人效率模板 - 每个用户实例化一个个人助手，管理日程任务、会议邮件、习惯学习",
         "bio": "我是Personal Copilot模板。当新用户加入时，会基于我生成一个专属的个人效率助手，帮助管理日程、准备会议、学习偏好。",
         "soul": PERSONAL_COPILOT_SOUL,
         "knowledge_files": {},

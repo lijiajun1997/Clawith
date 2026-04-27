@@ -486,7 +486,8 @@
       "collapseSessions": "折叠会话列表",
       "showSessions": "显示聊天会话",
       "toolCallChain": "使用工具",
-      "analysing": "分析中"
+      "analysing": "分析中",
+      "doubleClickToRename": "双击重命名"
     },
     "recentFiles": {
       "title": "最近文件",
@@ -1656,7 +1657,8 @@
       "slack": "Slack",
       "teams": "Microsoft Teams",
       "dingtalk": "钉钉",
-      "wecom": "企业微信"
+      "wecom": "企业微信",
+      "wechat": "微信"
     },
     "searching": "搜索中...",
     "upload": "⬆ 上传",
@@ -1856,6 +1858,13 @@
       "ws_step5": "复制生成的 Bot ID 和 Secret → 填入上方 → 点击保存配置",
       "ws_step6": "在企业微信中找到机器人，发送消息测试",
       "ws_note": "WebSocket 长连接模式无需公网 IP、回调地址或域名备案（ICP），连接由系统自动管理。"
+    },
+    "wechat": {
+      "step1": "点击下方「Generate QR Code」，申请新的微信 iLink 登录二维码。",
+      "step2": "用手机微信扫码，并在手机端确认 Bot 登录。",
+      "step3": "扫码成功后，系统自动保存配置并开始长轮询。状态栏将显示「已连接」。",
+      "step4": "给该微信 iLink Bot 发送一条私信，验证入站轮询和出站回复是否正常。",
+      "note": "微信 iLink 使用长轮询机制，无需公网 IP 或回调地址。每次扫码登录获取的 session 有时效限制，过期后需重新扫码。"
     }
   },
   "identity": {

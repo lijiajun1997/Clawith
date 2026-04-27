@@ -80,7 +80,7 @@ class Agent(Base):
     last_daily_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_monthly_reset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tokens_used_total: Mapped[int] = mapped_column(Integer, default=0)
-    context_window_size: Mapped[int] = mapped_column(Integer, default=100)
+    context_window_size: Mapped[int] = mapped_column(Integer, default=50)
     max_tool_rounds: Mapped[int] = mapped_column(Integer, default=50)
 
     # Trigger limits (per-agent, configurable from Settings UI)

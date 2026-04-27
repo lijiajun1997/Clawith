@@ -31,6 +31,7 @@ class ChatSession(Base):
     # user_id: for P2P sessions this is the user; for group sessions this is the agent creator (placeholder)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False, default="New Session")
+    custom_title: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     source_channel: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
     external_conv_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Group chat support: group sessions have user_id=NULL and show group_name instead

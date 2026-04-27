@@ -80,7 +80,7 @@ export default function UserManagement() {
         try {
             const tenantId = localStorage.getItem('current_tenant_id') || '';
             const data = await fetchJson<UserInfo[]>(`/users/${tenantId ? `?tenant_id=${tenantId}` : ''}`);
-            setUsers(data.filter(u => u.source !== 'feishu'));
+            setUsers(data.filter(u => u.source !== 'feishu' && u.source !== 'wechat'));
         } catch (e) {
             console.error('Failed to load users', e);
         }

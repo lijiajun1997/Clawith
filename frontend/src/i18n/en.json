@@ -479,7 +479,8 @@
       "collapseSessions": "Collapse sessions",
       "showSessions": "Show chat sessions",
       "toolCallChain": "Tools Used",
-      "analysing": "Analysing"
+      "analysing": "Analysing",
+      "doubleClickToRename": "Double-click to rename"
     },
     "recentFiles": {
       "title": "Recent Files",
@@ -1561,7 +1562,8 @@
       "slack": "Slack",
       "teams": "Microsoft Teams",
       "dingtalk": "DingTalk",
-      "wecom": "WeCom"
+      "wecom": "WeCom",
+      "wechat": "WeChat"
     },
     "searching": "Searching...",
     "upload": "⬆ Upload",
@@ -1680,6 +1682,13 @@
       "ws_step5": "Copy the Bot ID and Secret that are generated → paste them above → click Save Config",
       "ws_step6": "Find the bot in WeCom and send a test message",
       "ws_note": "WebSocket mode requires no public IP, callback URL, or domain verification (ICP). The connection is managed automatically."
+    },
+    "wechat": {
+      "step1": "Click \"Generate QR Code\" below to request a new WeChat iLink login QR code.",
+      "step2": "Scan the QR code with your phone's WeChat app and confirm the Bot login.",
+      "step3": "After successful scan, the system saves the config and starts long-polling. The status bar will show \"Connected\".",
+      "step4": "Send a private message to the WeChat iLink Bot to verify inbound polling and outbound replies.",
+      "note": "WeChat iLink uses long-polling — no public IP or callback URL required. Each scan-granted session has a time limit; re-scan when expired."
     }
   },
   "platformDashboard": {

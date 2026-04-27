@@ -3174,6 +3174,13 @@ async def _send_file_to_recipient(
         if slack_result:
             return slack_result
 
+    # --- Try WeChat ---
+    wechat_config = configs.get("wechat")
+    if wechat_config:
+        wechat_result = await _send_file_via_wechat(agent_id, wechat_config, file_path, member_name, message)
+        if wechat_result:
+            return wechat_result
+
     return None  # No channel could reach this recipient
 
 
@@ -3317,6 +3324,74 @@ async def _send_file_via_slack(agent_id, config, file_path: Path, member_name: s
             return f"File '{file_path.name}' sent to {member_name} via Slack."
     except Exception as e:
         return f"Failed to send file via Slack: {e}"
+
+
+async def _send_file_via_wechat(agent_id, config, file_path: Path, member_name: str, message: str) -> str | None:
+    """Send file to a person via WeChat iLink. Returns result string or None."""
+    from app.services.wechat_channel import (
+        send_wechat_file_message,
+        send_wechat_image_message,
+        send_wechat_text_message,
+        get_cached_context_token,
+        WECHAT_ILINK_BASE_URL,
+    )
+    from app.models.org import OrgMember, IdentityProvider
+
+    extra = config.extra_config or {}
+    token = str(extra.get("bot_token") or "").strip()
+    base_url = str(extra.get("baseurl") or WECHAT_ILINK_BASE_URL).strip()
+    route_tag = str(extra.get("route_tag") or "").strip() or None
+    if not token:
+        return None
+
+    # Resolve WeChat user_id by name from OrgMember
+    wechat_user_id: str | None = None
+    async with async_session() as db:
+        provider_r = await db.execute(
+            select(IdentityProvider).where(
+                IdentityProvider.channel_type == "wechat",
+            ).limit(1)
+        )
+        provider = provider_r.scalar_one_or_none()
+        if not provider:
+            return None
+        member_r = await db.execute(
+            select(OrgMember).where(
+                OrgMember.name == member_name,
+                OrgMember.identity_provider_id == provider.id,
+            ).limit(1)
+        )
+        member = member_r.scalar_one_or_none()
+        if not member or not member.external_id:
+            return None
+        wechat_user_id = member.external_id
+
+    context_token = get_cached_context_token(str(agent_id), wechat_user_id)
+    if not context_token:
+        return None  # No prior conversation context — cannot send proactively
+
+    try:
+        data = file_path.read_bytes()
+        ext = file_path.suffix.lower()
+        if ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+            await send_wechat_image_message(
+                token=token, base_url=base_url, to_user_id=wechat_user_id,
+                context_token=context_token, image_data=data, route_tag=route_tag,
+            )
+        else:
+            await send_wechat_file_message(
+                token=token, base_url=base_url, to_user_id=wechat_user_id,
+                context_token=context_token, file_data=data,
+                file_name=file_path.name, route_tag=route_tag,
+            )
+        if message:
+            await send_wechat_text_message(
+                token=token, base_url=base_url, to_user_id=wechat_user_id,
+                context_token=context_token, text=message, route_tag=route_tag,
+            )
+        return f"File '{file_path.name}' sent to {member_name} via WeChat."
+    except Exception as e:
+        return f"Failed to send file via WeChat: {e}"
 
 
 async def _execute_mcp_tool(tool_name: str, arguments: dict, agent_id=None) -> str:
