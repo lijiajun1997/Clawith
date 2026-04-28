@@ -1102,12 +1102,28 @@ type GroupedEntry =
 function groupMessagesForDisplay(messages: any[]): GroupedEntry[] {
     const len = messages.length;
     const msgClass: ('analysis' | 'final')[] = new Array(len).fill('final');
-    let hasFutureTool = false;
-    for (let i = len - 1; i >= 0; i--) {
+    // Forward pass: assistant after tool_call is analysis, reset on user
+    let prevWasTool = false;
+    for (let i = 0; i < len; i++) {
         const m = messages[i];
-        if (m.role === 'tool_call') { msgClass[i] = 'analysis'; hasFutureTool = true; }
-        else if (m.role === 'user') { hasFutureTool = false; }
-        else if (m.role === 'assistant' && hasFutureTool) { msgClass[i] = 'analysis'; }
+        if (m.role === 'tool_call') {
+            msgClass[i] = 'analysis';
+            prevWasTool = true;
+        }
+        else if (m.role === 'user') {
+            msgClass[i] = 'final';
+            prevWasTool = false;
+        }
+        else if (m.role === 'assistant') {
+            if (prevWasTool) {
+                // Assistant immediately after tool_call: could be intermediate or final
+                // Look ahead to see if another tool follows
+                const nextHasTool = i + 1 < len && messages[i + 1].role === 'tool_call';
+                msgClass[i] = nextHasTool ? 'analysis' : 'final';
+            } else {
+                msgClass[i] = 'final';
+            }
+        }
     }
     const grouped: GroupedEntry[] = [];
     let curGroup: AnalysisItem[] | null = null;
