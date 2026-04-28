@@ -292,11 +292,16 @@ class SECEdgarTools:
                 cik_match = re.search(r'CIK=(\d{10})', response.text)
                 if cik_match:
                     cik = cik_match.group(1)
+                    # Save to local cache for next query
+                    existing_cache = self._load_local_cache()
+                    existing_cache[ticker.upper()] = cik
+                    self._save_local_cache(existing_cache)
+                    logger.info(f"[SEC EDGAR] Saved CIK {cik} for ticker {ticker} to local cache")
                     return {
                         "success": True,
                         "cik": cik,
                         "ticker": ticker,
-                        "cik_padded": cik,
+                        "cik_padded": cik.zfill(10),
                         "source": "SEC EDGAR (real-time lookup)"
                     }
 
