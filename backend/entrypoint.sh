@@ -13,6 +13,12 @@ if [ "$(id -u)" = '0' ]; then
     echo "[entrypoint] Detected root user, fixing permissions..."
     # Ensure directories exist and are owned by clawith
     chown -R clawith:clawith ${AGENT_DATA_DIR}
+    # Fix shared-deps permissions for pip
+    chown -R clawith:clawith /data/shared-deps
+    chmod -R 775 /data/shared-deps
+    # Clean up pip.log to avoid permission errors
+    rm -f /data/shared-deps/pip/pip.log
+
     
     echo "[entrypoint] Dropping privileges to 'clawith' and re-executing..."
     exec gosu clawith /bin/bash "$0" "$@"
