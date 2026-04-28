@@ -96,6 +96,7 @@ class SECEdgarTools:
         try:
             if not _CACHE_FILE.exists():
                 logger.warning("[SEC EDGAR] Local cache file not found")
+                _CACHE_DIR.mkdir(parents=True, exist_ok=True)
                 return {}
 
             # Read file synchronously (works in both sync and async contexts)
