@@ -97,7 +97,15 @@ class SECEdgarTools:
             if not _CACHE_FILE.exists():
                 logger.warning("[SEC EDGAR] Local cache file not found")
                 _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                return {}
+                # Try to create cache file with empty dict
+                try:
+                    with open(_CACHE_FILE, 'w') as f:
+                        json.dump({}, f, indent=2)
+                    logger.info("[SEC EDGAR] Created empty cache file")
+                    return {}
+                except Exception as e:
+                    logger.error(f"[SEC EDGAR] Failed to create cache file: {str(e)}")
+                    return {}
 
             # Read file synchronously (works in both sync and async contexts)
             with open(_CACHE_FILE, 'r') as f:
