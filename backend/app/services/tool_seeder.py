@@ -720,7 +720,7 @@ BUILTIN_TOOLS = [
             "required": ["language", "code"],
         },
         "config": {
-            "sandbox_type": "subprocess",
+            "sandbox_type": "pool_sandbox",
             "cpu_limit": "0.5",
             "memory_limit": "256m",
             "allow_network": True,
@@ -1678,6 +1678,52 @@ BUILTIN_TOOLS = [
         "config": {},
         "config_schema": {},
     },
+    {
+        "name": "convert_html_to_pdf",
+        "display_name": "HTML to PDF",
+        "description": "Convert an HTML source file into a PDF document. Uses headless Chrome by default for higher-fidelity rendering of modern CSS and screen layouts, with WeasyPrint as a fallback.",
+        "category": "file",
+        "icon": "📄",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source HTML file"},
+                "target_path": {"type": "string", "description": "Path for the output PDF file (.pdf)"},
+                "design_width": {"type": "number", "description": "Optional browser viewport width in pixels, default 1280"},
+                "design_height": {"type": "number", "description": "Optional browser viewport height in pixels, default 720"},
+                "pdf_mode": {"type": "string", "enum": ["pages", "single"], "description": "pages outputs paginated PDF, single outputs one long full-page PDF. Default: pages"},
+                "scale": {"type": "number", "description": "Optional Chrome PDF scale for paginated output, default 0.64"},
+                "paper_width": {"type": "number", "description": "Optional paper width in inches for paginated output, default 8.27"},
+                "paper_height": {"type": "number", "description": "Optional paper height in inches for paginated output, default 11.69"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
+    {
+        "name": "convert_html_to_pptx",
+        "display_name": "HTML to PowerPoint",
+        "description": "Convert an HTML source file into a PowerPoint .pptx file. By default, render_mode='editable' opens the HTML in headless Chrome, samples real element positions/styles, and maps explicit .slide/data-slide nodes or top-level page sections into editable PPT elements. Use render_mode='visual' as a high-fidelity screenshot fallback when exact visual preservation is more important than editability.",
+        "category": "file",
+        "icon": "📽️",
+        "is_default": True,
+        "parameters_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string", "description": "Path to the source HTML file"},
+                "target_path": {"type": "string", "description": "Path for the output PowerPoint file (.pptx)"},
+                "design_width": {"type": "number", "description": "Optional source design width in pixels, default 1280"},
+                "design_height": {"type": "number", "description": "Optional source design height in pixels, default 720"},
+                "render_mode": {"type": "string", "enum": ["editable", "visual"], "description": "editable maps HTML/CSS into editable PPT elements using Chrome layout sampling; visual preserves styling with Chrome-rendered screenshots as a fallback. Default: editable"},
+                "render_scale": {"type": "number", "description": "Optional Chrome raster scale for screenshots and complex CSS captures. Higher values improve sharpness but increase PPTX size. Default: 2, clamped between 1 and 4"},
+            },
+            "required": ["source_path", "target_path"],
+        },
+        "config": {},
+        "config_schema": {},
+    },
     # ── Unified Excel Advanced Tool ─────────────────────────────────────────────
     {
         "name": "excel_advanced",
@@ -2433,24 +2479,90 @@ AGENTBAY_TOOLS = [
     {
         "name": "call_model",
         "display_name": "调用自定义模型",
-        "description": "调用自定义配置的大模型，支持联网搜索、长文本推理、多模态识图，自动保存结果为MD文件，支持上下文会话。支持OpenAI原生多模态格式：文本prompt+images数组，自动转换图片为base64格式发送给模型。",
+        "description": (
+            "调用自定义配置的大模型。支持两种模式：\n"
+            "1. 单次模式(single/默认)：一次调用一个模型，支持多模态识图、上下文会话、文件引用、自动保存MD。\n"
+            "2. 并发模式(concurrent)：将公共参数(model_name/prompt/images)与变量数组calls分离，并行执行多个调用。"
+            "支持三大场景：多模型对比同一任务、同一模型分析多个目标文件/公司、单公司并发搜索多维度信息。"
+            "并发结果返回摘要(前500字符)+MD文件路径，用read_file读取完整内容。"
+            "支持OpenAI原生多模态格式，文本文件引用:{{file:/path/to/file.md}}，图片支持本地路径/URL/base64。"
+        ),
         "category": "media",
         "icon": "🤖",
-        "is_default": False,
+        "is_default": True,
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "model_name": {"type": "string", "description": "要调用的模型名称，可选值：grok-4.1/gemini-3-pro/gemini-3-flash"},
-                "prompt": {"type": "string", "description": "用户输入的问题/指令，支持包含文件引用:{{file:/path/to/file.md}}，系统自动处理文本文件内容"},
-                "images": {"type": "array", "items": {"type": "string"}, "description": "可选的图片列表，支持：本地路径(workspace/image.png)、URL(http://...)、base64(data:image/...)。系统自动转换为OpenAI格式并发送给模型"},
-                "session_id": {"type": "string", "description": "可选会话ID，传入则拼接历史上下文继续对话，不传自动创建新会话"}
+                "mode": {
+                    "type": "string",
+                    "enum": ["single", "concurrent"],
+                    "description": "调用模式。single=单次调用(默认)，concurrent=并发批量调用，支持多模型对比/多目标分析/多维度搜索",
+                },
+                "model_name": {
+                    "type": "string",
+                    "description": "要调用的模型名称。concurrent模式下作为默认模型，可在calls中覆盖",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "用户输入的问题/指令，支持文件引用:{{file:/path/to/file.md}}。single模式必填；concurrent模式下作为共享prompt，可被calls继承",
+                },
+                "images": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "公共图片列表，支持本地路径/URL/base64。concurrent模式下作为默认图片，可在calls中覆盖",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "可选会话ID(仅single模式有效)，传入则拼接历史上下文继续对话",
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "并发模式总超时(秒)，默认300。超时后未完成任务自动取消(仅concurrent模式)",
+                },
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {
+                                "type": "string",
+                                "description": "调用标签，用于标识结果(如'translate'、'apple'、'risk')",
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": "本次调用的prompt。若顶层有prompt则可省略，否则必填",
+                            },
+                            "model_name": {
+                                "type": "string",
+                                "description": "覆盖顶层model_name(可选)",
+                            },
+                            "images": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "本次调用的图片列表，覆盖顶层images(可选)",
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "description": "温度参数，默认0.7(可选)",
+                            },
+                        },
+                    },
+                    "description": (
+                        "并发调用数组(仅concurrent模式)。每项定义一次独立调用，未指定的字段从顶层继承。"
+                        "场景1-多模型对比：顶层写prompt，每项指定不同model_name。"
+                        "场景2-多目标分析：每项指定不同prompt(含文件引用)。"
+                        "场景3-多维度搜索：顶层写目标，每项指定不同分析维度的prompt。"
+                        "最多20项。"
+                    ),
+                },
             },
-            "required": ["model_name", "prompt"],
+            "required": ["model_name"],
         },
         "config": {
             "base_url": "https://api.openai.com/v1",
             "api_key": "sk-1234567890abcdefghijklmnopqrstuvwxyz",
-            "models": "grok-4.1,默认模型，支持联网搜索\ngemini-3-pro,长文本推理/知识库，1M上下文\ngemini-3-flash,多模态识图专用"
+            "models": "grok-4.1,默认模型，支持联网搜索\ngemini-3-pro,长文本推理/知识库，1M上下文\ngemini-3-flash,多模态识图专用",
+            "max_concurrency": 5,
         },
         "config_schema": {
             "fields": [
@@ -2474,6 +2586,13 @@ AGENTBAY_TOOLS = [
                     "type": "textarea",
                     "default": "grok-4.1,默认模型，支持联网搜索\ngemini-3-pro,长文本推理/知识库，1M上下文\ngemini-3-flash,多模态识图专用",
                     "placeholder": "每行一个模型，格式：模型名称,模型描述\n例如：\ngpt-4o,多模态大模型\nclaude-3-opus,长上下文推理"
+                },
+                {
+                    "key": "max_concurrency",
+                    "label": "最大并发数",
+                    "type": "number",
+                    "default": "5",
+                    "placeholder": "默认5，建议1-10，最大20"
                 },
             ]
         },

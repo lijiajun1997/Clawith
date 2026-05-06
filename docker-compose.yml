@@ -53,6 +53,9 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       # Password reset token lifetime in minutes (default: 30)
       PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: ${PASSWORD_RESET_TOKEN_EXPIRE_MINUTES:-30}
+      # Sandbox configuration
+      SANDBOX_TYPE: ${SANDBOX_TYPE:-pool_sandbox}
+      SANDBOX_API_URL: ${SANDBOX_API_URL:-http://sandbox:8888}
     volumes:
       - ./backend:/app
       - ./backend/agent_data:/data/agents
@@ -64,11 +67,39 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+  sandbox:
+    build:
+      context: ./sandbox
+      args:
+        CLAWITH_PIP_INDEX_URL: ${CLAWITH_PIP_INDEX_URL:-https://pypi.org/simple}
+        CLAWITH_PIP_TRUSTED_HOST: ${CLAWITH_PIP_TRUSTED_HOST:-pypi.org}
+    restart: unless-stopped
+    ports:
+      - "${SANDBOX_PORT:-8888}:8888"
+    environment:
+      DEFAULT_TIMEOUT: "60"
+      MAX_TIMEOUT: "300"
+    volumes:
+      - shared-deps:/data/shared-deps
+      - ./backend/agent_data:/data/agents
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   frontend:
     build: ./frontend
     restart: unless-stopped

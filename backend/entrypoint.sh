@@ -12,14 +12,26 @@ set -e
 if [ "$(id -u)" = '0' ]; then
     echo "[entrypoint] Detected root user, fixing permissions..."
     # Ensure directories exist and are owned by clawith
-    chown -R clawith:clawith ${AGENT_DATA_DIR}
+    # Only chown if ownership is wrong (skip if already correct — saves 2-3 min on large dirs)
+    _agent_owner=$(stat -c '%U' "${AGENT_DATA_DIR}" 2>/dev/null || echo "unknown")
+    if [ "$_agent_owner" != "clawith" ]; then
+        chown -R clawith:clawith "${AGENT_DATA_DIR}"
+    else
+        echo "[entrypoint] ${AGENT_DATA_DIR} already owned by clawith, skipping chown"
+    fi
     # Fix shared-deps permissions for pip
-    chown -R clawith:clawith /data/shared-deps
-    chmod -R 775 /data/shared-deps
+    if [ -d /data/shared-deps ]; then
+        _sd_owner=$(stat -c '%U' /data/shared-deps 2>/dev/null || echo "unknown")
+        if [ "$_sd_owner" != "clawith" ]; then
+            chown -R clawith:clawith /data/shared-deps
+            chmod -R 775 /data/shared-deps
+        else
+            echo "[entrypoint] /data/shared-deps already owned by clawith, skipping chown"
+        fi
+    fi
     # Clean up pip.log to avoid permission errors
     rm -f /data/shared-deps/pip/pip.log
 
-    
     echo "[entrypoint] Dropping privileges to 'clawith' and re-executing..."
     exec gosu clawith /bin/bash "$0" "$@"
 fi
@@ -140,12 +152,24 @@ else
     echo "[entrypoint] Alembic migrations completed successfully."
 fi
 
-echo "[entrypoint] Step 3: Syncing shared Python dependencies..."
-# 自动同步系统Python包到共享依赖目录，确保agent代码执行环境可以访问
-if [ -f "/app/scripts/sync_shared_deps.py" ]; then
-    python /app/scripts/sync_shared_deps.py || echo "[entrypoint] Warning: Dependency sync failed, but continuing..."
+echo "[entrypoint] Step 3: Syncing SEC EDGAR cache..."
+# SEC EDGAR 缓存同步 - 首次启动或缓存过期时下载
+CACHE_FILE="/data/sec_edgar_cache/company_tickers.json"
+CACHE_MAX_AGE=86400  # 24 hours in seconds
+
+if [ ! -f "$CACHE_FILE" ]; then
+    echo "[entrypoint] SEC EDGAR cache not found, downloading..."
+    python -m app.services.sec_edgar_server.sync_tickers || echo "[entrypoint] Warning: SEC cache sync failed, but continuing..."
 else
-    echo "[entrypoint] Warning: sync_shared_deps.py not found, skipping dependency sync"
+    # Check cache age
+    CACHE_AGE=$(( $(date +%s) - $(stat -c %Y "$CACHE_FILE") ))
+    if [ $CACHE_AGE -gt $CACHE_MAX_AGE ]; then
+        echo "[entrypoint] SEC EDGAR cache is older than 24 hours, updating..."
+        python -m app.services.sec_edgar_server.sync_tickers || echo "[entrypoint] Warning: SEC cache sync failed, but continuing..."
+    else
+        CACHE_HOURS=$((CACHE_AGE / 3600))
+        echo "[entrypoint] SEC EDGAR cache is fresh (${CACHE_HOURS}h old), skipping sync"
+    fi
 fi
 
 echo "[entrypoint] Step 4: Starting uvicorn..."

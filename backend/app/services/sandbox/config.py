@@ -1,4 +1,11 @@
-"""Sandbox configuration models."""
+"""Sandbox configuration models.
+
+配置层级（优先级从高到低）:
+1. Per-agent tool config (DB: agent_tools.config)
+2. Global tool config (DB: tools.config)
+3. 环境变量 (SANDBOX_TYPE, SANDBOX_API_URL 等)
+4. 代码默认值 (本文件中的 Field default)
+"""
 
 from loguru import logger
 from enum import Enum
@@ -16,26 +23,24 @@ class SandboxType(str, Enum):
     CODEDANDBOX = "codesandbox"
     SELF_HOSTED = "self_hosted"
     AIO_SANDBOX = "aio_sandbox"
+    POOL_SANDBOX = "pool_sandbox"
 
 
 class SandboxConfig(BaseModel):
     """Configuration for sandbox backend."""
 
-    type: SandboxType = SandboxType.SUBPROCESS
+    type: SandboxType = SandboxType.POOL_SANDBOX
     enabled: bool = True
 
-    # Local sandbox options
     cpu_limit: str = "0.5"
     memory_limit: str = "256m"
     allow_network: bool = True
 
-    # API sandbox options
     api_key: str = ""
     api_url: str = ""
 
-    # Common options
-    default_timeout: int = Field(default=60, ge=1, le=300)
-    max_timeout: int = Field(default=300, ge=1, le=300)
+    default_timeout: int = Field(default=60, ge=1)
+    max_timeout: int = Field(default=300, ge=1)
 
     # Language mapping for API sandboxes
     # Maps our internal language names to API-specific language IDs
