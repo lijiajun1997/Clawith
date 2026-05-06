@@ -2396,12 +2396,13 @@ function AgentDetailInner() {
         if (el) el.scrollTop = el.scrollHeight;
         setShowHistoryScrollBtn(false);
     };
-    // Auto-show button when history messages overflow the container
+    // Auto-scroll to bottom + show button when history messages overflow the container
     useEffect(() => {
         const el = historyContainerRef.current;
         if (!el) return;
         // Use a small timeout to let the DOM render the messages first
         const timer = setTimeout(() => {
+            el.scrollTop = el.scrollHeight;
             const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
             setShowHistoryScrollBtn(distFromBottom > 200);
         }, 100);
