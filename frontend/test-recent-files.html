@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Recent Files API Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .test-result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; }
+        .success { background: #d4edda; }
+        .error { background: #f8d7da; }
+        pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>Recent Files API Test</h1>
+    <div id="results"></div>
+
+    <script>
+        const agentId = '0002297a-4483-42d9-a27f-671334002b5d';
+        const results = document.getElementById('results');
+
+        function addResult(message, isSuccess) {
+            const div = document.createElement('div');
+            div.className = `test-result ${isSuccess ? 'success' : 'error'}`;
+            div.innerHTML = message;
+            results.appendChild(div);
+        }
+
+        async function testRecentFilesAPI() {
+            try {
+                // Test 1: Get all files (without filtering)
+                addResult('<strong>Test 1: Fetching all files (including code files)...</strong>', true);
+                let response = await fetch(`/api/agents/${agentId}/files/recent?exclude_code=false&limit=50`);
+                let data = await response.json();
+
+                if (data.files && data.files.length > 0) {
+                    addResult(`✓ Found ${data.total} files total (including code files)`, true);
+                    addResult(`<pre>${JSON.stringify(data.files.map(f => ({name: f.name, path: f.path})), null, 2)}</pre>`, true);
+                } else {
+                    addResult('✗ No files found', false);
+                }
+
+                // Test 2: Get files with code filtering
+                addResult('<br><strong>Test 2: Fetching files (excluding code files)...</strong>', true);
+                response = await fetch(`/api/agents/${agentId}/files/recent?exclude_code=true&limit=50`);
+                data = await response.json();
+
+                if (data.files && data.files.length > 0) {
+                    addResult(`✓ Found ${data.total} files after filtering out code files`, true);
+                    addResult(`<pre>${JSON.stringify(data.files.map(f => ({name: f.name, path: f.path})), null, 2)}</pre>`, true);
+
+                    // Verify code files are filtered
+                    const codeFiles = data.files.filter(f =>
+                        f.name.endsWith('.js') ||
+                        f.name.endsWith('.py') ||
+                        f.name.endsWith('.ts')
+                    );
+
+                    if (codeFiles.length === 0) {
+                        addResult('✓ Code files are correctly filtered out', true);
+                    } else {
+                        addResult(`✗ Found ${codeFiles.length} code files that should be filtered: ${codeFiles.map(f => f.name).join(', ')}`, false);
+                    }
+
+                    // Verify non-code files are present
+                    const testFiles = data.files.filter(f =>
+                        f.name.includes('test-document') ||
+                        f.name.includes('test-markdown')
+                    );
+
+                    if (testFiles.length > 0) {
+                        addResult(`✓ Test files found: ${testFiles.map(f => f.name).join(', ')}`, true);
+                    } else {
+                        addResult('✗ Test files (test-document.txt, test-markdown.md) not found', false);
+                    }
+                } else {
+                    addResult('✗ No files found after filtering', false);
+                }
+
+                // Test 3: Pagination
+                addResult('<br><strong>Test 3: Testing pagination...</strong>', true);
+                response = await fetch(`/api/agents/${agentId}/files/recent?exclude_code=true&limit=2&offset=0`);
+                data = await response.json();
+
+                if (data.files && data.files.length <= 2) {
+                    addResult(`✓ Pagination working: returned ${data.files.length} files (limit=2)`, true);
+                    addResult(`<pre>${JSON.stringify(data.files.map(f => ({name: f.name})), null, 2)}</pre>`, true);
+                } else {
+                    addResult(`✗ Pagination not working: expected ≤2 files, got ${data.files.length}`, false);
+                }
+
+            } catch (error) {
+                addResult(`✗ Error: ${error.message}`, false);
+            }
+        }
+
+        // Run tests
+        testRecentFilesAPI();
+    </script>
+</body>
+</html>

@@ -34,6 +34,11 @@ async def search_tenant_users(
             User.tenant_id == current_user.tenant_id,
             User.is_active.is_(True),
             User.id != current_user.id,
+            # 仅显示通过平台注册的用户，排除飞书/微信等渠道同步用户
+            or_(
+                User.registration_source == 'web',
+                User.registration_source.is_(None),
+            ),
         )
     )
 

@@ -2898,6 +2898,7 @@ function AgentDetailInner() {
 
     // Team member selection state for permission management
     const [teamSearchRes, setTeamSearchRes] = useState<any[]>([]);
+    const [teamSearchQuery, setTeamSearchQuery] = useState('');
     // Local team mode: when user selects "team" but hasn't added members yet,
     // backend would treat empty scope_ids as "only me", so we track locally.
     const [pendingTeamMode, setPendingTeamMode] = useState(false);
@@ -5667,6 +5668,7 @@ function AgentDetailInner() {
                                     const handleScopeChange = async (newScope: string) => {
                                         if (newScope === 'team') {
                                             setPendingTeamMode(true);
+                                            setTeamSearchQuery('');
                                             // Auto-load tenant users for selection
                                             try {
                                                 const users = await fetchAuth<any[]>(`/users/search`);
@@ -5741,6 +5743,19 @@ function AgentDetailInner() {
 
                                     const isOwner = permData?.is_owner ?? false;
                                     const currentAccessLevel = permData?.access_level || 'use';
+
+                                    const handleTeamSearch = async (query: string) => {
+                                        setTeamSearchQuery(query);
+                                        try {
+                                            const users = await fetchAuth<any[]>(`/users/search?q=${encodeURIComponent(query)}`);
+                                            const existing = new Set(permData?.scope_ids || []);
+                                            setTeamSearchRes((users || []).filter((u: any) => !existing.has(u.id)));
+                                        } catch { /* ignore */ }
+                                    };
+
+                                    const filteredTeamResults = teamSearchQuery.trim()
+                                        ? teamSearchRes
+                                        : teamSearchRes;
 
                                     return (
                                         <div className="card" style={{ marginBottom: '12px' }}>
@@ -5874,16 +5889,30 @@ function AgentDetailInner() {
 
                                                     {/* Direct user list to add members */}
                                                     {isOwner && (
+                                                        <>
+                                                        <input
+                                                            type="text"
+                                                            value={teamSearchQuery}
+                                                            onChange={(e) => handleTeamSearch(e.target.value)}
+                                                            placeholder={t('agent.settings.perm.searchUsers', 'Search users by name or email...')}
+                                                            style={{
+                                                                width: '100%', padding: '8px 12px', fontSize: '13px',
+                                                                border: '1px solid var(--border-default)', borderRadius: '8px',
+                                                                outline: 'none', marginBottom: '8px',
+                                                                background: 'var(--bg-input, var(--bg-elevated))',
+                                                                color: 'var(--text-primary)',
+                                                            }}
+                                                        />
                                                         <div style={{
                                                             border: '1px solid var(--border-default)', borderRadius: '8px',
-                                                            maxHeight: '240px', overflowY: 'auto',
+                                                            maxHeight: '200px', overflowY: 'auto',
                                                         }}>
-                                                            {teamSearchRes.length === 0 ? (
+                                                            {filteredTeamResults.length === 0 ? (
                                                                 <div style={{ padding: '16px', textAlign: 'center', fontSize: '12px', color: 'var(--text-tertiary)' }}>
-                                                                    {t('agent.settings.perm.noAvailableUsers', 'No available users')}
+                                                                    {teamSearchQuery.trim() ? t('agent.settings.perm.noSearchResults', 'No matching users') : t('agent.settings.perm.noAvailableUsers', 'No available users')}
                                                                 </div>
                                                             ) : (
-                                                                teamSearchRes.map((user) => (
+                                                                filteredTeamResults.map((user) => (
                                                                     <div key={user.id} onClick={() => handleAddTeamMember(user)} style={{
                                                                         display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px',
                                                                         cursor: 'pointer', fontSize: '13px',
@@ -5908,6 +5937,7 @@ function AgentDetailInner() {
                                                                 ))
                                                             )}
                                                         </div>
+                                                        </>
                                                     )}
                                                 </div>
                                             )}

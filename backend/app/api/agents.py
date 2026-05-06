@@ -505,8 +505,8 @@ async def update_agent_permissions(
                 if sid != creator_id_str:
                     db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=uuid.UUID(sid), access_level=access_level))
         else:
-            # "仅自己"
-            db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=current_user.id, access_level="manage"))
+            # "仅本人" — 始终以创建者为唯一用户
+            db.add(AgentPermission(agent_id=agent_id, scope_type="user", scope_id=agent.creator_id, access_level="manage"))
 
     await db.commit()
     return {"status": "ok"}
