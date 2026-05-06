@@ -41,6 +41,7 @@ class TenantOut(BaseModel):
     sso_enabled: bool = False
     sso_domain: str | None = None
     a2a_async_enabled: bool = False
+    default_model_id: uuid.UUID | None = None
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -416,6 +417,21 @@ async def resolve_tenant_by_domain(
     }
 
 # ─── Authenticated: List / Get ──────────────────────────
+
+@router.get("/me", response_model=TenantOut)
+async def get_my_tenant(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the current user's own tenant."""
+    if not current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User is not in a tenant")
+    result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return TenantOut.model_validate(tenant)
+
 
 @router.get("/", response_model=list[TenantOut])
 async def list_tenants(

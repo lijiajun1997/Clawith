@@ -217,6 +217,46 @@ async def remove_llm_model(
     await db.commit()
 
 
+@router.post("/llm-models/{model_id}/set-default", status_code=status.HTTP_204_NO_CONTENT)
+async def set_default_llm_model(
+    model_id: uuid.UUID,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark this model as the tenant's default for new agents."""
+    result = await db.execute(select(LLMModel).where(LLMModel.id == model_id))
+    model = result.scalar_one_or_none()
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if not model.tenant_id:
+        raise HTTPException(status_code=400, detail="Model is not tenant-scoped")
+    if not model.enabled:
+        raise HTTPException(status_code=400, detail="Model is disabled")
+
+    from app.models.tenant import Tenant
+    t_result = await db.execute(select(Tenant).where(Tenant.id == model.tenant_id))
+    tenant = t_result.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    previous_default = tenant.default_model_id
+    tenant.default_model_id = model.id
+
+    if previous_default and previous_default != model.id:
+        await db.execute(
+            update(Agent)
+            .where(Agent.tenant_id == tenant.id)
+            .where(Agent.primary_model_id == previous_default)
+            .values(primary_model_id=model.id)
+        )
+        logger.info(
+            f"[set_default_llm_model] Migrated agents in tenant {tenant.id} "
+            f"from {previous_default} -> {model.id}"
+        )
+
+    await db.commit()
+
+
 @router.put("/llm-models/{model_id}", response_model=LLMModelOut)
 async def update_llm_model(
     model_id: uuid.UUID,

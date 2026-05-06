@@ -1,8 +1,10 @@
 """Activity log API — view agent work history."""
 
 import uuid
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
@@ -17,19 +19,25 @@ router = APIRouter(tags=["activity"])
 @router.get("/agents/{agent_id}/activity")
 async def get_agent_activity(
     agent_id: uuid.UUID,
-    limit: int = Query(50, le=200),
+    limit: int = Query(50, le=2000),
+    days: int = Query(0, ge=0, le=365),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get recent activity logs for an agent."""
+    """Get recent activity logs for an agent.
+
+    When ``days`` > 0, only return records created within that many days.
+    The limit cap is raised to 2000 to support dashboard charts.
+    """
     await check_agent_access(db, current_user, agent_id)
 
-    result = await db.execute(
-        select(AgentActivityLog)
-        .where(AgentActivityLog.agent_id == agent_id)
-        .order_by(AgentActivityLog.created_at.desc())
-        .limit(limit)
-    )
+    q = select(AgentActivityLog).where(AgentActivityLog.agent_id == agent_id)
+    if days > 0:
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        q = q.where(AgentActivityLog.created_at >= since)
+    q = q.order_by(AgentActivityLog.created_at.desc()).limit(limit)
+
+    result = await db.execute(q)
     logs = result.scalars().all()
 
     return [
@@ -42,6 +50,48 @@ async def get_agent_activity(
             "created_at": log.created_at.isoformat() if log.created_at else None,
         }
         for log in logs
+    ]
+
+
+@router.get("/agents/{agent_id}/activity/daily-stats")
+async def get_agent_daily_stats(
+    agent_id: uuid.UUID,
+    days: int = Query(30, ge=1, le=90),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return daily aggregated activity counts for dashboard charts.
+
+    Returns: ``[ { "date": "2026-05-01", "action_type": "tool_call",
+                     "detail_tool": "send_channel_file", "count": 5 }, ... ]``
+    """
+    await check_agent_access(db, current_user, agent_id)
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Use raw SQL to avoid SQLAlchemy GROUP BY expression mismatch with JSON ->> cast
+    rows = await db.execute(
+        text("""
+            SELECT DATE(created_at) AS day,
+                   action_type,
+                   detail_json->>'tool' AS detail_tool,
+                   COUNT(*) AS count
+            FROM agent_activity_logs
+            WHERE agent_id = :aid AND created_at >= :since
+            GROUP BY DATE(created_at), action_type, detail_json->>'tool'
+            ORDER BY DATE(created_at)
+        """),
+        {"aid": str(agent_id), "since": since},
+    )
+
+    return [
+        {
+            "date": str(r.day),
+            "action_type": r.action_type,
+            "detail_tool": r.detail_tool,
+            "count": r.count,
+        }
+        for r in rows.all()
     ]
 
 

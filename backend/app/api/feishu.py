@@ -270,6 +270,150 @@ async def get_webhook_url(agent_id: uuid.UUID, request: Request, db: AsyncSessio
     return {"webhook_url": f"{public_base}/api/channel/feishu/{agent_id}/webhook"}
 
 
+@router.get("/agents/{agent_id}/channel/feishu-status")
+async def get_feishu_binding_status(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check Feishu binding status for all users related to this agent.
+
+    Returns a list of users with their Feishu connection status:
+    - has_org_member: whether an OrgMember exists for this user
+    - has_external_id: whether external_id (user_id) is set
+    - has_open_id: whether open_id is set
+    - can_resolve: whether we can resolve the open_id via email/mobile
+    - status: 'ok' | 'no_binding' | 'no_ids' | 'cannot_resolve'
+    """
+    from sqlalchemy.orm import selectinload
+    from app.models.org import AgentRelationship, OrgMember
+    from app.models.identity import IdentityProvider
+    from app.models.agent import Agent
+
+    agent, _access = await check_agent_access(db, current_user, agent_id)
+
+    # Get channel config
+    config_result = await db.execute(
+        select(ChannelConfig).where(
+            ChannelConfig.agent_id == agent_id,
+            ChannelConfig.channel_type == "feishu",
+        )
+    )
+    config = config_result.scalar_one_or_none()
+
+    if not config or not config.app_id:
+        return {"configured": False, "bindings": []}
+
+    # Get Feishu provider
+    provider_r = await db.execute(
+        select(IdentityProvider).where(
+            IdentityProvider.provider_type == "feishu",
+            IdentityProvider.tenant_id == agent.tenant_id,
+        )
+    )
+    provider = provider_r.scalar_one_or_none()
+
+    # Get all relationship members
+    result = await db.execute(
+        select(AgentRelationship)
+        .where(AgentRelationship.agent_id == agent_id)
+        .options(selectinload(AgentRelationship.member))
+    )
+    rels = result.scalars().all()
+
+    bindings = []
+    for rel in rels:
+        member = rel.member
+        if not member:
+            continue
+
+        info = {
+            "name": member.name,
+            "email": member.email,
+            "has_org_member": True,
+            "has_external_id": bool(member.external_id),
+            "has_open_id": bool(member.open_id),
+            "external_id_preview": (member.external_id[:12] + "…") if member.external_id else None,
+            "open_id_preview": (member.open_id[:12] + "…") if member.open_id else None,
+            "can_resolve": False,
+            "status": "no_ids",
+        }
+
+        has_valid_id = bool(member.external_id or member.open_id)
+        if not has_valid_id:
+            # Try to resolve via email/mobile
+            resolved = await feishu_service.resolve_open_id(
+                config.app_id, config.app_secret,
+                email=member.email, mobile=member.phone,
+            )
+            if resolved:
+                info["can_resolve"] = True
+                info["resolved_open_id_preview"] = resolved[:12] + "…"
+                info["status"] = "can_resolve"
+            else:
+                info["status"] = "cannot_resolve"
+        else:
+            # Has IDs, but check if they actually work by testing with a dry-run
+            # We don't actually send a message, just check if we can resolve
+            if member.external_id:
+                info["status"] = "ok"
+            elif member.open_id:
+                # open_id might be from a different app, try to verify
+                # by checking if we can also resolve via email
+                if member.email or member.phone:
+                    resolved = await feishu_service.resolve_open_id(
+                        config.app_id, config.app_secret,
+                        email=member.email, mobile=member.phone,
+                    )
+                    if resolved:
+                        info["can_resolve"] = True
+                        info["resolved_open_id_preview"] = resolved[:12] + "…"
+                        info["status"] = "ok"
+                    else:
+                        info["status"] = "open_id_mismatch"
+                else:
+                    info["status"] = "ok"
+
+        bindings.append(info)
+
+    # Also check the creator's binding status
+    creator_r = await db.execute(select(User).where(User.id == agent.creator_id))
+    creator = creator_r.scalar_one_or_none()
+    creator_status = None
+    if creator and provider:
+        creator_member_r = await db.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == creator.id,
+                OrgMember.provider_id == provider.id,
+            )
+        )
+        creator_member = creator_member_r.scalar_one_or_none()
+        if creator_member:
+            creator_status = {
+                "has_external_id": bool(creator_member.external_id),
+                "has_open_id": bool(creator_member.open_id),
+            }
+        else:
+            creator_status = {"has_external_id": False, "has_open_id": False, "no_org_member": True}
+
+    # Get WS connection status if applicable
+    ws_status = None
+    conn_mode = config.extra_config.get("connection_mode", "webhook") if config.extra_config else "webhook"
+    if conn_mode == "websocket":
+        from app.services.feishu_ws import feishu_ws_manager
+        ws_status = feishu_ws_manager.get_agent_status(agent_id)
+
+    return {
+        "configured": True,
+        "connection_mode": conn_mode,
+        "ws_status": ws_status,
+        "app_id": config.app_id,
+        "bindings": bindings,
+        "creator_status": creator_status,
+        "provider_exists": provider is not None,
+    }
+
+
 @router.delete("/agents/{agent_id}/channel", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_channel_config(
     agent_id: uuid.UUID,
@@ -533,7 +677,14 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 .limit(ctx_size)
             )
             history_msgs = history_result.scalars().all()
-            history = [{"role": m.role, "content": m.content} for m in reversed(history_msgs)]
+            # Filter out tool_call messages — they are UI-only records and not
+            # valid roles for the OpenAI Chat Completions API.
+            _LLM_VALID_ROLES = {"system", "user", "assistant", "tool"}
+            history = [
+                {"role": m.role, "content": m.content}
+                for m in reversed(history_msgs)
+                if m.role in _LLM_VALID_ROLES
+            ]
 
             # --- Resolve Feishu sender identity & find/create platform user ---
             import uuid as _uuid
@@ -1359,7 +1510,12 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        _history = [{"role": m.role, "content": m.content} for m in reversed(_hist_r.scalars().all())]
+        _LLM_VALID_ROLES = {"system", "user", "assistant", "tool"}
+        _history = [
+            {"role": m.role, "content": m.content}
+            for m in reversed(_hist_r.scalars().all())
+            if m.role in _LLM_VALID_ROLES
+        ]
 
         # Save user message to DB after loading history
         db.add(ChatMessage(agent_id=agent_id, user_id=platform_user_id, role="user",
@@ -1644,22 +1800,43 @@ async def _call_agent_llm(
     # Use actual user_id so the system prompt knows who it's chatting with
     effective_user_id = user_id or agent_id
 
-    try:
-        reply = await call_llm(
-            model,
-            messages,
-            agent.name,
-            agent.role_description or "",
-            agent_id=agent_id,
-            user_id=effective_user_id,
-            supports_vision=getattr(model, 'supports_vision', False),
-            on_chunk=on_chunk,
-            on_thinking=on_thinking,
-            on_tool_call=on_tool_call,
-            fallback_model=fallback_model,
-        )
-        return reply
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return f"⚠️ 调用模型出错: {(str(e) or repr(e))[:150]}"
+    # Retry with progressively truncated history on LLM errors.
+    # This prevents a poisoned conversation from permanently blocking the
+    # Feishu channel (e.g. invalid roles, context overflow, bad messages).
+    _max_retries = 3
+    _truncate_ratio = 0.5  # each retry drops half of the remaining history
+
+    for _attempt in range(_max_retries + 1):
+        try:
+            reply = await call_llm(
+                model,
+                messages,
+                agent.name,
+                agent.role_description or "",
+                agent_id=agent_id,
+                user_id=effective_user_id,
+                supports_vision=getattr(model, 'supports_vision', False),
+                on_chunk=on_chunk,
+                on_thinking=on_thinking,
+                on_tool_call=on_tool_call,
+                fallback_model=fallback_model,
+            )
+            # Detect error responses returned as strings from call_llm
+            if isinstance(reply, str) and reply.startswith("[LLM Error]"):
+                raise RuntimeError(reply)
+            return reply
+        except Exception as e:
+            _err_msg = str(e) or repr(e)
+            logger.warning(f"[Feishu] LLM call attempt {_attempt + 1}/{_max_retries + 1} failed: {_err_msg[:200]}")
+
+            if _attempt >= _max_retries:
+                import traceback
+                traceback.print_exc()
+                return f"⚠️ 调用模型出错: {_err_msg[:150]}"
+
+            # Truncate history for next retry
+            _hist_len = len(messages) - 1  # exclude current user message
+            if _hist_len > 0:
+                _keep = max(0, int(_hist_len * _truncate_ratio))
+                messages = messages[:_keep] + [messages[-1]]  # keep truncated history + current user msg
+                logger.info(f"[Feishu] Retrying with truncated history: {_hist_len} -> {_keep} messages")

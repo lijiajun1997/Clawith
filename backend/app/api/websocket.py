@@ -181,14 +181,60 @@ async def call_llm(
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
 
     # Convert messages to LLMMessage format
+    # Filter out non-LLM roles (e.g. "tool_call" is UI-only) to prevent
+    # API errors from providers that reject unknown roles.
+    # NOTE: reasoning_content from history is intentionally dropped.
+    # DeepSeek requires reasoning_content to be passed back if present,
+    # but stale reasoning from old turns is useless and triggers API errors.
+    _VALID_LLM_ROLES = {"system", "user", "assistant", "tool"}
     api_messages = [LLMMessage(role="system", content=static_prompt, dynamic_content=dynamic_prompt)]
     for msg in messages:
+        _role = msg.get("role", "user")
+        if _role not in _VALID_LLM_ROLES:
+            continue
         api_messages.append(LLMMessage(
-            role=msg.get("role", "user"),
+            role=_role,
             content=msg.get("content"),
             tool_calls=msg.get("tool_calls"),
             tool_call_id=msg.get("tool_call_id"),
+            # reasoning_content is NOT forwarded from history
         ))
+
+    # Fix broken message sequences after truncation:
+    # - Remove orphaned 'tool' messages whose parent assistant+tool_calls was cut
+    # - Remove assistant messages with tool_calls but no matching tool responses
+    _fixed: list[LLMMessage] = [api_messages[0]]  # keep system prompt
+    for i in range(1, len(api_messages)):
+        m = api_messages[i]
+        if m.role == "tool":
+            # Check if preceding message is an assistant with tool_calls
+            # that includes this tool_call_id
+            _tc_ids = set()
+            if _fixed and _fixed[-1].role == "assistant" and _fixed[-1].tool_calls:
+                _tc_ids = {tc.get("id", "") for tc in _fixed[-1].tool_calls}
+            if m.tool_call_id and m.tool_call_id in _tc_ids:
+                _fixed.append(m)
+            # else: orphaned tool message — drop it
+        else:
+            _fixed.append(m)
+    # Second pass: remove assistant+tool_calls with no following tool responses
+    _cleaned: list[LLMMessage] = []
+    for i in range(len(_fixed)):
+        m = _fixed[i]
+        if m.role == "assistant" and m.tool_calls:
+            _tc_ids = {tc.get("id", "") for tc in m.tool_calls}
+            _has_response = any(
+                _fixed[j].role == "tool" and _fixed[j].tool_call_id in _tc_ids
+                for j in range(i + 1, min(i + 1 + len(m.tool_calls) * 2, len(_fixed)))
+            )
+            if _has_response:
+                _cleaned.append(m)
+            # else: assistant with tool_calls but no responses — drop it
+        else:
+            _cleaned.append(m)
+    if len(_cleaned) != len(api_messages):
+        logger.info(f"[LLM] Fixed message sequence: {len(api_messages)} → {len(_cleaned)} (removed {len(api_messages) - len(_cleaned)} orphaned messages)")
+    api_messages = _cleaned
 
     # ── Vision format conversion ──
     # If the model supports vision, convert image markers in user messages
@@ -688,50 +734,28 @@ async def websocket_chat(
     await websocket.send_json({"type": "connected", "session_id": conv_id})
 
     # Build conversation context from history
-    # IMPORTANT: Include tool_call messages so the LLM maintains tool-calling behavior.
-    # Without them, Claude sees user→assistant-text patterns and learns to skip tools.
+    # Only keep plain user/assistant text messages for cross-model compatibility.
+    # tool_call records and reasoning_content from previous sessions are discarded
+    # because different LLM providers have incompatible requirements for these fields
+    # (DeepSeek requires reasoning_content roundtrip, others reject unknown tool formats).
+    # The LLM will re-invoke tools as needed in the current session.
     conversation: list[dict] = []
     for msg in history_messages:
         if msg.role == "tool_call":
-            # Convert stored tool_call JSON into OpenAI-format assistant+tool pair
-            try:
-                import json as _j_hist
-                tc_data = _j_hist.loads(msg.content)
-                tc_name = tc_data.get("name", "unknown")
-                tc_args = tc_data.get("args", {})
-                tc_result = tc_data.get("result", "")
-                tc_id = f"call_{msg.id}"  # synthetic tool_call_id
-                # Assistant message with tool_calls array
-                asst_msg = {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {"name": tc_name, "arguments": _j_hist.dumps(tc_args, ensure_ascii=False)},
-                    }],
-                }
-                if tc_data.get("reasoning_content"):
-                    asst_msg["reasoning_content"] = tc_data["reasoning_content"]
-                conversation.append(asst_msg)
-                # Tool result message.
-                # Sanitize any stale [ImageID: ...] markers left by the ephemeral
-                # screenshot cache — those images are gone from memory and would
-                # confuse the LLM if sent as-is.
-                from app.services.vision_inject import sanitize_history_tool_result
-                sanitized_result = sanitize_history_tool_result(str(tc_result))
-                conversation.append({
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "content": sanitized_result[:500],
-                })
-            except Exception:
-                continue  # Skip malformed tool_call records
-        else:
-            entry = {"role": msg.role, "content": msg.content}
-            if hasattr(msg, 'thinking') and msg.thinking:
-                entry["thinking"] = msg.thinking
+            continue  # Skip tool_call records entirely
+        if msg.role in ("user", "assistant"):
+            entry = {"role": msg.role, "content": msg.content or ""}
+            # Note: thinking/reasoning_content intentionally omitted for compatibility
             conversation.append(entry)
+
+    # Truncate conversation to prevent context overflow in long sessions.
+    # Each tool_call in history expands to 2 messages (assistant+tool), so a
+    # session with ctx_size=50 and many tool_calls can balloon to 100+ messages.
+    # Keep at most ctx_size user/assistant turns (rough heuristic) by trimming
+    # from the front.
+    if len(conversation) > ctx_size:
+        conversation = conversation[-ctx_size:]
+        logger.info(f"[WS] Truncated conversation to last {ctx_size} messages")
 
     try:
         # Send welcome message on new session (no history)
