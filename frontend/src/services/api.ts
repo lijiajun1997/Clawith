@@ -202,6 +202,9 @@ export const tenantApi = {
 
     resolveByDomain: (domain: string) =>
         request<any>(`/tenants/resolve-by-domain?domain=${encodeURIComponent(domain)}`),
+
+    me: () =>
+        request<{ id: string; name: string; default_model_id: string | null; [k: string]: any }>('/tenants/me'),
 };
 
 export const adminApi = {
@@ -449,8 +452,16 @@ export const enterpriseApi = {
 
 // ─── Activity Logs ────────────────────────────────────
 export const activityApi = {
-    list: (agentId: string, limit = 50) =>
-        request<any[]>(`/agents/${agentId}/activity?limit=${limit}`),
+    list: (agentId: string, limit = 50, days = 0) => {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (days > 0) params.set('days', String(days));
+        return request<any[]>(`/agents/${agentId}/activity?${params}`);
+    },
+
+    dailyStats: (agentId: string, days = 30) =>
+        request<{ date: string; action_type: string; detail_tool: string | null; count: number }[]>(
+            `/agents/${agentId}/activity/daily-stats?days=${days}`,
+        ),
 };
 
 // ─── Messages ─────────────────────────────────────────

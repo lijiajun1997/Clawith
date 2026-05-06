@@ -337,6 +337,18 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
     const [wechatQrStatus, setWechatQrStatus] = useState('');
     const [wechatLoadingQr, setWechatLoadingQr] = useState(false);
 
+    // Feishu binding status
+    const [feishuBindingStatus, setFeishuBindingStatus] = useState<any>(null);
+    const [feishuBindingLoading, setFeishuBindingLoading] = useState(false);
+    const loadFeishuBindingStatus = () => {
+        if (!agentId) return;
+        setFeishuBindingLoading(true);
+        fetchAuth<any>(`/agents/${agentId}/channel/feishu-status`)
+            .then(data => setFeishuBindingStatus(data))
+            .catch(() => setFeishuBindingStatus(null))
+            .finally(() => setFeishuBindingLoading(false));
+    };
+
     // ─── Edit mode: queries for each channel ────────────
     const enabled = mode === 'edit' && !!agentId;
 
@@ -921,16 +933,93 @@ export default function ChannelConfig({ mode, agentId, canManage = true, values,
                                 {ch.id === 'feishu' && configConnMode === 'websocket' && (
                                     <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px' }}>
-                                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00D6B9', display: 'inline-block' }}></span>
-                                            <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket (No callback URL needed)</span>
+                                            {feishuBindingStatus?.ws_status === 'connected' ? (
+                                                <>
+                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00D6B9', display: 'inline-block' }}></span>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Connected via WebSocket</span>
+                                                </>
+                                            ) : feishuBindingStatus?.ws_status === 'connecting' ? (
+                                                <>
+                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#F5A623', display: 'inline-block' }}></span>
+                                                <span style={{ color: '#F5A623' }}>Connecting to Feishu...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#E74C3C', display: 'inline-block' }}></span>
+                                                <span style={{ color: '#E74C3C' }}>Disconnected — will auto-reconnect</span>
+                                                </>
+                                            )}
                                         </div>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>App ID: <code>{config.app_id}</code></div>
+                                        {!feishuBindingStatus?.ws_status && (
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                                                Click「检查」below to refresh connection status
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                                 {ch.id === 'feishu' && configConnMode !== 'websocket' && (
                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>
                                         <div style={{ marginBottom: '4px' }}>Mode: <strong>Webhook</strong></div>
                                         <div>App ID: <code>{config.app_id}</code></div>
+                                    </div>
+                                )}
+
+                                {/* Feishu binding status */}
+                                {ch.id === 'feishu' && (
+                                    <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '10px', fontSize: '12px', marginBottom: '12px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                                            <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>飞书绑定状态</span>
+                                            <button
+                                                className="btn btn-secondary"
+                                                style={{ fontSize: '11px', padding: '2px 8px' }}
+                                                onClick={loadFeishuBindingStatus}
+                                                disabled={feishuBindingLoading}
+                                            >
+                                                {feishuBindingLoading ? '检查中...' : '检查'}
+                                            </button>
+                                        </div>
+                                        {!feishuBindingStatus && !feishuBindingLoading && (
+                                            <div style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>点击「检查」查看成员的飞书连接状态</div>
+                                        )}
+                                        {feishuBindingLoading && (
+                                            <div style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>正在检查...</div>
+                                        )}
+                                        {feishuBindingStatus && !feishuBindingStatus.configured && (
+                                            <div style={{ color: '#F59E0B', fontSize: '11px' }}>飞书通道未配置</div>
+                                        )}
+                                        {feishuBindingStatus?.configured && feishuBindingStatus.bindings?.length > 0 && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                                {feishuBindingStatus.bindings.map((b: any, i: number) => {
+                                                    const statusColors: Record<string, string> = {
+                                                        ok: '#07C160',
+                                                        can_resolve: '#F59E0B',
+                                                        no_ids: '#EF4444',
+                                                        cannot_resolve: '#EF4444',
+                                                        open_id_mismatch: '#F59E0B',
+                                                    };
+                                                    const statusLabels: Record<string, string> = {
+                                                        ok: '已连接',
+                                                        can_resolve: '可解析',
+                                                        no_ids: '无飞书 ID',
+                                                        cannot_resolve: '无法解析',
+                                                        open_id_mismatch: 'ID 不匹配',
+                                                    };
+                                                    const color = statusColors[b.status] || '#999';
+                                                    const label = statusLabels[b.status] || b.status;
+                                                    return (
+                                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                            <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }}></span>
+                                                            <span style={{ color: 'var(--text-secondary)', flex: 1 }}>{b.name}</span>
+                                                            <span style={{ color, fontSize: '11px' }}>{label}</span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                        {feishuBindingStatus?.configured && (!feishuBindingStatus.bindings || feishuBindingStatus.bindings.length === 0) && (
+                                            <div style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>暂无关系成员</div>
+                                        )}
                                     </div>
                                 )}
 

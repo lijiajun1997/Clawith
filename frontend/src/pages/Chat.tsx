@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router-dom';
@@ -6,11 +6,12 @@ import MarkdownRenderer from '../components/MarkdownRenderer';
 import AgentBayLivePanel, { LivePreviewState } from '../components/AgentBayLivePanel';
 import RecentFilesPanel from '../components/RecentFilesPanel';
 import FileCanvasPanel from '../components/FileCanvasPanel';
-import { agentApi, enterpriseApi, uploadFileWithProgress } from '../services/api';
+import { agentApi, enterpriseApi, uploadFileWithProgress, tenantApi } from '../services/api';
 import { IconPaperclip, IconSend } from '@tabler/icons-react';
 import { formatFileSize } from '../utils/formatFileSize';
 import { useAuthStore } from '../stores';
 import { useDropZone } from '../hooks/useDropZone';
+import ModelSwitcher from '../components/ModelSwitcher';
 
 /* ── Inline SVG Icons ── */
 const Icons = {
@@ -304,6 +305,33 @@ export default function Chat() {
         queryFn: () => agentApi.get(id!),
         enabled: !!id,
     });
+
+    const queryClient = useQueryClient();
+
+    const { data: myTenant } = useQuery({
+        queryKey: ['my-tenant'],
+        queryFn: tenantApi.me,
+        staleTime: 5 * 60 * 1000,
+    });
+
+    const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
+    useEffect(() => {
+        if (agent?.primary_model_id && agent.primary_model_id !== overrideModelId) {
+            setOverrideModelId(agent.primary_model_id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [agent?.primary_model_id, wsSessionId]);
+
+    const handleModelChange = useCallback(async (newModelId: string | null) => {
+        setOverrideModelId(newModelId);
+        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
+        try {
+            await agentApi.update(id, { primary_model_id: newModelId });
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+        } catch {
+            setOverrideModelId(agent?.primary_model_id || null);
+        }
+    }, [id, agent?.primary_model_id, queryClient]);
 
     const { data: llmModels = [] } = useQuery({
         queryKey: ['llm-models'],
@@ -750,7 +778,7 @@ export default function Chat() {
             imageUrl: attachedFile?.imageUrl,
             timestamp: new Date().toISOString(),
         }]);
-        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '' }));
+        wsRef.current.send(JSON.stringify({ content: contentForLLM, display_content: userMsg, file_name: attachedFile?.name || '', model_id: overrideModelId }));
         setInput('');
         setAttachedFile(null);
     };
@@ -1020,6 +1048,12 @@ export default function Chat() {
                             >
                                 <IconPaperclip size={16} stroke={1.75} />
                             </button>
+                            <ModelSwitcher
+                                value={overrideModelId}
+                                onChange={handleModelChange}
+                                tenantDefaultId={myTenant?.default_model_id || null}
+                                disabled={!connected}
+                            />
                             {!attachedFile && !uploadProgress && (
                                 <span style={{ fontSize: '11px', color: 'var(--warning, #f59e0b)', whiteSpace: 'nowrap', userSelect: 'none' }}>
                                     ⚠️ 工作文件需脱敏后上传

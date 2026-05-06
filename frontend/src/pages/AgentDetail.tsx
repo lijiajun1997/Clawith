@@ -14,7 +14,7 @@ import type { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentSidePanel, { SidePanelTab } from '../components/AgentSidePanel';
 import type { WorkspaceActivity, WorkspaceLiveDraft } from '../components/WorkspaceOperationPanel';
 import AgentCredentials from '../components/AgentCredentials';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress } from '../services/api';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress, tenantApi } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
@@ -51,6 +51,7 @@ import {
 } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 import { useIsMobile } from '../hooks/useIsMobile';
+import ModelSwitcher from '../components/ModelSwitcher';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
@@ -1482,6 +1483,12 @@ function AgentDetailInner() {
         enabled: !!id,
     });
 
+    const { data: myTenant } = useQuery({
+        queryKey: ['my-tenant'],
+        queryFn: tenantApi.me,
+        staleTime: 5 * 60 * 1000,
+    });
+
     // ── Aware tab data: triggers ──
     const { data: awareTriggers = [], refetch: refetchTriggers } = useQuery({
         queryKey: ['triggers', id],
@@ -2880,6 +2887,27 @@ function AgentDetailInner() {
     const supportsVision = !!agent?.primary_model_id && llmModels.some(
         (m: any) => m.id === agent.primary_model_id && m.supports_vision
     );
+
+    // Chat-side model picker. Source-of-truth is agent.primary_model_id;
+    // the picker mirrors it bidirectionally.
+    const [overrideModelId, setOverrideModelId] = useState<string | null>(null);
+    useEffect(() => {
+        if (agent?.primary_model_id && agent.primary_model_id !== overrideModelId) {
+            setOverrideModelId(agent.primary_model_id);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [agent?.primary_model_id]);
+
+    const handleModelChange = useCallback(async (newModelId: string | null) => {
+        setOverrideModelId(newModelId);
+        if (!id || !newModelId || newModelId === agent?.primary_model_id) return;
+        try {
+            await agentApi.update(id, { primary_model_id: newModelId });
+            queryClient.invalidateQueries({ queryKey: ['agent', id] });
+        } catch {
+            setOverrideModelId(agent?.primary_model_id || null);
+        }
+    }, [id, agent?.primary_model_id]);
 
     const { data: permData } = useQuery({
         queryKey: ['agent-permissions', id],
@@ -4974,6 +5002,12 @@ function AgentDetailInner() {
                                                 >
                                                     <IconPaperclip size={16} stroke={1.75} />
                                                 </button>
+                                                <ModelSwitcher
+                                                    value={overrideModelId}
+                                                    onChange={handleModelChange}
+                                                    tenantDefaultId={myTenant?.default_model_id || null}
+                                                    disabled={!wsConnected}
+                                                />
                                                 {(isStreaming || isWaiting) ? (
                                                     <button
                                                         type="button"

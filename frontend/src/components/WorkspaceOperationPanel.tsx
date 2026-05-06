@@ -44,15 +44,23 @@ interface Props {
     activities: WorkspaceActivity[];
     liveDraft?: WorkspaceLiveDraft | null;
     locked?: boolean;
+    canManageEnterpriseInfo?: boolean;
     onSelectPath: (path: string) => void;
     onToggleLock?: () => void;
     onEditingChange?: (editing: boolean) => void;
     onPathDeleted?: (path: string) => void;
+    activityOpen?: boolean;
+    onActivityToggle?: (open: boolean) => void;
 }
 
 const WORKSPACE_ROOT = 'workspace';
 const SKILLS_ROOT = 'skills';
 const MEMORY_ROOT = 'memory';
+const ENTERPRISE_ROOT = 'enterprise_info';
+
+function isEnterprisePath(path?: string | null): boolean {
+    return !!path && (path === ENTERPRISE_ROOT || path.startsWith(`${ENTERPRISE_ROOT}/`));
+}
 const DEFAULT_UPLOAD_DIR = 'workspace/uploads';
 type TreeScope = 'workspace' | 'all';
 const EDITABLE_EXTS = new Set(['.md', '.markdown', '.csv']);
@@ -381,10 +389,13 @@ export default function WorkspaceOperationPanel({
     activities,
     liveDraft,
     locked = false,
+    canManageEnterpriseInfo = false,
     onSelectPath,
     onToggleLock,
     onEditingChange,
     onPathDeleted,
+    activityOpen: activityOpenProp,
+    onActivityToggle,
 }: Props) {
     const [preview, setPreview] = useState<any>(null);
     const [content, setContent] = useState('');
@@ -394,12 +405,16 @@ export default function WorkspaceOperationPanel({
     const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
     const [revisions, setRevisions] = useState<any[]>([]);
     const [fileTree, setFileTree] = useState<WorkspaceFileNode[]>([]);
-    const [activityOpen, setActivityOpen] = useState(false);
+    const [activityOpenInternal, setActivityOpenInternal] = useState(false);
+    const activityOpen = activityOpenProp ?? activityOpenInternal;
+    const setActivityOpen = onActivityToggle ?? setActivityOpenInternal;
     const [treeOpen, setTreeOpen] = useState(true);
     const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
     const [treeScope, setTreeScope] = useState<TreeScope>('workspace');
     const [pendingSwitchPath, setPendingSwitchPath] = useState<string | null>(null);
     const [sideWidth, setSideWidth] = useState(DEFAULT_TREE_WIDTH);
+    const canModifyPath = (path?: string | null) => !isEnterprisePath(path) || canManageEnterpriseInfo;
+
     const [selectedDirPath, setSelectedDirPath] = useState(WORKSPACE_ROOT);
     const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
     const [isSideResizing, setIsSideResizing] = useState(false);
@@ -1045,7 +1060,7 @@ export default function WorkspaceOperationPanel({
                             <span className="workspace-op-tree-chevron">{expanded ? '▾' : '▸'}</span>
                             <span>{node.name}</span>
                         </button>
-                        {node.path !== WORKSPACE_ROOT && node.path !== SKILLS_ROOT && node.path !== MEMORY_ROOT && (
+                        {node.path !== WORKSPACE_ROOT && node.path !== SKILLS_ROOT && node.path !== MEMORY_ROOT && node.path !== ENTERPRISE_ROOT && canModifyPath(node.path) && (
                             <button
                                 className="workspace-op-tree-file-delete"
                                 title="Delete folder"
@@ -1104,7 +1119,7 @@ export default function WorkspaceOperationPanel({
                 </div>
                 <div className="workspace-op-actions">
                     {saveState !== 'idle' && <span className={`workspace-op-save ${saveState}`}>{saveState}</span>}
-                    <button className={`workspace-op-icon-btn ${activityOpen ? 'active' : ''}`} onClick={() => setActivityOpen((open) => !open)} title="Version history">◷</button>
+                    <button className={`workspace-op-icon-btn ${activityOpen ? 'active' : ''}`} onClick={() => setActivityOpen(!activityOpen)} title="Version history">◷</button>
                     {activePath && (
                         <button
                             className={`workspace-op-icon-btn ${locked ? 'active' : ''}`}

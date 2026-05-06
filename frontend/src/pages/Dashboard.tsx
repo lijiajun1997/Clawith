@@ -450,24 +450,25 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
     const data = useMemo(() => {
         const now = new Date();
         const days = range;
-        const buckets: { day: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[] = [];
+        const buckets: { _key: string; day: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[] = [];
         for (let i = days - 1; i >= 0; i--) {
             const d = new Date(now.getTime() - i * 86400000);
+            const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
             buckets.push({
+                _key: key,
                 day: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
                 feishu: 0, web: 0, dingtalk: 0, wecom: 0, other: 0,
             });
         }
         activities.forEach(act => {
             if (act.action_type !== 'chat_reply' || !act.created_at) return;
-            const diffD = Math.floor((now.getTime() - new Date(act.created_at).getTime()) / 86400000);
-            if (diffD >= 0 && diffD < days) {
-                // 渠道信息在 detail_json.channel 中
-                const ch = act.detail?.channel || act.detail_json?.channel || 'other';
-                const validCh = ['feishu', 'web', 'dingtalk', 'wecom'].includes(ch) ? ch : 'other';
-                const bucket = buckets[days - 1 - diffD];
-                if (bucket) (bucket as any)[validCh]++;
-            }
+            const actDate = new Date(act.created_at);
+            const key = `${actDate.getFullYear()}-${(actDate.getMonth() + 1).toString().padStart(2, '0')}-${actDate.getDate().toString().padStart(2, '0')}`;
+            const b = buckets.find(bk => bk._key === key);
+            if (!b) return;
+            const ch = act.detail?.channel || act.detail_json?.channel || 'other';
+            const validCh = ['feishu', 'web', 'dingtalk', 'wecom'].includes(ch) ? ch : 'other';
+            (b as any)[validCh]++;
         });
         return buckets;
     }, [activities, range]);
@@ -496,25 +497,39 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
 /* ────── Token By Agent (horizontal bar with day/month toggle) ────── */
 /* ────── File Delivery Trend (send_channel_file per day) ────── */
 
-function FileDeliveryChart({ activities, range }: { activities: any[]; range: number }) {
+function FileDeliveryChart({ activities, dailyStats, range }: { activities: any[]; dailyStats: any[]; range: number }) {
     const data = useMemo(() => {
         const now = new Date();
-        const buckets: { day: string; deliveries: number }[] = [];
+        const buckets: { _key: string; day: string; deliveries: number }[] = [];
         for (let i = range - 1; i >= 0; i--) {
             const d = new Date(now.getTime() - i * 86400000);
+            const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
             buckets.push({
+                _key: key,
                 day: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
                 deliveries: 0,
             });
         }
-        activities.forEach(a => {
-            if (a.action_type !== 'tool_call' || !a.created_at) return;
-            if (a.detail?.tool !== 'send_channel_file') return;
-            const diffD = Math.floor((now.getTime() - new Date(a.created_at).getTime()) / 86400000);
-            if (diffD >= 0 && diffD < range) buckets[range - 1 - diffD].deliveries++;
-        });
+        // Prefer server-side aggregated stats
+        const deliveryStats = dailyStats.filter(s => s.action_type === 'tool_call' && s.detail_tool === 'send_channel_file');
+        if (deliveryStats.length > 0) {
+            deliveryStats.forEach(s => {
+                const b = buckets.find(bk => bk._key === s.date);
+                if (b) b.deliveries += s.count;
+            });
+        } else {
+            // Fallback: count from raw activities
+            activities.forEach(a => {
+                if (a.action_type !== 'tool_call' || !a.created_at) return;
+                if (a.detail?.tool !== 'send_channel_file') return;
+                const actDate = new Date(a.created_at);
+                const key = `${actDate.getFullYear()}-${(actDate.getMonth() + 1).toString().padStart(2, '0')}-${actDate.getDate().toString().padStart(2, '0')}`;
+                const b = buckets.find(bk => bk._key === key);
+                if (b) b.deliveries++;
+            });
+        }
         return buckets;
-    }, [activities, range]);
+    }, [activities, dailyStats, range]);
 
     const total = data.reduce((s, d) => s + d.deliveries, 0);
 
@@ -862,18 +877,22 @@ function ErrorTrendChart({ activities }: { activities: any[] }) {
     const data = useMemo(() => {
         const now = new Date();
         const days = 14;
-        const buckets: { day: string; errors: number }[] = [];
+        const buckets: { _key: string; day: string; errors: number }[] = [];
         for (let i = days - 1; i >= 0; i--) {
             const d = new Date(now.getTime() - i * 86400000);
+            const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
             buckets.push({
+                _key: key,
                 day: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
                 errors: 0,
             });
         }
         activities.forEach(a => {
             if (a.action_type !== 'error' || !a.created_at) return;
-            const diffD = Math.floor((now.getTime() - new Date(a.created_at).getTime()) / 86400000);
-            if (diffD >= 0 && diffD < days) buckets[days - 1 - diffD].errors++;
+            const ad = new Date(a.created_at);
+            const key = `${ad.getFullYear()}-${(ad.getMonth() + 1).toString().padStart(2, '0')}-${ad.getDate().toString().padStart(2, '0')}`;
+            const b = buckets.find(bk => bk._key === key);
+            if (b) b.errors++;
         });
         return buckets;
     }, [activities]);
@@ -1194,6 +1213,7 @@ export default function Dashboard() {
     const [allTasks, setAllTasks] = useState<Task[]>([]);
     const [allActivities, setAllActivities] = useState<any[]>([]);
     const [agentActivities, setAgentActivities] = useState<Record<string, any[]>>({});
+    const [allDailyStats, setAllDailyStats] = useState<any[]>([]);
 
     useEffect(() => {
         if (agents.length === 0) return;
@@ -1205,7 +1225,7 @@ export default function Dashboard() {
                 setAllTasks(tasks);
             } catch (e) { console.error('Failed to fetch tasks:', e); }
             try {
-                const actResults = await Promise.allSettled(agents.map(a => activityApi.list(a.id, 100)));
+                const actResults = await Promise.allSettled(agents.map(a => activityApi.list(a.id, 2000, 90)));
                 const activities: any[] = [];
                 const perAgent: Record<string, any[]> = {};
                 actResults.forEach((r, i) => {
@@ -1215,9 +1235,22 @@ export default function Dashboard() {
                     }
                 });
                 activities.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-                setAllActivities(activities.slice(0, 500));
+                setAllActivities(activities);
                 setAgentActivities(perAgent);
             } catch (e) { console.error('Failed to fetch activities:', e); }
+            // Fetch daily aggregated stats (90 days to cover all chart ranges)
+            try {
+                const statsResults = await Promise.allSettled(
+                    agents.map(a => activityApi.dailyStats(a.id, 90)),
+                );
+                const merged: any[] = [];
+                statsResults.forEach((r, i) => {
+                    if (r.status === 'fulfilled') {
+                        merged.push(...r.value.map((v: any) => ({ ...v, agent_id: agents[i].id })));
+                    }
+                });
+                setAllDailyStats(merged);
+            } catch (e) { console.error('Failed to fetch daily stats:', e); }
         };
         fetchData();
         const interval = setInterval(fetchData, 30000);
@@ -1434,7 +1467,7 @@ export default function Dashboard() {
                                     extra={<RangeTabs value={String(deliveryRange)} onChange={v => setDeliveryRange(Number(v))} options={[
                                         { key: '7', label: '7d' }, { key: '14', label: '14d' }, { key: '30', label: '30d' },
                                     ]} />}>
-                                    <FileDeliveryChart activities={allActivities} range={deliveryRange} />
+                                    <FileDeliveryChart activities={allActivities} dailyStats={allDailyStats} range={deliveryRange} />
                                 </SectionCard>
 
                                 {/* Task Pipeline */}
