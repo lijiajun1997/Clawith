@@ -45,8 +45,8 @@ RUN useradd --create-home clawith && \
 # Note: USER is removed to allow entrypoint.sh to fix permissions of mounted volumes
 # at runtime. The entrypoint script will drop privileges to 'clawith' after fixing permissions.
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+# Health check (overridden by docker-compose.yml with longer start_period)
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 --start-period=120s \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 EXPOSE 8000

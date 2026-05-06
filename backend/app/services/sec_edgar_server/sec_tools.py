@@ -8,6 +8,7 @@ Run the sync script to download/update the cache:
     python -m app.services.sec_edgar_server.sync_tickers
 """
 import json
+import time
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -68,7 +69,8 @@ class SECEdgarTools:
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Referer": "https://www.sec.gov",                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.sec.gov",
+                    "Accept-Language": "en-US,en;q=0.9",
                     "Accept-Encoding": "gzip, deflate, br",
                     "Connection": "keep-alive"
                 }
@@ -121,7 +123,7 @@ class SECEdgarTools:
             return {}
 
     def _save_local_cache(self, tickers: Dict[str, str]) -> bool:
-        """Save company tickers to local cache file.
+        """Save company tickers to local cache file in SEC official format.
 
         Args:
             tickers: Dictionary mapping ticker symbols to CIKs
@@ -130,17 +132,22 @@ class SECEdgarTools:
             True if successful, False otherwise
         """
         try:
-            data = {
-                "tickers": tickers,
-                "updated_at": int(time.time())
-            }
+            # Convert ticker->CIK mapping to SEC official format
+            # SEC format: {"0": {cik_str, ticker, title}, "1": {...}, ...}
+            data = {}
+            for idx, (ticker, cik) in enumerate(tickers.items()):
+                data[str(idx)] = {
+                    "cik_str": int(cik.lstrip('0')),
+                    "ticker": ticker,
+                    "title": ticker  # SEC format requires title, use ticker as placeholder
+                }
 
-            async def write_cache():
-                async with aiofiles.open(_CACHE_FILE, 'w') as f:
-                    await f.write(json.dumps(data, indent=2))
+            # Ensure cache directory exists
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(write_cache())
+            # Write synchronously for simplicity
+            with open(_CACHE_FILE, 'w') as f:
+                json.dump(data, f)
 
             logger.info(f"[SEC EDGAR] Saved {len(tickers)} company tickers to local cache")
             return True
@@ -467,99 +474,61 @@ class SECEdgarTools:
                     "example": "search_companies('Apple', limit=10)"
                 }
 
-            # Use SEC EDGAR search endpoint
-            search_url = f"{self.base_url}?action=getcompany&company={query}&owner=exclude&match=start"
+            # Use local cache for search (SEC EDGAR search endpoint blocked)
+            tickers = self._load_local_cache()
 
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-            }
-
-            response = self._make_request(search_url, headers)
-
-            if not response:
+            if not tickers:
                 return {
                     "success": False,
-                    "error": f"Timeout or connection error searching for: {query}",
-                    "suggestion": "SEC EDGAR service may be slow. Please try again in a moment."
+                    "error": "本地缓存未初始化",
+                    "suggestion": "SEC 缓存正在下载，请稍后再试"
                 }
 
-            # Try to use BeautifulSoup if available
-            try:
-                from bs4 import BeautifulSoup
+            # Search by ticker (exact match) and title (contains)
+            import re
+            companies = []
+            query_upper = query.upper()
 
-                soup = BeautifulSoup(response.text, 'html.parser')
-                companies = []
+            # Load full cache data for title search
+            if not _CACHE_FILE.exists():
+                return {
+                    "success": False,
+                    "error": "本地缓存文件不存在",
+                    "suggestion": "请等待 SEC 缓存下载完成"
+                }
 
-                # Find company info table
-                table = soup.find('table', class_='tableFile2')
-                if table:
-                    rows = table.find_all('tr')[1:]  # Skip header row
+            with open(_CACHE_FILE, 'r') as f:
+                cache_data = json.load(f)
 
-                    for row in rows[:limit]:
-                        cells = row.find_all('td')
-                        if len(cells) >= 2:
-                            # Extract CIK from link
-                            cik_link = cells[0].find('a')
-                            if cik_link:
-                                href = cik_link.get('href', '')
-                                import re
-                                cik_match = re.search(r'CIK=(\d{10})', href)
-                                if cik_match:
-                                    cik = cik_match.group(1)
+            for item in cache_data.values():
+                ticker = item.get("ticker", "").upper()
+                title = item.get("title", "").upper()
+                cik = str(item.get("cik_str", "")).zfill(10)
 
-                                    # Get company name
-                                    company_name = cik_link.text.strip()
+                # Exact ticker match
+                if ticker == query_upper:
+                    companies.insert(0, {"cik": cik, "ticker": ticker, "name": item.get("title", "")})
+                    if len(companies) >= limit:
+                        break
 
-                                    # Get filing type
-                                    filing_type = cells[1].text.strip() if len(cells) > 1 else ""
+                # Partial title match
+                elif query_upper in title:
+                    if len(companies) < limit:
+                        companies.append({"cik": cik, "ticker": ticker, "name": item.get("title", "")})
 
-                                    companies.append({
-                                        "cik": cik,
-                                        "name": company_name,
-                                        "filing_type": filing_type
-                                    })
-
-                if companies:
-                    return {
-                        "success": True,
-                        "companies": companies,
-                        "count": len(companies),
-                        "query": query
-                    }
-
-            except ImportError:
-                # BeautifulSoup not available, try regex parsing
-                import re
-
-                # Look for CIK patterns in the HTML
-                cik_pattern = r'CIK=(\d{10})'
-                cik_matches = re.findall(cik_pattern, response.text)
-
-                # Look for company names near CIKs
-                companies = []
-                for cik in cik_matches[:limit]:
-                    # Try to find company name context
-                    # This is a simplified approach
-                    companies.append({
-                        "cik": cik,
-                        "name": f"Company {cik}",
-                        "note": "Company name parsing requires beautifulsoup4"
-                    })
-
-                if companies:
-                    return {
-                        "success": True,
-                        "companies": companies,
-                        "count": len(companies),
-                        "query": query,
-                        "note": "Limited results - beautifulsoup4 not available for full HTML parsing"
-                    }
+            if companies:
+                return {
+                    "success": True,
+                    "companies": companies[:limit],
+                    "count": len(companies[:limit]),
+                    "query": query,
+                    "source": "Local SEC cache"
+                }
 
             return {
                 "success": False,
                 "error": f"未找到匹配的公司：{query}",
-                "suggestion": "请尝试不同的搜索关键词或检查拼写"
+                "suggestion": "请尝试股票代码或公司名称搜索"
             }
 
         except Exception as e:

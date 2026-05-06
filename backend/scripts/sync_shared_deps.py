@@ -11,6 +11,7 @@ This script ensures that:
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Shared dependencies directory
@@ -57,7 +58,7 @@ def create_directory_structure():
 
 
 def install_common_packages():
-    """Install common packages to shared-deps directory."""
+    """Install common packages to shared-deps directory (skip if already present)."""
     print("[sync_shared_deps] Installing common packages...")
 
     # Set pip environment to install to shared-deps directory
@@ -66,8 +67,29 @@ def install_common_packages():
     env["PIP_TARGET"] = str(PIP_DIR)
     env["PIP_CACHE_DIR"] = str(CACHE_DIR)
 
+    # Quick check: if marker file exists and is recent (<24h), skip entirely
+    marker = SHARED_DEPS_DIR / ".sync_marker"
+    if marker.exists():
+        try:
+            age_hours = (time.time() - marker.stat().st_mtime) / 3600
+            if age_hours < 24:
+                print(f"  ✓ Packages synced {age_hours:.0f}h ago, skipping install")
+                return
+        except Exception:
+            pass
+
     for package in COMMON_PACKAGES:
         try:
+            # Check if package is already importable
+            pkg_name = package.split(">=")[0].split("==")[0].replace("-", "_")
+            check = subprocess.run(
+                [sys.executable, "-c", f"import {pkg_name}"],
+                capture_output=True, text=True, env=env, timeout=5,
+            )
+            if check.returncode == 0:
+                print(f"  ✓ {package} already installed, skipping")
+                continue
+
             print(f"  → Installing {package}...")
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "-q", package,
@@ -88,6 +110,12 @@ def install_common_packages():
             print(f"    ✗ {package} timeout")
         except Exception as e:
             print(f"    ✗ {package} error: {e}")
+
+    # Write marker on success
+    try:
+        marker.touch()
+    except Exception:
+        pass
 
 
 def verify_packages():

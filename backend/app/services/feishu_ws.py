@@ -93,8 +93,10 @@ class FeishuWSManager:
 
     def __init__(self):
         self._clients: Dict[uuid.UUID, ws.Client] = {}
-        # Tasks for reconnection or ping loops if we want to cancel them later
         self._tasks: Dict[uuid.UUID, asyncio.Task] = {}
+        # Connection status: "connecting" | "connected" | "disconnected"
+        self._status: Dict[uuid.UUID, str] = {}
+        self._MAX_RECONNECT_DELAY = 300  # 5 minutes max
 
     def _create_event_handler(self, agent_id: uuid.UUID) -> lark.EventDispatcherHandler:
         """Create an event dispatcher for a specific agent."""
@@ -256,29 +258,51 @@ class FeishuWSManager:
             else None
         )
 
-        # Direct Async runner bypassing the faulty client.start()
+        # Direct Async runner with exponential backoff reconnection
         async def _run_async_client():
-            try:
-                # Wrap _connect() in the scoped proxy bypass so macOS system proxy
-                # settings cannot interfere with the WebSocket handshake.
-                if _no_proxy_ctx:
-                    async with _no_proxy_ctx():
+            reconnect_delay = 5  # initial delay in seconds
+            while True:
+                self._status[agent_id] = "connecting"
+                try:
+                    if _no_proxy_ctx:
+                        async with _no_proxy_ctx():
+                            await client._connect()
+                    else:
                         await client._connect()
-                else:
-                    await client._connect()
-                # Start ping loop natively after connection is established
-                ping_task = asyncio.create_task(client._ping_loop())
-                
-                # Keep this task alive so it doesn't get canceled, and handle reconnections
-                while True:
-                    await asyncio.sleep(3600)  # Keep-alive
-            except asyncio.CancelledError:
-                logger.info(f"[Feishu WS] Async client task cancelled for {agent_id}")
-                await client._disconnect()
-            except Exception as e:
-                logger.exception(f"[Feishu WS] Async client exception for {agent_id}: {e}")
-                await client._disconnect()
-                self._clients.pop(agent_id, None)
+                    self._status[agent_id] = "connected"
+                    reconnect_delay = 5  # reset on success
+                    logger.info(f"[Feishu WS] Connected for agent {agent_id}")
+                    ping_task = asyncio.create_task(client._ping_loop())
+                    try:
+                        while True:
+                            await asyncio.sleep(3600)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"[Feishu WS] Connection lost for {agent_id}: {e}")
+                except asyncio.CancelledError:
+                    self._status[agent_id] = "disconnected"
+                    logger.info(f"[Feishu WS] Client task cancelled for {agent_id}")
+                    try:
+                        await client._disconnect()
+                    except Exception:
+                        pass
+                    return
+                except Exception as e:
+                    logger.error(f"[Feishu WS] Connect failed for {agent_id}: {e}")
+                    try:
+                        await client._disconnect()
+                    except Exception:
+                        pass
+                    # Exponential backoff: 5, 10, 20, 40, ... up to MAX
+                    logger.info(f"[Feishu WS] Reconnecting in {reconnect_delay}s for {agent_id}")
+                    self._status[agent_id] = "disconnected"
+                    try:
+                        await asyncio.sleep(reconnect_delay)
+                    except asyncio.CancelledError:
+                        self._status[agent_id] = "disconnected"
+                        return
+                    reconnect_delay = min(reconnect_delay * 2, self._MAX_RECONNECT_DELAY)
 
         task = asyncio.create_task(_run_async_client(), name=f"feishu-ws-async-{str(agent_id)[:8]}")
         self._tasks[agent_id] = task
@@ -286,6 +310,7 @@ class FeishuWSManager:
 
     async def stop_client(self, agent_id: uuid.UUID):
         """Stops an actively running WebSocket client for an agent."""
+        self._status[agent_id] = "disconnected"
         if agent_id in self._tasks:
             task = self._tasks.pop(agent_id)
             if not task.done():
@@ -327,9 +352,16 @@ class FeishuWSManager:
     def status(self) -> dict:
         """Return status of all active WS tasks."""
         return {
-            str(aid): not self._tasks[aid].done()
+            str(aid): {
+                "alive": not self._tasks[aid].done(),
+                "status": self._status.get(aid, "disconnected"),
+            }
             for aid in self._tasks
         }
+
+    def get_agent_status(self, agent_id: uuid.UUID) -> str:
+        """Return connection status for a single agent."""
+        return self._status.get(agent_id, "disconnected")
 
 
 feishu_ws_manager = FeishuWSManager()
