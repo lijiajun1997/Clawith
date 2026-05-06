@@ -3830,6 +3830,35 @@ select:focus {
   cursor: not-allowed;
 }
 
+/* Chat mode toggle buttons (web search / long task) */
+.chat-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+  user-select: none;
+}
+.chat-mode-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-color: var(--border-default);
+}
+.chat-mode-btn.active {
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent-primary) 40%, transparent);
+  color: var(--accent-text, var(--accent-primary));
+}
+
 /* Send: same as global .btn-primary (theme bg + primary-fg); icon uses currentColor */
 .chat-composer .btn.chat-composer-send {
   padding: 0;

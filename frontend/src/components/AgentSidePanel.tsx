@@ -29,6 +29,7 @@ interface Props {
     onWorkspaceToggleLock?: () => void;
     onWorkspaceEditingChange?: (editing: boolean) => void;
     onWorkspacePathDeleted?: (path: string) => void;
+    onWorkspaceInsertToChat?: (path: string) => void;
     awareContent?: ReactNode;
     agentId?: string;
     sessionId?: string;
@@ -62,6 +63,7 @@ export default function AgentSidePanel({
     onWorkspaceToggleLock,
     onWorkspaceEditingChange,
     onWorkspacePathDeleted,
+    onWorkspaceInsertToChat,
     awareContent,
     agentId,
     sessionId,
@@ -220,6 +222,7 @@ export default function AgentSidePanel({
                         onToggleLock={onWorkspaceToggleLock}
                         onEditingChange={onWorkspaceEditingChange}
                         onPathDeleted={onWorkspacePathDeleted}
+                        onInsertToChat={onWorkspaceInsertToChat}
                         activityOpen={workspaceActivityOpen}
                         onActivityToggle={setWorkspaceActivityOpen}
                     />

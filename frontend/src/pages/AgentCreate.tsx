@@ -81,7 +81,7 @@ export default function AgentCreate() {
         boundaries: '',
         primary_model_id: '' as string,
         fallback_model_id: '' as string,
-        permission_scope_type: 'company',
+        permission_scope_type: 'user',
         permission_access_level: 'use',
         permission_scope_ids: [] as string[],
         template_id: '' as string,
@@ -139,6 +139,43 @@ export default function AgentCreate() {
             }
         }
     }, [globalSkills]);
+
+    // Auto-fill default name from email prefix
+    useEffect(() => {
+        if (!form.name && currentUser?.email) {
+            const prefix = currentUser.email.split('@')[0];
+            setForm(prev => ({ ...prev, name: `${prefix}的助手` }));
+        }
+    }, [currentUser]);
+
+    // Auto-select first enabled model
+    useEffect(() => {
+        if (!form.primary_model_id && models.length > 0) {
+            const enabled = (models as any[]).filter((m: any) => m.enabled);
+            if (enabled.length > 0) {
+                setForm(prev => ({ ...prev, primary_model_id: enabled[enabled.length - 1].id }));
+            }
+        }
+    }, [models]);
+
+    // Auto-select "个人助手" template
+    useEffect(() => {
+        if (!form.template_id && templates.length > 0) {
+            const personalTemplate = (templates as any[]).find(
+                (t: any) => t.name === '个人助手' || t.name?.toLowerCase() === 'personal assistant'
+            );
+            if (personalTemplate) {
+                const sections = parseSoulTemplate(personalTemplate.soul_template || '', ['Personality', 'Boundaries']);
+                setForm(prev => ({
+                    ...prev,
+                    template_id: personalTemplate.id,
+                    role_description: personalTemplate.description || prev.role_description,
+                    personality: sections.personality || prev.personality,
+                    boundaries: sections.boundaries || prev.boundaries,
+                }));
+            }
+        }
+    }, [templates]);
 
     const createMutation = useMutation({
         mutationFn: async (data: any) => {

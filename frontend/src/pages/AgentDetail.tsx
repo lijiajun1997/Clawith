@@ -1467,14 +1467,14 @@ function AgentDetailInner() {
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(() => {
         if (hashTab && validTabs.includes(hashTab)) return hashTab;
-        if (window.innerWidth < 768) return 'chat';
-        return 'status';
+        return 'chat';
     });
 
     // Sync URL hash when tab changes
     const setActiveTab = (tab: string) => {
         setActiveTabRaw(tab);
         window.history.replaceState(null, '', `#${tab}`);
+        if (tab !== 'chat') setChatCompact(false);
     };
 
     const { data: agent, isLoading } = useQuery({
@@ -1588,6 +1588,9 @@ function AgentDetailInner() {
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
+    // Chat mode toggles: long task & web search prompt injection
+    const [longTaskMode, setLongTaskMode] = useState(false);
+    const [webSearchEnabled, setWebSearchEnabled] = useState(false);
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
@@ -1938,6 +1941,7 @@ function AgentDetailInner() {
     const workspaceLockedPathRef = useRef<string | null>(null);
     const [wsSessionId, setWsSessionId] = useState<string>('');
     const [sessionListCollapsed, setSessionListCollapsed] = useState(false);
+    const [chatCompact, setChatCompact] = useState(false);
     const { isMobile } = useIsMobile();
     const [mobileSessionMenu, setMobileSessionMenu] = useState(false);
 
@@ -1965,6 +1969,18 @@ function AgentDetailInner() {
         setAttachedFiles((prev) => prev.filter((file) => !(file.source === 'workspace_auto' && file.path === path)));
         setWorkspaceLockedPath((current) => current === path ? null : current);
     }, []);
+
+    const handleWorkspaceInsertToChat = useCallback(async (path: string) => {
+        if (!id) return;
+        const name = path.split('/').pop() || path;
+        try {
+            const res = await fileApi.read(id, path);
+            const text = res?.content || '';
+            setAttachedFiles(prev => [...prev, { name, text, path, source: 'workspace_auto' as const }]);
+        } catch {
+            setAttachedFiles(prev => [...prev, { name, text: '', path, source: 'workspace_auto' as const }]);
+        }
+    }, [id]);
 
     const [chatInput, setChatInput] = useState('');
     const [wsConnected, setWsConnected] = useState(false);
@@ -2559,6 +2575,16 @@ function AgentDetailInner() {
 
         let userMsg = chatInput.trim();
         let contentForLLM = userMsg;
+
+        // Inject mode prompts
+        const modePrefixes: string[] = [];
+        if (webSearchEnabled) modePrefixes.push('联网搜索');
+        if (longTaskMode) modePrefixes.push('你可以进行长链路工具调用，深入分析和处理用户的问题');
+        if (modePrefixes.length > 0) {
+            const prefix = modePrefixes.join('。') + '。';
+            contentForLLM = contentForLLM ? `${prefix}\n${contentForLLM}` : prefix;
+        }
+
         let displayFiles = '';
 
         if (attachedFiles.length > 0) {
@@ -3028,7 +3054,8 @@ function AgentDetailInner() {
     return (
         <>
             <div>
-                {/* Header */}
+                {/* Header — hidden in chat compact mode */}
+                {!(activeTab === 'chat' && chatCompact) && (
                 <div className="page-header">
                     {/* Mobile chat mode: simplified header with session buttons */}
                     {isMobile && activeTab === 'chat' ? (
@@ -3175,7 +3202,7 @@ function AgentDetailInner() {
                         </div>
                     </div>
                     <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-primary" onClick={() => setActiveTab('chat')}>{t('agent.actions.chat')}</button>
+                        <button className="btn btn-primary" onClick={() => { setActiveTab('chat'); setChatCompact(true); }}>{t('agent.actions.chat')}</button>
                         {(agent as any)?.agent_type !== 'openclaw' && (
                             <>
                                 {agent.status === 'stopped' ? (
@@ -3189,9 +3216,10 @@ function AgentDetailInner() {
                     </div>
                     )}
                 </div>
+                )}
 
-                {/* Tabs - hide on mobile when in chat mode */}
-                {!(isMobile && activeTab === 'chat') && (
+                {/* Tabs - hide on mobile chat mode or chat compact mode */}
+                {!(isMobile && activeTab === 'chat') && !(activeTab === 'chat' && chatCompact) && (
                 <div className="tabs">
                     {TABS.filter(tab => {
                         // Workspace tab: only show if user has permission
@@ -3211,6 +3239,12 @@ function AgentDetailInner() {
                         </div>
                     ))}
                 </div>
+                )}
+                {/* Compact mode expand button when on chat tab */}
+                {activeTab === 'chat' && !chatCompact && (
+                    <button onClick={() => setChatCompact(true)} style={{ position: 'absolute', top: '8px', right: '16px', zIndex: 20, width: '28px', height: '28px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', cursor: 'pointer' }} title="Maximize chat" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                    </button>
                 )}
 
                 {/* ── Enhanced Status Tab ── */}
@@ -4507,7 +4541,7 @@ function AgentDetailInner() {
                                 gap: 0,
                                 flex: 1,
                                 minHeight: 0,
-                                height: isMobile ? 'calc(100dvh - 52px)' : 'calc(100vh - 206px)',
+                                height: isMobile ? 'calc(100dvh - 52px)' : chatCompact ? 'calc(100vh - 32px)' : 'calc(100vh - 206px)',
                                 border: isMobile ? 'none' : '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
                                 borderRadius: isMobile ? '0' : '12px',
                                 overflow: 'hidden',
@@ -4781,6 +4815,12 @@ function AgentDetailInner() {
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
                                         </button>
                                     )}
+                                    {chatCompact && (
+                                        <button onClick={() => setChatCompact(false)} style={{ position: 'absolute', top: '12px', left: sessionListCollapsed ? '48px' : '12px', zIndex: 10, height: '28px', padding: '0 10px', borderRadius: '6px', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '12px' }} title="Show header & tabs" onMouseEnter={e => e.currentTarget.style.background='var(--bg-secondary)'} onMouseLeave={e => e.currentTarget.style.background='var(--bg-elevated)'}>
+                                            <span style={{ fontWeight: 500, maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{agent?.name || ''}</span>
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+                                        </button>
+                                    )}
                                 {!activeSession ? (
                                     <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-tertiary)', fontSize: '13px', flexDirection: 'column', gap: '8px' }}>
                                         <div>{t('agent.chat.noSessionSelected')}</div>
@@ -4993,6 +5033,7 @@ function AgentDetailInner() {
                                                 />
                                             </div>
                                             <div className="chat-composer-toolbar">
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                                                 <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
                                                 <button
                                                     type="button"
@@ -5009,6 +5050,44 @@ function AgentDetailInner() {
                                                     tenantDefaultId={myTenant?.default_model_id || null}
                                                     disabled={!wsConnected}
                                                 />
+                                                <button
+                                                    type="button"
+                                                    className={`chat-mode-btn${webSearchEnabled ? ' active' : ''}`}
+                                                    onClick={() => setWebSearchEnabled(v => !v)}
+                                                    title={webSearchEnabled ? t('chat.mode.webSearch.active', '联网搜索已开启') : t('chat.mode.webSearch.inactive', '开启联网搜索')}
+                                                >
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
+                                                    <span>{t('chat.mode.webSearch.label', '联网')}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className={`chat-mode-btn${longTaskMode ? ' active' : ''}`}
+                                                    onClick={() => setLongTaskMode(v => !v)}
+                                                    title={longTaskMode ? t('chat.mode.longTask.active', '长任务模式已开启') : t('chat.mode.longTask.inactive', '开启长任务模式：允许深度多步骤工具调用')}
+                                                >
+                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" /></svg>
+                                                    <span>{t('chat.mode.longTask.label', '长任务')}</span>
+                                                </button>
+                                                </div>
+                                                <div style={{ flex: 1 }} />
+                                                <button
+                                                    type="button"
+                                                    className="chat-composer-btn"
+                                                    onClick={() => {
+                                                        if (!livePanelVisible) {
+                                                            setSidePanelTab('workspace');
+                                                            setLivePanelVisible(true);
+                                                            setSessionListCollapsed(true);
+                                                            useAppStore.setState({ sidebarCollapsed: true });
+                                                        } else {
+                                                            setLivePanelVisible(false);
+                                                        }
+                                                    }}
+                                                    title={t('agent.workspace.title', 'Workspace')}
+                                                    style={{ color: livePanelVisible ? 'var(--accent-text, var(--accent-primary))' : undefined }}
+                                                >
+                                                    <IconFolder size={16} stroke={1.75} />
+                                                </button>
                                                 {(isStreaming || isWaiting) ? (
                                                     <button
                                                         type="button"
@@ -5068,6 +5147,7 @@ function AgentDetailInner() {
                                     onWorkspaceToggleLock={handleWorkspaceToggleLock}
                                     onWorkspaceEditingChange={handleWorkspaceEditingChange}
                                     onWorkspacePathDeleted={handleWorkspacePathDeleted}
+                                    onWorkspaceInsertToChat={handleWorkspaceInsertToChat}
                                     agentId={id}
                                     sessionId={wsSessionId}
                                     onLiveUpdate={(env, screenshotDataUri) => {

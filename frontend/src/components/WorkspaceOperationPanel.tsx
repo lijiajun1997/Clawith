@@ -49,6 +49,7 @@ interface Props {
     onToggleLock?: () => void;
     onEditingChange?: (editing: boolean) => void;
     onPathDeleted?: (path: string) => void;
+    onInsertToChat?: (path: string) => void;
     activityOpen?: boolean;
     onActivityToggle?: (open: boolean) => void;
 }
@@ -394,6 +395,7 @@ export default function WorkspaceOperationPanel({
     onToggleLock,
     onEditingChange,
     onPathDeleted,
+    onInsertToChat,
     activityOpen: activityOpenProp,
     onActivityToggle,
 }: Props) {
@@ -1148,6 +1150,18 @@ export default function WorkspaceOperationPanel({
                                 </svg>
                             </button>
                         </a>
+                    )}
+                    {activePath && onInsertToChat && (
+                        <button
+                            className="workspace-op-icon-btn"
+                            title="Insert to chat"
+                            aria-label="Insert to chat"
+                            onClick={() => onInsertToChat(activePath)}
+                        >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </button>
                     )}
                 </div>
             </div>

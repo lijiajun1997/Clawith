@@ -445,6 +445,8 @@ async def _heartbeat_tick():
                 t_result = await db.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
                 tenants_by_id = {t.id: t for t in t_result.scalars().all()}
 
+            DORMANT_THRESHOLD = timedelta(hours=48)
+
             triggered = 0
             for agent in agents:
                 # Skip expired agents
@@ -454,6 +456,10 @@ async def _heartbeat_tick():
                     agent.is_expired = True
                     agent.heartbeat_enabled = False
                     agent.status = "stopped"
+                    continue
+
+                # Skip dormant agents (no activity for 48 hours)
+                if agent.last_active_at and (now - agent.last_active_at) > DORMANT_THRESHOLD:
                     continue
 
                 # Resolve timezone

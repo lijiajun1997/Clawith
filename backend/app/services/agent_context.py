@@ -334,6 +334,7 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     try:
         from app.database import async_session
         from app.models.system_settings import SystemSetting
+        from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as sa_select
         async with async_session() as db:
             # Resolve agent's tenant_id
