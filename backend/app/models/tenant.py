@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Enum, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.schema import ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -52,4 +53,9 @@ class Tenant(Base):
     # A2A async communication (notify / task_delegate)
     # When False, all agent-to-agent messages use synchronous consult mode
     a2a_async_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Default LLM model for new agents in this tenant
+    default_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True
+    )
 

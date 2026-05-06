@@ -20,6 +20,13 @@ from app.models.workspace import WorkspaceEditLock, WorkspaceFileRevision
 
 USER_AUTOSAVE_MERGE_SECONDS = 60
 EDIT_LOCK_TTL_SECONDS = 90
+MAX_REVISION_TEXT_BYTES = 512 * 1024
+BINARY_REVISION_EXTENSIONS = {
+    ".7z", ".avif", ".bin", ".bmp", ".doc", ".docx", ".exe",
+    ".gif", ".gz", ".ico", ".jpeg", ".jpg", ".mov", ".mp3",
+    ".mp4", ".odp", ".ods", ".odt", ".pdf", ".png", ".ppt",
+    ".pptx", ".rar", ".tar", ".webp", ".xls", ".xlsx", ".zip",
+}
 
 
 @dataclass
@@ -61,11 +68,21 @@ def safe_agent_path(base: Path, path: str) -> Path:
 
 
 async def read_text_if_exists(path: Path) -> str | None:
-    """Read a UTF-8 text file if it exists; return None for missing files."""
+    """Read a UTF-8 text file if it exists; return None for missing/binary files."""
     if not path.exists() or not path.is_file():
         return None
-    async with aiofiles.open(path, "r", encoding="utf-8", errors="replace") as f:
-        return await f.read()
+    if path.suffix.lower() in BINARY_REVISION_EXTENSIONS:
+        return None
+    try:
+        if path.stat().st_size > MAX_REVISION_TEXT_BYTES:
+            return None
+    except OSError:
+        return None
+    async with aiofiles.open(path, "rb") as f:
+        data = await f.read()
+    if b"\x00" in data:
+        return None
+    return data.decode("utf-8", errors="replace")
 
 
 async def cleanup_expired_locks(db: AsyncSession) -> None:
@@ -163,9 +180,12 @@ async def record_revision(
 ) -> WorkspaceFileRevision | None:
     """Record a revision, optionally merging rapid user autosaves."""
     normalized = normalize_workspace_path(path)
+    # PostgreSQL text columns cannot store NUL bytes.
+    before_content = before_content.replace("\x00", "") if before_content is not None else None
+    after_content = after_content.replace("\x00", "") if after_content is not None else None
     before = before_content or ""
     after = after_content or ""
-    if before == after and operation != "delete":
+    if before == after and operation not in {"delete", "move_source", "move_destination"}:
         return None
 
     group_key = None

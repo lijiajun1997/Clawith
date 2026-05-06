@@ -272,9 +272,14 @@ class OpenAICompatibleClient(LLMClient):
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build request payload."""
+        formatted = [m.to_openai_format() for m in messages]
+        # Debug: log any reasoning_content in messages
+        for i, f in enumerate(formatted):
+            if "reasoning_content" in f:
+                logger.warning(f"[LLM] Message {i} (role={f['role']}) has reasoning_content ({len(f['reasoning_content'])} chars)")
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": [m.to_openai_format() for m in messages],
+            "messages": formatted,
             "stream": stream,
         }
         if temperature is not None:

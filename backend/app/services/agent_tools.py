@@ -40,6 +40,10 @@ from app.models.user import User as UserModel
 from app.services.auth_registry import auth_provider_registry
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
+from app.services.document_conversion import (
+    convert_html_to_pdf as convert_html_file_to_pdf,
+    convert_html_to_pptx as convert_html_file_to_pptx,
+)
 from app.config import get_settings
 
 
@@ -633,7 +637,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_document",
-            "description": "Read office documents (PDF, Word, Excel, PPT) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents when OCR is configured. Automatically saves parsed content as Markdown in workspace/converted/ for efficient subsequent reading. Use start/count for pagination on long documents.",
+            "description": "Read office documents (PDF, Word, Excel, PPT) and images (JPG, PNG, etc.) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents. For images: uses OCR when configured. Automatically saves parsed content as Markdown in workspace/converted/ for efficient subsequent reading. Use start/count for pagination on long documents.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1724,10 +1728,10 @@ async def _patch_call_model_description(tools: list[dict], agent_id: uuid.UUID) 
                     if models:
                         models_list_str = "\n".join(models)
                         new_desc = (
-                            f"调用自定义配置的大模型，支持OpenAI原生多模态格式。"
-                            f"文本文件引用使用{{{{file:/path/to/file.md}}}}，"
-                            f"图片使用images参数数组支持本地路径/URL/base64。"
-                            f"调用结果自动保存为MD文件。可用模型：\n{models_list_str}"
+                            f"调用配置的大模型。\n"
+                            f"【单次】传prompt和model_name，一次调用一个模型。支持图片(images)、会话续接(session_id)、文件引用({{{{file:path}}}})。\n"
+                            f"【并发】传calls数组，并行执行多个调用。顶层model_name/prompt/images为默认值，每项可覆盖。结果返回摘要+MD路径。\n"
+                            f"可用模型：\n{models_list_str}"
                         )
                         # 更新描述和参数提示
                         tool = copy.deepcopy(tool)
@@ -2518,6 +2522,10 @@ async def execute_tool(
         # ── File Conversion ──
         elif tool_name == "convert_markdown":
             result = await _convert_markdown(ws, arguments)
+        elif tool_name == "convert_html_to_pdf":
+            result = await _convert_html_to_pdf(agent_id, ws, arguments)
+        elif tool_name == "convert_html_to_pptx":
+            result = await _convert_html_to_pptx(agent_id, ws, arguments)
         # ── Unified Excel Advanced Tool ──
         elif tool_name == "excel_advanced":
             result = await excel_advanced(arguments, agent_id)
@@ -2933,6 +2941,32 @@ async def _convert_markdown(ws: Path, arguments: dict) -> str:
         return "❌ Conversion timed out"
     except Exception as e:
         return f"❌ Error: {str(e)[:200]}"
+
+
+async def _convert_html_to_pdf(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path:
+        return "❌ Missing 'source_path' or 'target_path'."
+    src_file = (ws / source_path).resolve()
+    tgt_file = (ws / target_path).resolve()
+    if not src_file.exists():
+        return f"❌ Source file not found: {source_path}"
+
+    return await convert_html_file_to_pdf(src_file, tgt_file, str(target_path), arguments)
+
+
+async def _convert_html_to_pptx(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
+    source_path = arguments.get("source_path")
+    target_path = arguments.get("target_path")
+    if not source_path or not target_path:
+        return "❌ Missing paths."
+    src_file = (ws / source_path).resolve()
+    tgt_file = (ws / target_path).resolve()
+    if not src_file.exists():
+        return "❌ Source file not found."
+
+    return await convert_html_file_to_pptx(src_file, tgt_file, str(target_path), ws, arguments)
 
 
 async def _exa_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
@@ -3876,8 +3910,27 @@ async def _read_document(
         elif ext in (".txt", ".md", ".json", ".csv", ".log"):
             content = file_path.read_text(encoding="utf-8", errors="replace")
 
+        elif ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"):
+            # Image OCR
+            ocr_config = await _load_ocr_config(agent_id)
+            if ocr_config.get("ocr_enabled") and ocr_config.get("ocr_url"):
+                try:
+                    from app.services.text_extractor import extract_text_with_ocr_if_needed
+                    extracted = await extract_text_with_ocr_if_needed(
+                        file_path.read_bytes(), file_path.name,
+                        use_ocr=True, ocr_config=ocr_config,
+                    )
+                    if extracted:
+                        content = extracted
+                    else:
+                        return f"❌ OCR did not extract text from {rel_path}. OCR service may be offline. Try call_model with vision as a fallback."
+                except Exception as e:
+                    return f"❌ OCR failed for {rel_path}: {e}. Try call_model with vision."
+            else:
+                return f"⚠️ {rel_path} is an image file. Enable OCR in Read File tool settings, or use call_model with vision."
+
         else:
-            return f"Unsupported format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV"
+            return f"Unsupported format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV, images (with OCR)"
 
         if not content or not content.strip():
             return "(Document is empty or text extraction failed)"
@@ -4587,32 +4640,55 @@ async def _send_feishu_message(agent_id: uuid.UUID, args: dict) -> str:
                 except Exception as e:
                     logger.error(f"[Feishu] Failed to save outgoing message to history: {e}")
 
+            # Collect all send attempts for final error reporting
+            _attempts: list[str] = []
+
             # Step 1: Try using feishu_user_id (tenant-stable, works across apps)
             if target_member.external_id:
                 resp = await _try_send(config.app_id, config.app_secret, target_member.external_id, "user_id")
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(target_member.external_id or target_member.open_id)
                     return f"✅ Successfully sent message to {member_name}"
+                _attempts.append(f"user_id({target_member.external_id[:8]}…): code={resp.get('code')}")
                 logger.info(f"❌ Failed to send message to {target_member.external_id} via Feishu (user_id): {resp}")
-                
-                # Fallback to open_id if user_id fails (e.g., due to missing employee_id:readonly permission)
+
+                # Fallback to open_id if user_id fails
                 if target_member.open_id:
                     resp_open = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
                     if resp_open.get("code") == 0:
                         await _save_outgoing_to_feishu_session(target_member.open_id)
                         return f"✅ Successfully sent message to {member_name}"
+                    _attempts.append(f"open_id({target_member.open_id[:8]}…): code={resp_open.get('code')}")
                     logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp_open}")
-                    return f"发送失败 (user_id: {resp.get('code')}, open_id: {resp_open.get('code')}): {resp_open.get('msg')}"
-                return f"发送失败 {resp}"
-            
+
             # Step 2: If no external_id, try open_id directly
             elif target_member.open_id:
                 resp = await _try_send(config.app_id, config.app_secret, target_member.open_id, "open_id")
                 if resp.get("code") == 0:
                     await _save_outgoing_to_feishu_session(target_member.open_id)
                     return f"✅ Successfully sent message to {member_name}"
+                _attempts.append(f"open_id({target_member.open_id[:8]}…): code={resp.get('code')}")
                 logger.info(f"❌ Failed to send message to {target_member.open_id} via Feishu (open_id): {resp}")
-                return f"发送失败 {resp}"
+
+            # Step 3: Resolve correct open_id via email/mobile (handles SSO app vs bot app mismatch)
+            resolved_oid = await feishu_service.resolve_open_id(
+                config.app_id, config.app_secret,
+                email=target_member.email, mobile=target_member.phone,
+            )
+            if resolved_oid:
+                resp = await _try_send(config.app_id, config.app_secret, resolved_oid, "open_id")
+                if resp.get("code") == 0:
+                    try:
+                        target_member.open_id = resolved_oid
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
+                    await _save_outgoing_to_feishu_session(resolved_oid)
+                    return f"✅ Successfully sent message to {member_name}"
+                _attempts.append(f"resolved_open_id({resolved_oid[:8]}…): code={resp.get('code')}")
+                logger.info(f"❌ Failed to send message to resolved open_id {resolved_oid}: {resp}")
+
+            return f"❌ 发送失败（{'; '.join(_attempts)}）。原因：open_id 可能属于其他应用，且无法通过邮箱/手机号解析。请确保该用户在飞书机器人应用中可被检索到。"
     except Exception as e:
         return f"❌ Message send error: {str(e)[:200]}"
 
@@ -10365,14 +10441,35 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
         logger.exception(f"[AgentBay] File transfer failed for agent {agent_id}")
 
 async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
-    """调用自定义模型工具 - 使用流式请求增强稳定性"""
+    """调用自定义模型工具 - 支持单次和并发(传入calls数组时自动并发)"""
+
+    # 读取工具配置
+    config = await _get_tool_config(agent_id, "call_model")
+    if not config or "base_url" not in config or "api_key" not in config or "models" not in config:
+        return json.dumps({
+            "success": False,
+            "error": "call_model tool not configured, please fill base_url, api_key and models in admin panel"
+        }, ensure_ascii=False)
+
+    model_name = arguments.get("model_name")
+    calls = arguments.get("calls")
+
+    if calls and isinstance(calls, list) and len(calls) > 0:
+        return await _execute_concurrent_calls(arguments, agent_id, config, model_name)
+    else:
+        return await _execute_single_call(arguments, agent_id, config, model_name)
+
+
+async def _execute_single_call(
+    arguments: dict, agent_id: uuid.UUID | None, config: dict, model_name: str | None
+) -> str:
+    """单次调用模型 - 保持原有逻辑"""
     from app.services.model_call.config import ModelConfig
     from app.services.model_call.streaming_handler import StreamingRequestHandler
     from app.services.model_call.session_manager import SessionManager
     from app.services.model_call.result_handler import ResultHandler
 
     try:
-        model_name = arguments.get("model_name")
         prompt = arguments.get("prompt")
         session_id = arguments.get("session_id")
         images = arguments.get("images", [])
@@ -10383,15 +10480,6 @@ async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -
                 "error": "model_name and prompt are required parameters"
             }, ensure_ascii=False)
 
-        # 读取工具配置
-        config = await _get_tool_config(agent_id, "call_model")
-        if not config or "base_url" not in config or "api_key" not in config or "models" not in config:
-            return json.dumps({
-                "success": False,
-                "error": "call_model tool not configured, please fill base_url, api_key and models in admin panel"
-            }, ensure_ascii=False)
-
-        # 直接构造模型配置
         model_config = ModelConfig(
             name=model_name,
             base_url=config["base_url"],
@@ -10399,68 +10487,53 @@ async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -
             description=""
         )
 
-        # 自动生成session_id
         if not session_id:
-            import uuid, random, string
+            import random, string
             session_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
 
-        # 构建OpenAI多模态格式消息
         if images:
-            # 有图片：构建content数组
             from app.services.model_call.multimodal_handler import MultimodalHandler
             content_array = [{"type": "text", "text": prompt}]
-
-            # 处理每个图片
             for image_source in images:
                 try:
                     image_content = MultimodalHandler.resolve_image_reference(image_source, agent_id)
                     content_array.append(image_content)
                 except Exception as e:
                     logger.warning(f"图片处理失败: {image_source}, 错误: {str(e)}")
-
             current_message = {"role": "user", "content": content_array}
         else:
-            # 纯文本消息
             current_message = {"role": "user", "content": prompt}
 
-        # 构建上下文消息
         context_messages = SessionManager.build_context_messages(session_id, [current_message])
 
-        # 构建请求体
         request_body = {
             "messages": context_messages,
             "temperature": 0.7,
             "model": model_name
         }
 
-        # 使用新的流式处理器（带重试和详细状态）
         handler = StreamingRequestHandler(model_config)
         result = await handler.stream_chat_completion(
             request_body=request_body,
             timeout=180,
             agent_id=str(agent_id),
-            max_retries=30  # 最多重试30次，增强网络稳定性
+            max_retries=30
         )
 
-        # 保存会话记录（需要转换格式）
         if result["success"]:
-            # 构造假的完整响应用于会话保存
             mock_response = {
                 "choices": [{
                     "message": {"role": "assistant", "content": result["content"]},
                     "finish_reason": result["finish_reason"]
                 }],
                 "model": model_name,
-                "usage": {"total_tokens": len(result["content"]) // 4}  # 估算token数
+                "usage": {"total_tokens": len(result["content"]) // 4}
             }
             SessionManager.save_interaction(session_id, context_messages, mock_response)
 
-            # 保存结果为MD文件
-            from app.services.model_call.result_handler import ResultHandler
             result_handler = ResultHandler(agent_id=str(agent_id))
             md_file_path = result_handler.save_result_as_md(mock_response, model_name)
 
-            # 构建成功响应
             response_data = {
                 "success": True,
                 "content": result["content"],
@@ -10471,17 +10544,13 @@ async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -
                 "retry_count": result["retry_count"],
                 "md_file_path": md_file_path
             }
-
-            # 添加性能指标（如果有）
             if result.get("first_byte_time"):
                 response_data["first_byte_time"] = f"{result['first_byte_time']:.2f}s"
             if result.get("chunk_count"):
                 response_data["chunk_count"] = result["chunk_count"]
 
             return json.dumps(response_data, ensure_ascii=False, indent=2)
-
         else:
-            # 失败响应
             return json.dumps({
                 "success": False,
                 "error": result.get("error", "Unknown error"),
@@ -10492,13 +10561,240 @@ async def _call_model_tool(arguments: dict, agent_id: uuid.UUID | None = None) -
             }, ensure_ascii=False, indent=2)
 
     except Exception as e:
-        # 捕获意外错误
         logger.exception(f"[call_model] 意外错误: {str(e)}")
         return json.dumps({
             "success": False,
             "error": str(e),
             "error_type": type(e).__name__,
             "suggestion": "意外错误，请检查配置和网络连接"
+        }, ensure_ascii=False)
+
+
+async def _execute_concurrent_calls(
+    arguments: dict, agent_id: uuid.UUID | None, config: dict, default_model_name: str | None
+) -> str:
+    """并发调用模型 - 公共配置 + 变量数组，并行执行"""
+    import random, string, time as _time
+    from app.services.model_call.config import ModelConfig
+    from app.services.model_call.streaming_handler import StreamingRequestHandler
+    from app.services.model_call.session_manager import SessionManager
+    from app.services.model_call.result_handler import ResultHandler
+
+    try:
+        calls = arguments.get("calls", [])
+        if not calls:
+            return json.dumps({
+                "success": False,
+                "error": "calls array is required in concurrent mode and must not be empty"
+            }, ensure_ascii=False)
+
+        if len(calls) > 20:
+            return json.dumps({
+                "success": False,
+                "error": f"calls array exceeds limit (max 20, got {len(calls)})"
+            }, ensure_ascii=False)
+
+        # 校验每项至少有 prompt 或顶层有 prompt
+        top_prompt = arguments.get("prompt")
+        for i, call in enumerate(calls):
+            if not call.get("prompt") and not top_prompt:
+                return json.dumps({
+                    "success": False,
+                    "error": f"calls[{i}] has no prompt and top-level prompt is not set"
+                }, ensure_ascii=False)
+
+        # 并发控制参数（从配置读取，不暴露给Agent）
+        max_concurrency = int(config.get("max_concurrency", 5))
+        max_concurrency = max(1, min(max_concurrency, 20))
+        overall_timeout = int(config.get("concurrent_timeout", 300))
+        overall_timeout = max(60, min(overall_timeout, 600))
+
+        default_images = arguments.get("images", [])
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def _run_single(index: int, call: dict) -> dict:
+            """执行单个并发调用"""
+            async with semaphore:
+                # 合并参数：call 优先，顶层兜底
+                effective_model = call.get("model_name") or default_model_name
+                effective_prompt = call.get("prompt") or top_prompt
+                effective_images = call.get("images", default_images)
+                effective_temperature = call.get("temperature", 0.7)
+                label = call.get("label", f"call_{index}")
+
+                if not effective_model or not effective_prompt:
+                    return {
+                        "label": label,
+                        "success": False,
+                        "error": "missing model_name or prompt after merge"
+                    }
+
+                try:
+                    session_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
+                    model_config = ModelConfig(
+                        name=effective_model,
+                        base_url=config["base_url"],
+                        api_key=config["api_key"],
+                        description=""
+                    )
+
+                    # 构建消息
+                    if effective_images:
+                        from app.services.model_call.multimodal_handler import MultimodalHandler
+                        content_array = [{"type": "text", "text": effective_prompt}]
+                        for img in effective_images:
+                            try:
+                                content_array.append(
+                                    MultimodalHandler.resolve_image_reference(img, agent_id)
+                                )
+                            except Exception as e:
+                                logger.warning(f"[concurrent] 图片处理失败: {img}, {e}")
+                        current_message = {"role": "user", "content": content_array}
+                    else:
+                        current_message = {"role": "user", "content": effective_prompt}
+
+                    context_messages = SessionManager.build_context_messages(session_id, [current_message])
+
+                    request_body = {
+                        "messages": context_messages,
+                        "temperature": effective_temperature,
+                        "model": effective_model
+                    }
+
+                    handler = StreamingRequestHandler(model_config)
+                    result = await handler.stream_chat_completion(
+                        request_body=request_body,
+                        timeout=180,
+                        agent_id=str(agent_id),
+                        max_retries=5  # 并发模式下降为5次重试
+                    )
+
+                    if result["success"]:
+                        # 保存会话
+                        mock_response = {
+                            "choices": [{
+                                "message": {"role": "assistant", "content": result["content"]},
+                                "finish_reason": result["finish_reason"]
+                            }],
+                            "model": effective_model,
+                            "usage": {"total_tokens": len(result["content"]) // 4}
+                        }
+                        SessionManager.save_interaction(session_id, context_messages, mock_response)
+
+                        # 保存 MD 文件
+                        result_handler = ResultHandler(agent_id=str(agent_id))
+                        md_file_path = result_handler.save_result_as_md(mock_response, effective_model)
+
+                        # 摘要截断：只返回前 500 字符
+                        full_content = result["content"]
+                        preview = full_content[:500]
+                        if len(full_content) > 500:
+                            preview += "...(use read_file to read full result)"
+
+                        return {
+                            "label": label,
+                            "success": True,
+                            "model": effective_model,
+                            "session_id": session_id,
+                            "content_preview": preview,
+                            "duration": f"{result['duration']:.2f}s",
+                            "md_file_path": md_file_path,
+                            "retry_count": result.get("retry_count", 0),
+                        }
+                    else:
+                        return {
+                            "label": label,
+                            "success": False,
+                            "model": effective_model,
+                            "error": result.get("error", "Unknown error"),
+                            "error_type": result.get("error_type"),
+                            "error_category": result.get("error_category"),
+                            "suggestion": result.get("suggestion"),
+                        }
+
+                except asyncio.CancelledError:
+                    return {
+                        "label": label,
+                        "success": False,
+                        "timed_out": True,
+                        "model": effective_model or "unknown",
+                        "error": "Task cancelled: overall timeout exceeded",
+                    }
+                except Exception as e:
+                    return {
+                        "label": label,
+                        "success": False,
+                        "model": effective_model or "unknown",
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    }
+
+        # 启动并发任务
+        start_time = _time.time()
+        tasks = [asyncio.create_task(_run_single(i, call)) for i, call in enumerate(calls)]
+
+        # 带总超时的等待
+        done, pending = await asyncio.wait(tasks, timeout=overall_timeout)
+
+        # 取消未完成的任务
+        timed_out_labels = []
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            # 从 task 获取 label（通过 call index 映射）
+            task_idx = tasks.index(task)
+            timed_out_labels.append(calls[task_idx].get("label", f"call_{task_idx}"))
+
+        # 收集结果
+        results = []
+        for task in done:
+            try:
+                results.append(task.result())
+            except Exception as e:
+                results.append({"label": "unknown", "success": False, "error": str(e)})
+
+        # 为超时任务构造结果
+        for lbl in timed_out_labels:
+            results.append({
+                "label": lbl,
+                "success": False,
+                "timed_out": True,
+                "error": f"Task cancelled: overall timeout ({overall_timeout}s) exceeded",
+            })
+
+        # 按 label 原始顺序排序（通过原始 calls 顺序）
+        label_order = {call.get("label", f"call_{i}"): i for i, call in enumerate(calls)}
+        results.sort(key=lambda r: label_order.get(r.get("label", ""), 999))
+
+        # 统计
+        total_duration = _time.time() - start_time
+        succeeded = sum(1 for r in results if r.get("success"))
+        failed = sum(1 for r in results if not r.get("success") and not r.get("timed_out"))
+        timed_out = sum(1 for r in results if r.get("timed_out"))
+
+        return json.dumps({
+            "success": succeeded > 0,
+            "mode": "concurrent",
+            "total": len(results),
+            "succeeded": succeeded,
+            "failed": failed,
+            "timed_out": timed_out,
+            "total_duration": f"{total_duration:.2f}s",
+            "timeout_limit": overall_timeout,
+            "results": results,
+        }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.exception(f"[call_model concurrent] 意外错误: {str(e)}")
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "suggestion": "并发模式意外错误，请检查配置和网络连接"
         }, ensure_ascii=False)
 
 

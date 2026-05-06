@@ -249,12 +249,24 @@ class AutonomyService:
                     if member and (member.external_id or member.open_id):
                         receive_id = member.external_id or member.open_id
                         id_type = "user_id" if member.external_id else "open_id"
-                        await feishu_service.send_message(
+                        msg_text = json.dumps({"text": f"[{agent.name}] executed: {action_type}"})
+                        resp = await feishu_service.send_message(
                             channel.app_id, channel.app_secret,
-                            receive_id, "text",
-                            json.dumps({"text": f"[{agent.name}] executed: {action_type}"}),
+                            receive_id, "text", msg_text,
                             receive_id_type=id_type,
                         )
+                        # Fallback: resolve open_id via email/mobile if direct send fails
+                        if resp.get("code") != 0 and member.email or member.phone:
+                            resolved = await feishu_service.resolve_open_id(
+                                channel.app_id, channel.app_secret,
+                                email=member.email, mobile=member.phone,
+                            )
+                            if resolved:
+                                await feishu_service.send_message(
+                                    channel.app_id, channel.app_secret,
+                                    resolved, "text", msg_text,
+                                    receive_id_type="open_id",
+                                )
 
     async def _request_approval(self, db: AsyncSession, agent: Agent,
                                  approval: ApprovalRequest) -> None:
@@ -303,13 +315,29 @@ class AutonomyService:
                     member = member_r.scalar_one_or_none()
                     if member and (member.external_id or member.open_id):
                         receive_id = member.external_id or member.open_id
-                        await feishu_service.send_approval_card(
-                            channel.app_id, channel.app_secret,
-                            receive_id,
-                            agent.name, approval.action_type,
-                            json.dumps(approval.details, ensure_ascii=False),
-                            str(approval.id),
-                        )
+                        try:
+                            await feishu_service.send_approval_card(
+                                channel.app_id, channel.app_secret,
+                                receive_id,
+                                agent.name, approval.action_type,
+                                json.dumps(approval.details, ensure_ascii=False),
+                                str(approval.id),
+                            )
+                        except Exception:
+                            # Fallback: resolve open_id via email/mobile
+                            if member.email or member.phone:
+                                resolved = await feishu_service.resolve_open_id(
+                                    channel.app_id, channel.app_secret,
+                                    email=member.email, mobile=member.phone,
+                                )
+                                if resolved:
+                                    await feishu_service.send_approval_card(
+                                        channel.app_id, channel.app_secret,
+                                        resolved,
+                                        agent.name, approval.action_type,
+                                        json.dumps(approval.details, ensure_ascii=False),
+                                        str(approval.id),
+                                    )
 
 
 autonomy_service = AutonomyService()
