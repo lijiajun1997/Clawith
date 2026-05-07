@@ -10,7 +10,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func as sqla_func, select
+from sqlalchemy import case, func as sqla_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_role
@@ -68,66 +68,56 @@ async def list_companies(
     db: AsyncSession = Depends(get_db),
 ):
     """List all companies with stats."""
-    tenants = await db.execute(select(Tenant).order_by(Tenant.created_at.desc()))
-    result = []
-
-    for tenant in tenants.scalars().all():
-        tid = tenant.id
-
-        # User count
-        uc = await db.execute(
-            select(sqla_func.count()).select_from(User).where(User.tenant_id == tid)
-        )
-        user_count = uc.scalar() or 0
-
-        # Agent count
-        ac = await db.execute(
-            select(sqla_func.count()).select_from(Agent).where(Agent.tenant_id == tid)
-        )
-        agent_count = ac.scalar() or 0
-
-        # Running agents
-        rc = await db.execute(
-            select(sqla_func.count()).select_from(Agent).where(
-                Agent.tenant_id == tid, Agent.status == "running"
-            )
-        )
-        agent_running = rc.scalar() or 0
-
-        # Total tokens
-        tc = await db.execute(
+    # Use correlated subqueries to avoid N+1 without Cartesian product
+    stats_q = await db.execute(
+        select(
+            Tenant.id,
+            Tenant.name,
+            Tenant.slug,
+            Tenant.is_active,
+            Tenant.sso_enabled,
+            Tenant.sso_domain,
+            Tenant.created_at,
+            select(sqla_func.count()).where(User.tenant_id == Tenant.id).scalar_subquery().label('user_count'),
+            select(sqla_func.count()).where(Agent.tenant_id == Tenant.id).scalar_subquery().label('agent_count'),
+            select(sqla_func.count()).where(
+                Agent.tenant_id == Tenant.id, Agent.status == "running"
+            ).scalar_subquery().label('agent_running'),
             select(sqla_func.coalesce(sqla_func.sum(Agent.tokens_used_total), 0)).where(
-                Agent.tenant_id == tid
-            )
+                Agent.tenant_id == Tenant.id
+            ).scalar_subquery().label('total_tokens'),
         )
-        total_tokens = tc.scalar() or 0
+        .order_by(Tenant.created_at.desc())
+    )
 
-        # Org Admin Email (first found if multiple)
-        admin_q = await db.execute(
-            select(Identity.email)
-            .join(User, Identity.id == User.identity_id)
-            .where(User.tenant_id == tid, User.role == "org_admin")
-            .order_by(User.created_at.asc())
-            .limit(1)
+    # Batch fetch org admin emails
+    admin_q = await db.execute(
+        select(User.tenant_id, Identity.email)
+        .join(Identity, Identity.id == User.identity_id)
+        .where(User.role == "org_admin")
+        .order_by(User.created_at.asc())
+    )
+    admin_by_tenant: dict[uuid.UUID, str] = {}
+    for row in admin_q.all():
+        admin_by_tenant.setdefault(row.tenant_id, row.email)
+
+    return [
+        CompanyStats(
+            id=row.id,
+            name=row.name,
+            slug=row.slug,
+            is_active=row.is_active,
+            sso_enabled=row.sso_enabled,
+            sso_domain=row.sso_domain,
+            created_at=row.created_at,
+            user_count=row.user_count,
+            agent_count=row.agent_count,
+            agent_running_count=row.agent_running,
+            total_tokens=row.total_tokens,
+            org_admin_email=admin_by_tenant.get(row.id),
         )
-        org_admin_email = admin_q.scalar()
-
-        result.append(CompanyStats(
-            id=tenant.id,
-            name=tenant.name,
-            slug=tenant.slug,
-            is_active=tenant.is_active,
-            sso_enabled=tenant.sso_enabled,
-            sso_domain=tenant.sso_domain,
-            created_at=tenant.created_at,
-            user_count=user_count,
-            agent_count=agent_count,
-            agent_running_count=agent_running,
-            total_tokens=total_tokens,
-            org_admin_email=org_admin_email,
-        ))
-
-    return result
+        for row in stats_q.all()
+    ]
 
 
 @router.post("/companies", response_model=CompanyCreateResponse, status_code=201)

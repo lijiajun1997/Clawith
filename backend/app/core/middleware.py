@@ -1,54 +1,83 @@
-"""FastAPI middleware for request tracing and logging."""
+"""FastAPI middleware for request tracing, logging, and timeout protection."""
 
+import asyncio
 import uuid
 import time
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
-from app.core.logging_config import set_trace_id, get_trace_id
+from app.core.logging_config import set_trace_id
 from loguru import logger
 
 
+# Global semaphore to limit concurrent blocking-I/O operations (file scans, subprocess, etc.)
+_io_semaphore: asyncio.Semaphore | None = None
+
+
+def get_io_semaphore() -> asyncio.Semaphore:
+    """Lazily create the I/O semaphore (must be called within an event loop)."""
+    global _io_semaphore
+    if _io_semaphore is None:
+        _io_semaphore = asyncio.Semaphore(16)
+    return _io_semaphore
+
+
+# Paths that should bypass the timeout (long-polling, WebSocket upgrade, streaming)
+_TIMEOUT_SKIP_PREFIXES = ("/ws/", "/api/ws/", "/api/agents/", "/health")
+_TIMEOUT_SKIP_EXACT = ("/api/health",)
+
+DEFAULT_REQUEST_TIMEOUT = 60.0  # seconds
+
+
 class TraceIdMiddleware(BaseHTTPMiddleware):
-    """Middleware to inject trace ID into request context and log requests."""
+    """Middleware: request tracing, logging, and global timeout protection."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # Generate or extract trace ID from header
         trace_id = request.headers.get("X-Trace-Id") or str(uuid.uuid4())[:12]
         set_trace_id(trace_id)
-
-        # Add trace ID to request state for access in endpoints
         request.state.trace_id = trace_id
 
         start_time = time.time()
-
-        # Log request
         client_host = request.client.host if request.client else "-"
-        logger.info(
-            f"--> {request.method} {request.url.path} "
-            f"[client: {client_host}]"
+        logger.info(f"--> {request.method} {request.url.path} [client: {client_host}]")
+
+        # Skip timeout for WebSocket and streaming endpoints
+        path = request.url.path
+        skip_timeout = path in _TIMEOUT_SKIP_EXACT or any(
+            path.startswith(p) and p not in ("/api/agents/",) for p in _TIMEOUT_SKIP_PREFIXES
         )
+        # WebSocket upgrade never gets a timeout
+        if request.headers.get("upgrade", "").lower() == "websocket":
+            skip_timeout = True
 
         try:
-            response = await call_next(request)
+            if skip_timeout:
+                response = await call_next(request)
+            else:
+                # Wrap with timeout — protects against hung DB queries, slow FS ops, etc.
+                response = await asyncio.wait_for(
+                    call_next(request),
+                    timeout=DEFAULT_REQUEST_TIMEOUT,
+                )
+
             duration = time.time() - start_time
-
-            # Add trace ID to response headers
             response.headers["X-Trace-Id"] = trace_id
-
-            # Log response
-            logger.info(
-                f"<-- {request.method} {request.url.path} "
-                f"{response.status_code} {duration:.3f}s"
-            )
-
+            logger.info(f"<-- {request.method} {request.url.path} {response.status_code} {duration:.3f}s")
             return response
 
+        except asyncio.TimeoutError:
+            duration = time.time() - start_time
+            logger.warning(
+                f"<-- {request.method} {request.url.path} TIMEOUT {duration:.1f}s [trace:{trace_id}]"
+            )
+            return JSONResponse(
+                status_code=504,
+                content={"detail": f"Request timed out after {DEFAULT_REQUEST_TIMEOUT}s"},
+                headers={"X-Trace-Id": trace_id},
+            )
         except Exception as exc:
             duration = time.time() - start_time
-            logger.error(
-                f"<-- {request.method} {request.url.path} "
-                f"ERROR {duration:.3f}s - {exc}"
-            )
+            logger.error(f"<-- {request.method} {request.url.path} ERROR {duration:.3f}s - {exc}")
             raise

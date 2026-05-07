@@ -637,7 +637,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_document",
-            "description": "Read office documents (PDF, Word, Excel, PPT) and images (JPG, PNG, etc.) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents. For images: uses OCR when configured. Automatically saves parsed content as Markdown in workspace/converted/ for efficient subsequent reading. Use start/count for pagination on long documents.",
+            "description": "Read office documents (PDF, Word, Excel, PPT) and images (JPG, PNG, etc.) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents. For images: uses OCR when configured. Automatically saves parsed content as Markdown in converted/ for efficient subsequent reading. Use start/count for pagination on long documents.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2928,16 +2928,17 @@ async def _convert_markdown(ws: Path, arguments: dict) -> str:
     type_name = "Word" if output_type == "docx" else "Excel"
 
     try:
-        result = subprocess.run(
-            [sys.executable, str(converter_script), str(input_file), str(output_file)],
-            capture_output=True,
-            text=True,
-            timeout=60,
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, str(converter_script), str(input_file), str(output_file),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
-            return f"❌ Conversion failed: {result.stderr[:500]}"
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode != 0:
+            return f"❌ Conversion failed: {stderr.decode(errors='replace')[:500]}"
         return f"✅ Converted to {type_name}: {output_path}"
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
+        proc.kill() if proc.returncode is None else None
         return "❌ Conversion timed out"
     except Exception as e:
         return f"❌ Error: {str(e)[:200]}"
@@ -3788,7 +3789,7 @@ def _save_converted_md(ws: Path, original_file: Path, content: str) -> str | Non
     md_path = _get_converted_md_path(ws, original_file)
     md_path.write_text(content, encoding="utf-8")
     total_lines = content.count("\n") + 1
-    md_rel = f"workspace/converted/{md_path.name}"
+    md_rel = f"converted/{md_path.name}"
     logger.info(f"[DocConvert] Saved: {md_rel} ({total_lines} lines)")
     return md_rel
 
@@ -3825,7 +3826,7 @@ async def _read_file(
             md_path = _get_converted_md_path(ws, file_path)
             if should_ocr and md_path.exists():
                 content = md_path.read_text(encoding="utf-8")
-                _ocr_md_rel = f"workspace/converted/{md_path.name}"
+                _ocr_md_rel = f"converted/{md_path.name}"
                 logger.info(f"[ReadFile] Using cached OCR: {md_path.name}")
             elif should_ocr and ocr_config.get("ocr_url"):
                 try:

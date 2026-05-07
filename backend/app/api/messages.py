@@ -53,29 +53,64 @@ async def get_inbox(
     )
     sessions = sessions_q.scalars().all()
 
-    result_list = []
-    for sess in sessions:
-        # Get latest messages from this session
-        msgs_q = await db.execute(
-            select(ChatMessage)
-            .where(ChatMessage.conversation_id == str(sess.id))
-            .order_by(ChatMessage.created_at.desc())
-            .limit(3)
-        )
-        for msg in msgs_q.scalars().all():
-            sender_name = "未知"
-            if msg.participant_id:
-                p_r = await db.execute(select(Participant.display_name).where(Participant.id == msg.participant_id))
-                sender_name = p_r.scalar_one_or_none() or "未知"
+    # Batch fetch latest 3 messages per session in one query (window function)
+    session_ids = [str(s.id) for s in sessions]
+    session_map = {str(s.id): s for s in sessions}
 
-            result_list.append({
-                "id": str(msg.id),
-                "sender_type": "agent",
-                "sender_name": sender_name,
-                "content": msg.content,
-                "session_title": sess.title,
-                "created_at": msg.created_at.isoformat() if msg.created_at else None,
-            })
+    # Use a subquery to get the latest 3 messages per conversation
+    from sqlalchemy import literal_column
+    msg_subq = (
+        select(
+            ChatMessage.id,
+            ChatMessage.content,
+            ChatMessage.conversation_id,
+            ChatMessage.participant_id,
+            ChatMessage.created_at,
+            func.row_number().over(
+                partition_by=ChatMessage.conversation_id,
+                order_by=ChatMessage.created_at.desc(),
+            ).label('rn'),
+        )
+        .where(ChatMessage.conversation_id.in_(session_ids))
+        .subquery()
+    )
+    msgs_q = await db.execute(
+        select(
+            msg_subq.c.id,
+            msg_subq.c.content,
+            msg_subq.c.conversation_id,
+            msg_subq.c.participant_id,
+            msg_subq.c.created_at,
+        )
+        .where(msg_subq.c.rn <= 3)
+        .order_by(msg_subq.c.created_at.desc())
+    )
+    msg_rows = msgs_q.all()
+
+    # Batch fetch all participant names
+    participant_ids = {row.participant_id for row in msg_rows if row.participant_id}
+    participant_map: dict = {}
+    if participant_ids:
+        p_q = await db.execute(
+            select(Participant.id, Participant.display_name)
+            .where(Participant.id.in_(participant_ids))
+        )
+        participant_map = {str(r.id): r.display_name for r in p_q.all()}
+
+    result_list = []
+    for row in msg_rows:
+        sess = session_map.get(row.conversation_id)
+        sender_name = "未知"
+        if row.participant_id:
+            sender_name = participant_map.get(str(row.participant_id), "未知")
+        result_list.append({
+            "id": str(row.id),
+            "sender_type": "agent",
+            "sender_name": sender_name,
+            "content": row.content,
+            "session_title": sess.title if sess else "",
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        })
 
     # Sort by created_at desc and limit
     result_list.sort(key=lambda x: x["created_at"] or "", reverse=True)

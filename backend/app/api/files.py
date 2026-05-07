@@ -1,6 +1,7 @@
 """File management API routes for agent workspaces."""
 
 import io
+import json
 import logging
 import os
 import re
@@ -20,6 +21,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.config import get_settings
+from app.core.events import get_redis
 from app.core.permissions import check_agent_access
 from app.core.security import get_current_user
 from app.database import get_db
@@ -305,59 +307,119 @@ def _collect_all_files(agent_id: uuid.UUID, base_dir: Path | None = None) -> lis
     return all_files
 
 
+async def _invalidate_recent_cache(agent_id: uuid.UUID) -> None:
+    """Delete the recent-files cache for an agent."""
+    try:
+        r = await get_redis()
+        await r.delete(f"recent_files:{agent_id}")
+    except Exception:
+        pass
+
+
+async def _get_recent_cached(agent_id: uuid.UUID) -> list[dict] | None:
+    """Return cached recent files list or None if cache miss."""
+    try:
+        r = await get_redis()
+        raw = await r.get(f"recent_files:{agent_id}")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return None
+
+
+async def _set_recent_cache(agent_id: uuid.UUID, files: list[dict], ttl: int = 30) -> None:
+    """Cache recent files list with TTL in seconds."""
+    try:
+        r = await get_redis()
+        await r.set(f"recent_files:{agent_id}", json.dumps(files), ex=ttl)
+    except Exception:
+        pass
+
+
 @router.get("/recent", response_model=dict)
 async def get_recent_files(
     agent_id: uuid.UUID,
-    limit: int = 10,
+    limit: int = 30,
     offset: int = 0,
-    exclude_code: bool = True,
+    exclude_code: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get recently modified files from agent workspace with pagination.
+    """Get recently modified files from agent workspace.
 
-    Query Parameters:
-        limit: Number of files per page (default: 10, max: 50)
-        offset: Offset for pagination (default: 0)
-        exclude_code: Whether to exclude code files (default: true)
-
-    Returns:
-        Dictionary with:
-        - files: list of FileInfo objects
-        - total: total number of files (after filtering)
-        - limit: page size
-        - offset: current offset
+    Redis-cached for 30s. Cache invalidated on file write/delete/upload.
+    File scanning runs in a thread pool to avoid blocking the event loop.
     """
     await check_agent_access(db, current_user, agent_id)
 
-    # Validate and clamp parameters
-    limit = min(max(1, limit), 50)  # Between 1 and 50
+    limit = min(max(1, limit), 100)
     offset = max(0, offset)
 
-    base = _agent_base_dir(agent_id)
+    # Try cache first
+    cached = await _get_recent_cached(agent_id)
+    if cached is not None:
+        all_files = cached
+    else:
+        from app.core.async_utils import run_sync
+        base = _agent_base_dir(agent_id)
+        raw = await run_sync(_collect_recent_files, base, agent_id, timeout=10)
+        all_files = [f.model_dump() for f in raw]
+        await _set_recent_cache(agent_id, all_files)
 
-    # Collect all files
-    all_files = _collect_all_files(agent_id, base)
-
-    # Filter out code files if requested
     if exclude_code:
-        all_files = [f for f in all_files if not _is_code_file(f.name)]
+        all_files = [f for f in all_files if not _is_code_file(f.get("name", ""))]
 
-    # Sort by modification time (newest first)
-    all_files.sort(key=lambda f: float(f.modified_at), reverse=True)
-
-    # Get total count
+    all_files.sort(key=lambda f: float(f.get("modified_at") or 0), reverse=True)
     total = len(all_files)
-
-    # Apply pagination
     paginated_files = all_files[offset:offset + limit]
 
     return {
         "files": paginated_files,
         "total": total,
         "limit": limit,
-        "offset": offset
+        "offset": offset,
     }
+
+
+def _collect_recent_files(base_dir: Path, agent_id: uuid.UUID) -> list[FileInfo]:
+    """Collect files from workspace root + one level of subdirectories only."""
+    base_abs = base_dir.resolve()
+    workspace = base_abs / "workspace"
+    files: list[FileInfo] = []
+
+    dirs_to_scan: list[Path] = [workspace] if workspace.is_dir() else []
+
+    # Add immediate subdirectories of workspace (depth=2 max)
+    if workspace.is_dir():
+        try:
+            for entry in workspace.iterdir():
+                if entry.is_dir() and entry.name not in ('.git', 'node_modules', '__pycache__', '.venv'):
+                    dirs_to_scan.append(entry)
+        except OSError:
+            pass
+
+    for scan_dir in dirs_to_scan:
+        try:
+            for entry in scan_dir.iterdir():
+                if entry.is_file() and entry.name != '.gitkeep':
+                    try:
+                        rel = str(entry.resolve().relative_to(base_abs)).replace("\\", "/")
+                        stat = entry.stat()
+                        files.append(FileInfo(
+                            name=entry.name,
+                            path=rel,
+                            is_dir=False,
+                            size=stat.st_size,
+                            modified_at=str(stat.st_mtime),
+                            url=f"/api/agents/{agent_id}/files/download?path={rel}",
+                        ))
+                    except (OSError, ValueError):
+                        continue
+        except OSError:
+            continue
+
+    return files
 
 
 @router.get("/", response_model=list[FileInfo])
@@ -721,6 +783,7 @@ async def write_file(
     except Exception as e:
         logger.warning(f"[FileWrite] Failed to send WebSocket notification: {e}")
 
+    await _invalidate_recent_cache(agent_id)
     return {"status": "ok", "path": result.path, "revision_id": result.revision_id}
 
 
@@ -833,6 +896,7 @@ async def delete_file(
     else:
         target.unlink()
 
+    await _invalidate_recent_cache(agent_id)
     return {"status": "ok", "path": path}
 
 
@@ -883,6 +947,7 @@ async def import_skill_to_agent(
         file_path.write_text(f.content, encoding="utf-8")
         written.append(f.path)
 
+    await _invalidate_recent_cache(agent_id)
     return {
         "status": "ok",
         "skill_name": skill.name,
@@ -1104,6 +1169,7 @@ async def upload_file_to_workspace(
             base_abs = base.resolve()
             extracted_path = str(txt_file.resolve().relative_to(base_abs))
 
+    await _invalidate_recent_cache(agent_id)
     return {
         "status": "ok",
         "path": f"{path}/{filename}",

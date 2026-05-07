@@ -159,7 +159,8 @@ async def upload_file(
         image_data_url = f"data:{mime};base64,{b64}"
         extracted = f"[图片文件: {file.filename}，需要视觉模型分析]"
     elif ext in EXTRACTABLE:
-        extracted = extract_text(save_path, ext)
+        from app.core.async_utils import run_sync
+        extracted = await run_sync(extract_text, save_path, ext, timeout=30)
     else:
         extracted = f"[文件已保存，格式 {ext} 暂不支持文本提取，Agent 可通过 read_document 工具读取]"
 

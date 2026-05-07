@@ -196,6 +196,14 @@ function markdownToHtml(md: string): string {
     return html;
 }
 
+function isFileLink(url: string): boolean {
+    // Relative paths or workspace-prefixed paths that refer to workspace files
+    if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('//')) return false;
+    if (url.startsWith('/api/')) return false;
+    if (url.startsWith('#') || url.startsWith('mailto:')) return false;
+    return true;
+}
+
 /**
  * Renders inline Markdown (bold, italic, code, links, images) with FULL protection
  * of link/image text content from other inline rules.
@@ -221,7 +229,8 @@ function renderInline(text: string): string {
                 }
             }
             const idx = protectedSegments.length;
-            protectedSegments.push(`<a href="${finalUrl}" target="_blank"><img src="${finalUrl}" alt="${safeAlt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
+            const fileAttr = isFileLink(url) ? ` data-file-link="${escapeHtml(url)}}"` : '';
+            protectedSegments.push(`<a href="${finalUrl}" target="_blank"${fileAttr}><img src="${finalUrl}" alt="${safeAlt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
             return `\x00IMG${idx}\x00`;
         })
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
@@ -234,7 +243,8 @@ function renderInline(text: string): string {
                 }
             }
             const idx = protectedSegments.length;
-            protectedSegments.push(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;text-underline-offset:2px">${linkText}</a>`);
+            const fileAttr = isFileLink(url) ? ` data-file-link="${escapeHtml(url)}"` : '';
+            protectedSegments.push(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;text-underline-offset:2px"${fileAttr}>${linkText}</a>`);
             return `\x00LINK${idx}\x00`;
         });
 
@@ -265,15 +275,33 @@ interface MarkdownRendererProps {
     content: string;
     style?: React.CSSProperties;
     className?: string;
+    /** Called when user clicks a relative link to a workspace file. */
+    onFileLink?: (path: string) => void;
 }
 
-export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className }: MarkdownRendererProps) {
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, style, className, onFileLink }: MarkdownRendererProps) {
     const html = useMemo(() => markdownToHtml(content), [content]);
+
+    const handleClick = onFileLink
+        ? (e: React.MouseEvent<HTMLDivElement>) => {
+              const target = e.target as HTMLElement;
+              const anchor = target.closest('a[data-file-link]') as HTMLAnchorElement | null;
+              if (!anchor) return;
+              const filePath = anchor.getAttribute('data-file-link');
+              if (filePath) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onFileLink(filePath);
+              }
+          }
+        : undefined;
+
     return (
         <div
             className={className}
             style={{ lineHeight: 1.6, fontSize: 'inherit', ...style, wordBreak: 'break-word' }}
             dangerouslySetInnerHTML={{ __html: html }}
+            onClick={handleClick}
         />
     );
 });

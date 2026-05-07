@@ -1056,6 +1056,7 @@ function SkillsTab() {
     const [savingToken, setSavingToken] = useState(false);
     const [clawhubKeyInput, setClawhubKeyInput] = useState('');
     const [savingClawhubKey, setSavingClawhubKey] = useState(false);
+    const [skillsView, setSkillsView] = useState<'registry' | 'deployment'>('registry');
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setToast({ message, type });
@@ -1143,6 +1144,25 @@ function SkillsTab() {
 
     return (
         <div>
+            {/* Sub-view toggle */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center' }}>
+                {(['registry', 'deployment'] as const).map(key => (
+                    <button key={key} onClick={() => setSkillsView(key)} style={{
+                        padding: '6px 16px', borderRadius: '20px', fontSize: '13px', fontWeight: 500,
+                        cursor: 'pointer', border: 'none',
+                        background: skillsView === key ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                        color: skillsView === key ? '#fff' : 'var(--text-secondary)',
+                        transition: 'all 0.15s',
+                    }}>
+                        {t(`enterprise.skillDeployment.${key}`)}
+                    </button>
+                ))}
+            </div>
+
+            {skillsView === 'deployment' ? (
+                <SkillsDeploymentView />
+            ) : (
+            <>
             <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
                     <h3>{t('enterprise.tabs.skills', 'Skill Registry')}</h3>
@@ -1581,11 +1601,386 @@ function SkillsTab() {
                     </div>
                 </div>
             )}
+            </>
+            )}
         </div>
     );
 }
 
 
+
+
+// ─── Skills Deployment View ──────────────────────────
+function SkillsDeploymentView() {
+    const { t } = useTranslation();
+    const [data, setData] = useState<{
+        skills: any[];
+        agents: any[];
+    } | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
+    const [showModal, setShowModal] = useState<'deploy' | 'undeploy' | null>(null);
+    const [modalAgentIds, setModalAgentIds] = useState<string[]>([]);
+    const [agentSearch, setAgentSearch] = useState('');
+    const [operating, setOperating] = useState(false);
+    const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+    const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 4000);
+    };
+
+    const loadData = async () => {
+        setLoading(true);
+        try {
+            const result = await skillApi.deployment.status();
+            setData(result);
+        } catch (e: any) {
+            showToast(e.message || 'Failed to load deployment status', 'error');
+        }
+        setLoading(false);
+    };
+
+    useEffect(() => { loadData(); }, []);
+
+    const selected = data?.skills.find(s => s.id === selectedSkill);
+
+    const handleDeploy = async () => {
+        if (!selectedSkill || modalAgentIds.length === 0) return;
+        setOperating(true);
+        try {
+            const result = await skillApi.deployment.deploy({ skill_id: selectedSkill, agent_ids: modalAgentIds });
+            showToast(t('enterprise.skillDeployment.deploySuccess', {
+                skill: selected?.name || '',
+                count: result.deployed,
+            }));
+            setShowModal(null);
+            loadData();
+        } catch (e: any) {
+            showToast(e.message || 'Deploy failed', 'error');
+        }
+        setOperating(false);
+    };
+
+    const handleUpdate = async (skillId: string, agentIds: string[]) => {
+        setOperating(true);
+        try {
+            const sk = data?.skills.find(s => s.id === skillId);
+            const result = await skillApi.deployment.update({ skill_id: skillId, agent_ids: agentIds });
+            showToast(t('enterprise.skillDeployment.updateSuccess', {
+                skill: sk?.name || '',
+                count: result.updated,
+            }));
+            loadData();
+        } catch (e: any) {
+            showToast(e.message || 'Update failed', 'error');
+        }
+        setOperating(false);
+    };
+
+    const handleUpdateAll = async () => {
+        if (!data) return;
+        setOperating(true);
+        try {
+            let totalUpdated = 0;
+            for (const skill of data.skills) {
+                const outdatedAgents = skill.agent_deployments
+                    .filter((d: any) => d.deployed && d.is_latest === false)
+                    .map((d: any) => d.agent_id);
+                if (outdatedAgents.length > 0) {
+                    const result = await skillApi.deployment.update({ skill_id: skill.id, agent_ids: outdatedAgents });
+                    totalUpdated += result.updated;
+                }
+            }
+            showToast(t('enterprise.skillDeployment.updateAllSuccess'));
+            loadData();
+        } catch (e: any) {
+            showToast(e.message || 'Update failed', 'error');
+        }
+        setOperating(false);
+    };
+
+    const handleUndeploy = async () => {
+        if (!selectedSkill || modalAgentIds.length === 0) return;
+        setOperating(true);
+        try {
+            const result = await skillApi.deployment.undeploy({ skill_id: selectedSkill, agent_ids: modalAgentIds });
+            showToast(t('enterprise.skillDeployment.removeSuccess', {
+                skill: selected?.name || '',
+                count: result.removed,
+            }));
+            setShowModal(null);
+            loadData();
+        } catch (e: any) {
+            showToast(e.message || 'Remove failed', 'error');
+        }
+        setOperating(false);
+    };
+
+    if (loading) {
+        return (
+            <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                {t('enterprise.skillDeployment.loading')}
+            </div>
+        );
+    }
+
+    if (!data || data.skills.length === 0) {
+        return (
+            <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                {t('enterprise.skillDeployment.noSkills')}
+            </div>
+        );
+    }
+
+    const hasOutdated = data.skills.some(s =>
+        s.agent_deployments.some((d: any) => d.deployed && d.is_latest === false)
+    );
+
+    const filteredAgents = data.agents.filter((a: any) =>
+        !agentSearch || a.name.toLowerCase().includes(agentSearch.toLowerCase())
+    );
+
+    const statusIcon = (deployed: boolean, isLatest: boolean | null, isDefault: boolean) => {
+        if (!deployed) return <span style={{ color: 'var(--text-quaternary)', fontSize: '16px' }}>&mdash;</span>;
+        if (isLatest === false) return (
+            <span style={{ color: 'var(--warning, #ff9f0a)', fontSize: '14px', fontWeight: 700, cursor: 'pointer' }}
+                title={t('enterprise.skillDeployment.outdated')}>⚠</span>
+        );
+        return (
+            <span style={{ color: 'var(--success, #34c759)', fontSize: '14px', fontWeight: 700 }}
+                title={isDefault ? t('enterprise.skillDeployment.defaultSkill') : t('enterprise.skillDeployment.latest')}>✓</span>
+        );
+    };
+
+    return (
+        <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <p style={{ fontSize: '13px', color: 'var(--text-tertiary)', margin: 0 }}>
+                    {t('enterprise.skillDeployment.deploymentDesc')}
+                </p>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                    {hasOutdated && (
+                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={handleUpdateAll} disabled={operating}>
+                            {operating ? t('enterprise.skillDeployment.updating') : t('enterprise.skillDeployment.updateAll')}
+                        </button>
+                    )}
+                    {selectedSkill && (
+                        <>
+                            <button className="btn btn-primary" style={{ fontSize: '12px' }}
+                                onClick={() => {
+                                    setModalAgentIds([]);
+                                    setAgentSearch('');
+                                    setShowModal('deploy');
+                                }}>
+                                {t('enterprise.skillDeployment.deployTo')}
+                            </button>
+                            {!selected?.is_default && (
+                                <button className="btn btn-danger" style={{ fontSize: '12px' }}
+                                    onClick={() => {
+                                        const deployed = selected?.agent_deployments
+                                            ?.filter((d: any) => d.deployed)
+                                            .map((d: any) => d.agent_id) || [];
+                                        setModalAgentIds(deployed);
+                                        setAgentSearch('');
+                                        setShowModal('undeploy');
+                                    }}>
+                                    {t('enterprise.skillDeployment.removeFrom')}
+                                </button>
+                            )}
+                        </>
+                    )}
+                </div>
+            </div>
+
+            {/* Deployment matrix table */}
+            <div style={{ overflowX: 'auto' }}>
+                <div style={{ minWidth: data.agents.length > 5 ? `${300 + data.agents.length * 100}px` : '100%' }}>
+                    {/* Header row */}
+                    <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: `220px repeat(${data.agents.length}, minmax(80px, 1fr)) 100px`,
+                        gap: '0', padding: '8px 12px', fontSize: '11px', fontWeight: 600,
+                        color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em',
+                        borderBottom: '1px solid var(--border-subtle)',
+                    }}>
+                        <div>{t('enterprise.skillDeployment.skillName')}</div>
+                        {data.agents.map((a: any) => (
+                            <div key={a.id} style={{ textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                title={a.name}>
+                                {a.name}
+                            </div>
+                        ))}
+                        <div>{t('enterprise.skillDeployment.actions')}</div>
+                    </div>
+
+                    {/* Skill rows */}
+                    {data.skills.map((skill: any) => {
+                        const isSelected = selectedSkill === skill.id;
+                        const deployedCount = skill.agent_deployments.filter((d: any) => d.deployed).length;
+                        return (
+                            <div key={skill.id} onClick={() => setSelectedSkill(isSelected ? null : skill.id)} style={{
+                                display: 'grid',
+                                gridTemplateColumns: `220px repeat(${data.agents.length}, minmax(80px, 1fr)) 100px`,
+                                gap: '0', padding: '10px 12px', alignItems: 'center',
+                                background: isSelected ? 'var(--accent-subtle, rgba(59,130,246,0.08))' : 'transparent',
+                                borderBottom: '1px solid var(--border-subtle)',
+                                cursor: 'pointer', transition: 'background 0.15s',
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
+                                    <span style={{ fontSize: '16px' }}>{skill.icon || '📋'}</span>
+                                    <span style={{ fontWeight: 500, fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {skill.name}
+                                    </span>
+                                    {skill.is_default && (
+                                        <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '4px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)' }}>
+                                            {t('enterprise.skillDeployment.defaultSkill')}
+                                        </span>
+                                    )}
+                                    {/* Default toggle */}
+                                    <label onClick={e => e.stopPropagation()} style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer', flexShrink: 0 }} title={skill.is_default ? t('enterprise.tools.unsetDefault', '取消默认') : t('enterprise.tools.setDefault', '设为默认')}>
+                                        <input type="checkbox" checked={skill.is_default} onChange={async (e) => {
+                                            try {
+                                                await skillApi.update(skill.id, { is_default: e.target.checked });
+                                                showToast(t('enterprise.skillDeployment.defaultSkill') + (e.target.checked ? ' ✓' : ' ✗'));
+                                                loadData();
+                                            } catch (err: any) {
+                                                showToast(err.message || 'Failed', 'error');
+                                            }
+                                        }} style={{ opacity: 0, width: 0, height: 0, position: 'absolute' }} />
+                                        <span style={{ position: 'relative', display: 'inline-block', width: '32px', height: '16px', background: skill.is_default ? 'var(--success, #34c759)' : 'var(--bg-tertiary)', borderRadius: '8px', transition: 'background 0.2s' }}>
+                                            <span style={{ position: 'absolute', left: skill.is_default ? '16px' : '2px', top: '2px', width: '12px', height: '12px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                        </span>
+                                    </label>
+                                </div>
+                                {skill.agent_deployments.map((dep: any) => (
+                                    <div key={dep.agent_id} style={{ textAlign: 'center' }}>
+                                        {statusIcon(dep.deployed, dep.is_latest, skill.is_default)}
+                                    </div>
+                                ))}
+                                <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                                    {deployedCount > 0 && (
+                                        <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '2px 8px', minWidth: 'auto' }}
+                                            onClick={(e) => { e.stopPropagation(); handleUpdate(skill.id, skill.agent_deployments.filter((d: any) => d.deployed).map((d: any) => d.agent_id)); }}
+                                            disabled={operating} title={t('enterprise.skillDeployment.latest')}>
+                                            ↻
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {/* Agent selector modal */}
+            {showModal && selected && (
+                <div style={{
+                    position: 'fixed', inset: 0, zIndex: 9999,
+                    background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }} onClick={() => setShowModal(null)}>
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: '12px', width: '480px', maxHeight: '70vh',
+                        display: 'flex', flexDirection: 'column', border: '1px solid var(--border-default)',
+                        boxShadow: '0 16px 48px rgba(0,0,0,0.2)',
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ padding: '20px 24px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                <h3 style={{ margin: 0, fontSize: '15px' }}>
+                                    {showModal === 'deploy'
+                                        ? t('enterprise.skillDeployment.modalTitle', { name: selected.name })
+                                        : t('enterprise.skillDeployment.removeFrom') + ' ' + selected.name}
+                                </h3>
+                                <button className="btn btn-ghost" onClick={() => setShowModal(null)}
+                                    style={{ padding: '4px 8px', fontSize: '16px', lineHeight: 1 }}>x</button>
+                            </div>
+                            <input className="input" placeholder={t('enterprise.skillDeployment.searchAgents')}
+                                value={agentSearch} onChange={e => setAgentSearch(e.target.value)}
+                                style={{ width: '100%', fontSize: '13px' }} />
+                        </div>
+                        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 24px' }}>
+                            {filteredAgents.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
+                                    {t('enterprise.skillDeployment.noAgentsFound')}
+                                </div>
+                            ) : (
+                                <>
+                                    <div style={{ marginBottom: '8px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                        <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <input type="checkbox" checked={modalAgentIds.length === filteredAgents.length}
+                                                onChange={() => setModalAgentIds(
+                                                    modalAgentIds.length === filteredAgents.length
+                                                        ? []
+                                                        : filteredAgents.map((a: any) => a.id)
+                                                )} />
+                                            {t('enterprise.skillDeployment.selectAll')}
+                                        </label>
+                                    </div>
+                                    {filteredAgents.map((agent: any) => {
+                                        const dep = selected.agent_deployments.find((d: any) => d.agent_id === agent.id);
+                                        const checked = modalAgentIds.includes(agent.id);
+                                        const statusColor = agent.status === 'running' ? 'var(--success, #34c759)'
+                                            : agent.status === 'idle' ? 'var(--warning, #ff9f0a)'
+                                            : 'var(--text-tertiary)';
+                                        return (
+                                            <label key={agent.id} style={{
+                                                display: 'flex', alignItems: 'center', gap: '10px',
+                                                padding: '8px 0', borderBottom: '1px solid var(--border-subtle)',
+                                                cursor: 'pointer', fontSize: '13px',
+                                            }}>
+                                                <input type="checkbox" checked={checked}
+                                                    onChange={() => setModalAgentIds(prev =>
+                                                        checked ? prev.filter(id => id !== agent.id) : [...prev, agent.id]
+                                                    )} />
+                                                <span style={{ fontWeight: 500 }}>{agent.name}</span>
+                                                <span style={{ fontSize: '11px', color: statusColor }}>
+                                                    {agent.status}
+                                                </span>
+                                                {showModal === 'deploy' && dep?.deployed && (
+                                                    <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                                                        {dep.is_latest ? t('enterprise.skillDeployment.latest') : t('enterprise.skillDeployment.outdated')}
+                                                    </span>
+                                                )}
+                                            </label>
+                                        );
+                                    })}
+                                </>
+                            )}
+                        </div>
+                        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                            <button className="btn btn-secondary" onClick={() => setShowModal(null)} style={{ fontSize: '13px' }}>
+                                {t('enterprise.skillDeployment.cancel')}
+                            </button>
+                            <button className="btn btn-primary"
+                                disabled={modalAgentIds.length === 0 || operating}
+                                onClick={showModal === 'deploy' ? handleDeploy : handleUndeploy}
+                                style={{ fontSize: '13px' }}>
+                                {operating
+                                    ? (showModal === 'deploy' ? t('enterprise.skillDeployment.deploying') : t('enterprise.skillDeployment.removing'))
+                                    : (showModal === 'deploy'
+                                        ? `${t('enterprise.skillDeployment.deployTo')} (${modalAgentIds.length})`
+                                        : `${t('enterprise.skillDeployment.removeFrom')} (${modalAgentIds.length})`)}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Toast */}
+            {toast && (
+                <div style={{
+                    position: 'fixed', bottom: '24px', right: '24px', zIndex: 10000,
+                    padding: '12px 20px', borderRadius: '8px', fontSize: '13px', fontWeight: 500,
+                    background: toast.type === 'error' ? 'rgba(255,59,48,0.95)' : 'rgba(52,199,89,0.95)',
+                    color: '#fff', boxShadow: '0 4px 16px rgba(0,0,0,0.2)', maxWidth: '400px',
+                    animation: 'fadeIn 200ms ease',
+                }}>
+                    {toast.message}
+                </div>
+            )}
+        </div>
+    );
+}
 
 
 // ─── Company Name Editor ───────────────────────────
@@ -1928,7 +2323,11 @@ export default function EnterpriseSettings() {
         }
         setCompanyConfigSaving(false);
     };
-    const [auditFilter, setAuditFilter] = useState<'all' | 'background' | 'actions'>('all');
+    const [auditFilter, setAuditFilter] = useState<'all' | 'background' | 'actions' | 'chat'>('all');
+    const [chatLogUserFilter, setChatLogUserFilter] = useState('');
+    const [chatLogAgentFilter, setChatLogAgentFilter] = useState('');
+    const [chatLogPage, setChatLogPage] = useState(1);
+    const [expandedChats, setExpandedChats] = useState<Set<string>>(new Set());
     const [infoRefresh, setInfoRefresh] = useState(0);
     const [kbPromptModal, setKbPromptModal] = useState(false);
     const [kbToast, setKbToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -2217,6 +2616,28 @@ export default function EnterpriseSettings() {
         if (auditFilter === 'background') return BG_ACTIONS.includes(log.action);
         if (auditFilter === 'actions') return !BG_ACTIONS.includes(log.action);
         return true;
+    });
+
+    // ─── Chat Logs (Conversation Audit)
+    const chatLogParams = new URLSearchParams({ page: String(chatLogPage), page_size: '20' });
+    if (selectedTenantId) chatLogParams.set('tenant_id', selectedTenantId);
+    if (chatLogUserFilter) chatLogParams.set('user_id', chatLogUserFilter);
+    if (chatLogAgentFilter) chatLogParams.set('agent_id', chatLogAgentFilter);
+    const { data: chatLogsData } = useQuery({
+        queryKey: ['chat-logs', selectedTenantId, chatLogUserFilter, chatLogAgentFilter, chatLogPage],
+        queryFn: () => fetchJson<{ items: any[]; total: number; page: number; page_size: number }>(`/enterprise/chat-logs?${chatLogParams.toString()}`),
+        enabled: activeTab === 'audit' && auditFilter === 'chat',
+    });
+    // Users & agents for chat log filter dropdowns
+    const { data: chatLogUsers = [] } = useQuery({
+        queryKey: ['chat-log-users', selectedTenantId],
+        queryFn: () => fetchJson<any[]>(`/users/${selectedTenantId ? `?tenant_id=${selectedTenantId}` : ''}`),
+        enabled: activeTab === 'audit' && auditFilter === 'chat',
+    });
+    const { data: chatLogAgents = [] } = useQuery({
+        queryKey: ['chat-log-agents', selectedTenantId],
+        queryFn: () => agentApi.list(selectedTenantId || undefined),
+        enabled: activeTab === 'audit' && auditFilter === 'chat',
     });
 
     return (
@@ -2577,6 +2998,7 @@ export default function EnterpriseSettings() {
                                 ['all', t('enterprise.audit.filterAll')],
                                 ['background', t('enterprise.audit.filterBackground')],
                                 ['actions', t('enterprise.audit.filterActions')],
+                                ['chat', t('enterprise.audit.filterChat')],
                             ] as const).map(([key, label]) => (
                                 <button key={key}
                                     onClick={() => setAuditFilter(key as any)}
@@ -2590,38 +3012,136 @@ export default function EnterpriseSettings() {
                                 >{label}</button>
                             ))}
                             <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-tertiary)', alignSelf: 'center' }}>
-                                {t('enterprise.audit.records', { count: filteredAuditLogs.length })}
+                                {auditFilter === 'chat'
+                                    ? t('enterprise.audit.records', { count: chatLogsData?.total ?? 0 })
+                                    : t('enterprise.audit.records', { count: filteredAuditLogs.length })
+                                }
                             </span>
                         </div>
-                        {/* Log entries */}
-                        {filteredAuditLogs.map((log: any) => {
-                            const isBg = BG_ACTIONS.includes(log.action);
-                            const details = log.details && typeof log.details === 'object' && Object.keys(log.details).length > 0 ? log.details : null;
-                            return (
-                                <div key={log.id} style={{ borderBottom: '1px solid var(--border-subtle)', padding: '6px 12px' }}>
-                                    <div style={{ display: 'flex', gap: '12px', fontSize: '13px', alignItems: 'center' }}>
-                                        <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
-                                            {new Date(log.created_at).toLocaleString()}
-                                        </span>
-                                        <span style={{
-                                            padding: '1px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 500,
-                                            background: isBg ? 'rgba(99,102,241,0.12)' : 'rgba(34,197,94,0.12)',
-                                            color: isBg ? 'var(--accent-color)' : 'rgb(34,197,94)',
-                                        }}>{isBg ? '⚙️' : '👤'}</span>
-                                        <span style={{ flex: 1, fontWeight: 500 }}>{log.action}</span>
-                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.agent_id?.slice(0, 8) || '-'}</span>
-                                    </div>
-                                    {details && (
-                                        <div style={{ marginLeft: '100px', marginTop: '2px', fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
-                                            {Object.entries(details).map(([k, v]) => (
-                                                <span key={k} style={{ marginRight: '12px' }}>{k}={typeof v === 'string' ? v : JSON.stringify(v)}</span>
-                                            ))}
-                                        </div>
+
+                        {/* ── Chat Logs View ── */}
+                        {auditFilter === 'chat' ? (
+                            <>
+                                {/* Filter dropdowns */}
+                                <div style={{ display: 'flex', gap: '12px', padding: '8px 12px', borderBottom: '1px solid var(--border-subtle)' }}>
+                                    <select className="form-input" style={{ width: 'auto', minWidth: '160px', fontSize: '12px' }}
+                                        value={chatLogUserFilter}
+                                        onChange={e => { setChatLogUserFilter(e.target.value); setChatLogPage(1); }}
+                                    >
+                                        <option value="">{t('enterprise.audit.chatAllUsers')}</option>
+                                        {chatLogUsers.map((u: any) => (
+                                            <option key={u.id} value={u.id}>{u.display_name || u.username || u.email}</option>
+                                        ))}
+                                    </select>
+                                    <select className="form-input" style={{ width: 'auto', minWidth: '160px', fontSize: '12px' }}
+                                        value={chatLogAgentFilter}
+                                        onChange={e => { setChatLogAgentFilter(e.target.value); setChatLogPage(1); }}
+                                    >
+                                        <option value="">{t('enterprise.audit.chatAllAgents')}</option>
+                                        {chatLogAgents.map((a: any) => (
+                                            <option key={a.id} value={a.id}>{a.name}</option>
+                                        ))}
+                                    </select>
+                                    {(chatLogUserFilter || chatLogAgentFilter) && (
+                                        <button className="btn btn-ghost" style={{ fontSize: '12px', padding: '2px 8px' }}
+                                            onClick={() => { setChatLogUserFilter(''); setChatLogAgentFilter(''); setChatLogPage(1); setExpandedChats(new Set()); }}
+                                        >✕</button>
                                     )}
                                 </div>
-                            );
-                        })}
-                        {filteredAuditLogs.length === 0 && <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.noData')}</div>}
+                                {/* Chat log entries — Q&A pairs from backend */}
+                                {(() => {
+                                    const items = chatLogsData?.items ?? [];
+                                    const total = chatLogsData?.total ?? 0;
+                                    const curPage = chatLogsData?.page ?? 1;
+                                    const totalPages = Math.max(1, Math.ceil(total / (chatLogsData?.page_size ?? 20)));
+                                    if (items.length === 0) return <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.noData')}</div>;
+                                    return (<>
+                                        {items.map((item: any) => {
+                                            const expanded = expandedChats.has(item.id);
+                                            const qText = item.question || '';
+                                            const aText = item.answer || '';
+                                            const qShort = qText.length > 150;
+                                            const aShort = aText.length > 300;
+                                            const ts = item.created_at ? new Date(item.created_at).toLocaleString() : '';
+                                            return (
+                                                <div key={item.id} style={{ borderBottom: '1px solid var(--border-subtle)', padding: '10px 12px' }}>
+                                                    {/* Header: time + user name + agent */}
+                                                    <div style={{ display: 'flex', gap: '8px', fontSize: '11px', alignItems: 'center', marginBottom: '6px', color: 'var(--text-tertiary)' }}>
+                                                        <span style={{ fontFamily: 'var(--font-mono)' }}>{ts}</span>
+                                                        <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{item.user_display_name || '-'}</span>
+                                                        <span style={{ color: 'var(--text-tertiary)' }}>→</span>
+                                                        <span>{item.agent_name || '-'}</span>
+                                                    </div>
+                                                    {/* Q */}
+                                                    <div style={{ fontSize: '12px', lineHeight: '1.6', wordBreak: 'break-word' }}>
+                                                        <span style={{ color: 'rgb(34,197,94)', fontWeight: 600, marginRight: '6px' }}>Q:</span>
+                                                        <span>{(!expanded && qShort) ? qText.slice(0, 150) + '...' : qText}</span>
+                                                        {qShort && <button onClick={() => setExpandedChats(prev => { const s = new Set(prev); expanded ? s.delete(item.id) : s.add(item.id); return s; })} style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--accent-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>{expanded ? t('enterprise.audit.collapse', '收起') : t('enterprise.audit.expand', '展开')}</button>}
+                                                    </div>
+                                                    {/* A */}
+                                                    {aText && (
+                                                        <div style={{ fontSize: '12px', lineHeight: '1.6', wordBreak: 'break-word', background: 'var(--bg-secondary)', borderRadius: '6px', padding: '8px 10px', marginTop: '6px' }}>
+                                                            <span style={{ color: 'var(--accent-color)', fontWeight: 600, marginRight: '6px' }}>A:</span>
+                                                            <span>{(!expanded && aShort) ? aText.slice(0, 300) + '...' : aText}</span>
+                                                            {aShort && <button onClick={() => setExpandedChats(prev => { const s = new Set(prev); expanded ? s.delete(item.id) : s.add(item.id); return s; })} style={{ marginLeft: '6px', fontSize: '11px', color: 'var(--accent-primary)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>{expanded ? t('enterprise.audit.collapse', '收起') : t('enterprise.audit.expand', '展开')}</button>}
+                                                            {/* Tool badges */}
+                                                            {item.tools?.length > 0 && (
+                                                                <div style={{ marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center' }}>
+                                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>🔧</span>
+                                                                    {item.tools.map((name: string) => (
+                                                                        <span key={name} style={{ padding: '1px 8px', borderRadius: '4px', fontSize: '10px', fontWeight: 500, background: 'rgba(234,179,8,0.12)', color: 'rgb(234,179,8)', lineHeight: '18px' }}>{name}</span>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                        {/* Pagination */}
+                                        {totalPages > 1 && (
+                                            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', padding: '12px' }}>
+                                                <button className="btn btn-ghost" style={{ fontSize: '12px' }} disabled={curPage <= 1} onClick={() => setChatLogPage(p => p - 1)}>← {t('enterprise.audit.prevPage', '上一页')}</button>
+                                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>{curPage} / {totalPages}（{total} 条）</span>
+                                                <button className="btn btn-ghost" style={{ fontSize: '12px' }} disabled={curPage >= totalPages} onClick={() => setChatLogPage(p => p + 1)}>{t('enterprise.audit.nextPage', '下一页')} →</button>
+                                            </div>
+                                        )}
+                                    </>);
+                                })()}
+                            </>
+                        ) : (
+                            <>
+                                {/* Original audit log entries */}
+                                {filteredAuditLogs.map((log: any) => {
+                                    const isBg = BG_ACTIONS.includes(log.action);
+                                    const details = log.details && typeof log.details === 'object' && Object.keys(log.details).length > 0 ? log.details : null;
+                                    return (
+                                        <div key={log.id} style={{ borderBottom: '1px solid var(--border-subtle)', padding: '6px 12px' }}>
+                                            <div style={{ display: 'flex', gap: '12px', fontSize: '13px', alignItems: 'center' }}>
+                                                <span style={{ color: 'var(--text-tertiary)', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                                                    {new Date(log.created_at).toLocaleString()}
+                                                </span>
+                                                <span style={{
+                                                    padding: '1px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 500,
+                                                    background: isBg ? 'rgba(99,102,241,0.12)' : 'rgba(34,197,94,0.12)',
+                                                    color: isBg ? 'var(--accent-color)' : 'rgb(34,197,94)',
+                                                }}>{isBg ? '⚙️' : '👤'}</span>
+                                                <span style={{ flex: 1, fontWeight: 500 }}>{log.action}</span>
+                                                <span style={{ color: 'var(--text-tertiary)', fontSize: '11px' }}>{log.agent_id?.slice(0, 8) || '-'}</span>
+                                            </div>
+                                            {details && (
+                                                <div style={{ marginLeft: '100px', marginTop: '2px', fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+                                                    {Object.entries(details).map(([k, v]) => (
+                                                        <span key={k} style={{ marginRight: '12px' }}>{k}={typeof v === 'string' ? v : JSON.stringify(v)}</span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                                {filteredAuditLogs.length === 0 && <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.noData')}</div>}
+                            </>
+                        )}
                     </div>
                 )}
 
@@ -3538,6 +4058,16 @@ Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for c
                                                                                         {tool.type === 'mcp' ? 'MCP' : 'Built-in'}
                                                                                     </span>
                                                                                     {tool.is_default && <span style={{ fontSize: '10px', background: 'rgba(0,200,100,0.15)', color: 'var(--success)', borderRadius: '4px', padding: '1px 5px' }}>Default</span>}
+                                                                                    {/* Default toggle */}
+                                                                                    <label style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '11px', color: 'var(--text-tertiary)' }} title={tool.is_default ? t('enterprise.skillDeployment.defaultSkill') : t('enterprise.tools.setDefault', 'Set as default')}>
+                                                                                        <input type="checkbox" checked={tool.is_default} onChange={async (e) => {
+                                                                                            await fetchJson(`/tools/${tool.id}`, { method: 'PUT', body: JSON.stringify({ is_default: e.target.checked }) });
+                                                                                            loadAllTools();
+                                                                                        }} style={{ opacity: 0, width: 0, height: 0, position: 'absolute' }} />
+                                                                                        <span style={{ position: 'relative', display: 'inline-block', width: '32px', height: '16px', background: tool.is_default ? 'var(--success, #34c759)' : 'var(--bg-tertiary)', borderRadius: '8px', transition: 'background 0.2s', flexShrink: 0 }}>
+                                                                                            <span style={{ position: 'absolute', left: tool.is_default ? '16px' : '2px', top: '2px', width: '12px', height: '12px', background: '#fff', borderRadius: '50%', transition: 'left 0.2s' }} />
+                                                                                        </span>
+                                                                                    </label>
                                                                                     {tool.config && Object.keys(tool.config).length > 0 && (
                                                                                         <span style={{ fontSize: '10px', background: 'rgba(99,102,241,0.15)', color: 'var(--accent-color)', borderRadius: '4px', padding: '1px 5px' }}>{t('enterprise.tools.configured', 'Configured')}</span>
                                                                                     )}

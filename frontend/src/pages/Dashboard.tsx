@@ -8,7 +8,7 @@ import {
     LineChart, Line, CartesianGrid, AreaChart, Area,
 } from 'recharts';
 import { agentApi, taskApi, activityApi, fetchJson, enterpriseApi } from '../services/api';
-import type { Agent, Task } from '../types';
+import type { Agent, Task, DashboardSummary } from '../types';
 
 /* ────── Color Palette ────── */
 const STATUS_COLORS: Record<string, string> = {
@@ -350,17 +350,13 @@ function TaskPipeline({ tasks }: { tasks: Task[] }) {
 
 /* ────── Activity Type Pie ────── */
 
-function ActivityTypePie({ activities }: { activities: any[] }) {
-    const data = useMemo(() => {
-        const counts: Record<string, number> = {};
-        activities.forEach(a => {
-            const type = a.action_type || 'other';
-            counts[type] = (counts[type] || 0) + 1;
-        });
-        return Object.entries(counts)
-            .map(([type, count]) => ({ name: type.replace(/_/g, ' '), type, count }))
-            .sort((a, b) => b.count - a.count);
-    }, [activities]);
+function ActivityTypePie({ typeCounts }: { typeCounts: { action_type: string; count: number }[] }) {
+    const data = useMemo(() =>
+        typeCounts
+            .map(d => ({ name: d.action_type.replace(/_/g, ' '), type: d.action_type, count: d.count }))
+            .sort((a, b) => b.count - a.count),
+        [typeCounts],
+    );
 
     if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
 
@@ -393,26 +389,24 @@ function ActivityTypePie({ activities }: { activities: any[] }) {
 
 /* ────── Hourly Activity Trend (24h line chart) ────── */
 
-function ActivityTrendChart({ activities }: { activities: any[] }) {
+function ActivityTrendChart({ hourlyTrend }: { hourlyTrend: { hour: string; count: number }[] }) {
     const data = useMemo(() => {
         const now = new Date();
         const hours: { hour: string; count: number }[] = [];
-        // Build 24 hourly buckets
         for (let i = 23; i >= 0; i--) {
             const h = new Date(now.getTime() - i * 3600000);
             const label = `${h.getHours().toString().padStart(2, '0')}:00`;
             hours.push({ hour: label, count: 0 });
         }
-        activities.forEach(act => {
-            if (!act.created_at) return;
-            const t = new Date(act.created_at);
+        hourlyTrend.forEach(item => {
+            const t = new Date(item.hour);
             const diffH = Math.floor((now.getTime() - t.getTime()) / 3600000);
             if (diffH >= 0 && diffH < 24) {
-                hours[23 - diffH].count++;
+                hours[23 - diffH].count += item.count;
             }
         });
         return hours;
-    }, [activities]);
+    }, [hourlyTrend]);
 
     const maxCount = Math.max(1, ...data.map(d => d.count));
 
@@ -446,12 +440,11 @@ const CHANNEL_NAMES: Record<string, string> = {
     feishu: '飞书', web: 'Web', dingtalk: '钉钉', wecom: '企微', other: '其他',
 };
 
-function ConversationStatsChart({ activities, range }: { activities: any[]; range: number }) {
+function ConversationStatsChart({ channelDaily, range }: { channelDaily: { date: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[]; range: number }) {
     const data = useMemo(() => {
         const now = new Date();
-        const days = range;
         const buckets: { _key: string; day: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[] = [];
-        for (let i = days - 1; i >= 0; i--) {
+        for (let i = range - 1; i >= 0; i--) {
             const d = new Date(now.getTime() - i * 86400000);
             const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
             buckets.push({
@@ -460,18 +453,18 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
                 feishu: 0, web: 0, dingtalk: 0, wecom: 0, other: 0,
             });
         }
-        activities.forEach(act => {
-            if (act.action_type !== 'chat_reply' || !act.created_at) return;
-            const actDate = new Date(act.created_at);
-            const key = `${actDate.getFullYear()}-${(actDate.getMonth() + 1).toString().padStart(2, '0')}-${actDate.getDate().toString().padStart(2, '0')}`;
-            const b = buckets.find(bk => bk._key === key);
-            if (!b) return;
-            const ch = act.detail?.channel || act.detail_json?.channel || 'other';
-            const validCh = ['feishu', 'web', 'dingtalk', 'wecom'].includes(ch) ? ch : 'other';
-            (b as any)[validCh]++;
+        channelDaily.forEach(item => {
+            const b = buckets.find(bk => bk._key === item.date);
+            if (b) {
+                b.feishu += item.feishu;
+                b.web += item.web;
+                b.dingtalk += item.dingtalk;
+                b.wecom += item.wecom;
+                b.other += item.other;
+            }
         });
         return buckets;
-    }, [activities, range]);
+    }, [channelDaily, range]);
 
     const channels = ['feishu', 'web', 'dingtalk', 'wecom', 'other'];
 
@@ -497,7 +490,7 @@ function ConversationStatsChart({ activities, range }: { activities: any[]; rang
 /* ────── Token By Agent (horizontal bar with day/month toggle) ────── */
 /* ────── File Delivery Trend (send_channel_file per day) ────── */
 
-function FileDeliveryChart({ activities, dailyStats, range }: { activities: any[]; dailyStats: any[]; range: number }) {
+function FileDeliveryChart({ dailyStats, range }: { dailyStats: { date: string; action_type: string; detail_tool: string | null; count: number }[]; range: number }) {
     const data = useMemo(() => {
         const now = new Date();
         const buckets: { _key: string; day: string; deliveries: number }[] = [];
@@ -510,26 +503,14 @@ function FileDeliveryChart({ activities, dailyStats, range }: { activities: any[
                 deliveries: 0,
             });
         }
-        // Prefer server-side aggregated stats
-        const deliveryStats = dailyStats.filter(s => s.action_type === 'tool_call' && s.detail_tool === 'send_channel_file');
-        if (deliveryStats.length > 0) {
-            deliveryStats.forEach(s => {
-                const b = buckets.find(bk => bk._key === s.date);
-                if (b) b.deliveries += s.count;
-            });
-        } else {
-            // Fallback: count from raw activities
-            activities.forEach(a => {
-                if (a.action_type !== 'tool_call' || !a.created_at) return;
-                if (a.detail?.tool !== 'send_channel_file') return;
-                const actDate = new Date(a.created_at);
-                const key = `${actDate.getFullYear()}-${(actDate.getMonth() + 1).toString().padStart(2, '0')}-${actDate.getDate().toString().padStart(2, '0')}`;
-                const b = buckets.find(bk => bk._key === key);
-                if (b) b.deliveries++;
-            });
-        }
+        // Use server-side aggregated stats
+        dailyStats.forEach(s => {
+            if (s.action_type !== 'tool_call' || s.detail_tool !== 'send_channel_file') return;
+            const b = buckets.find(bk => bk._key === s.date);
+            if (b) b.deliveries += s.count;
+        });
         return buckets;
-    }, [activities, dailyStats, range]);
+    }, [dailyStats, range]);
 
     const total = data.reduce((s, d) => s + d.deliveries, 0);
 
@@ -671,29 +652,21 @@ function TokenConsumptionChart({ data }: { data: { date: string; tokens: number 
 
 const RANK_COLORS = ['#fbbf24', '#94a3b8', '#cd7f32']; // gold, silver, bronze
 
-function AgentActivityRankChart({ agents, activities, timeRange }: {
-    agents: Agent[]; activities: any[]; timeRange: 'day' | 'week' | 'month';
+function AgentActivityRankChart({ agents, agentRank, timeRange }: {
+    agents: Agent[]; agentRank: { agent_id: string; agent_name: string; count_day: number; count_week: number; count_month: number }[]; timeRange: 'day' | 'week' | 'month';
 }) {
     const data = useMemo(() => {
-        const now = Date.now();
-        const rangeMs = timeRange === 'day' ? 86400000 : timeRange === 'week' ? 604800000 : 2592000000;
-        const agentActCount: Record<string, number> = {};
-        activities.forEach(a => {
-            if (!a.created_at || !a.agent_id) return;
-            if ((now - new Date(a.created_at).getTime()) < rangeMs) {
-                agentActCount[a.agent_id] = (agentActCount[a.agent_id] || 0) + 1;
-            }
-        });
-        return [...agents]
-            .map(a => ({
-                id: a.id,
-                name: a.name.length > 8 ? a.name.slice(0, 8) + '..' : a.name,
-                count: agentActCount[a.id] || 0,
+        const countKey = timeRange === 'day' ? 'count_day' : timeRange === 'week' ? 'count_week' : 'count_month';
+        return agentRank
+            .map(r => ({
+                id: r.agent_id,
+                name: r.agent_name.length > 8 ? r.agent_name.slice(0, 8) + '..' : r.agent_name,
+                count: r[countKey],
             }))
             .filter(a => a.count > 0)
             .sort((a, b) => b.count - a.count)
             .slice(0, 8);
-    }, [agents, activities, timeRange]);
+    }, [agents, agentRank, timeRange]);
 
     if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
 
@@ -726,26 +699,15 @@ function AgentActivityRankChart({ agents, activities, timeRange }: {
 
 /* ────── Tool Call Statistics (per-tool calls + success rate) ────── */
 
-function ToolStatsChart({ activities }: { activities: any[] }) {
-    const data = useMemo(() => {
-        const toolStats: Record<string, { calls: number; success: number }> = {};
-        activities.forEach(a => {
-            if (a.action_type !== 'tool_call') return;
-            const toolName = a.detail?.tool || 'unknown';
-            if (!toolStats[toolName]) toolStats[toolName] = { calls: 0, success: 0 };
-            toolStats[toolName].calls++;
-            const result = a.detail?.result || '';
-            if (!result.startsWith('❌')) toolStats[toolName].success++;
-        });
-        return Object.entries(toolStats)
-            .map(([tool, s]) => ({
-                tool: tool.length > 14 ? tool.slice(0, 14) + '..' : tool,
-                calls: s.calls,
-                success: s.calls > 0 ? Math.round((s.success / s.calls) * 100) : 0,
-            }))
-            .sort((a, b) => b.calls - a.calls)
-            .slice(0, 10);
-    }, [activities]);
+function ToolStatsChart({ toolStats }: { toolStats: { tool: string; calls: number; success: number }[] }) {
+    const data = useMemo(() =>
+        toolStats.map(s => ({
+            tool: s.tool.length > 14 ? s.tool.slice(0, 14) + '..' : s.tool,
+            calls: s.calls,
+            success: s.calls > 0 ? Math.round((s.success / s.calls) * 100) : 100,
+        })),
+        [toolStats],
+    );
 
     if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
 
@@ -835,22 +797,17 @@ const CH_LABELS: Record<string, string> = {
     task_updated: '任务更新', file_written: '文件写入', plaza_post: '广场发布',
 };
 
-function ChannelActivityChart({ activities }: { activities: any[] }) {
-    const data = useMemo(() => {
-        const counts: Record<string, number> = {};
-        activities.forEach(a => {
-            const ch = a.action_type;
-            const label = CH_LABELS[ch] || '其他';
-            counts[label] = (counts[label] || 0) + 1;
-        });
-        return Object.entries(counts)
-            .map(([name, count]) => ({
-                name,
-                count,
-                type: Object.entries(CH_LABELS).find(([, v]) => v === name)?.[0] || 'other',
+function ChannelActivityChart({ typeCounts }: { typeCounts: { action_type: string; count: number }[] }) {
+    const data = useMemo(() =>
+        typeCounts
+            .map(d => ({
+                name: CH_LABELS[d.action_type] || '其他',
+                count: d.count,
+                type: d.action_type,
             }))
-            .sort((a, b) => b.count - a.count);
-    }, [activities]);
+            .sort((a, b) => b.count - a.count),
+        [typeCounts],
+    );
 
     if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
 
@@ -873,7 +830,7 @@ function ChannelActivityChart({ activities }: { activities: any[] }) {
 
 /* ────── Error Trend (14-day line) ────── */
 
-function ErrorTrendChart({ activities }: { activities: any[] }) {
+function ErrorTrendChart({ errorTrend }: { errorTrend: { date: string; errors: number }[] }) {
     const data = useMemo(() => {
         const now = new Date();
         const days = 14;
@@ -887,15 +844,12 @@ function ErrorTrendChart({ activities }: { activities: any[] }) {
                 errors: 0,
             });
         }
-        activities.forEach(a => {
-            if (a.action_type !== 'error' || !a.created_at) return;
-            const ad = new Date(a.created_at);
-            const key = `${ad.getFullYear()}-${(ad.getMonth() + 1).toString().padStart(2, '0')}-${ad.getDate().toString().padStart(2, '0')}`;
-            const b = buckets.find(bk => bk._key === key);
-            if (b) b.errors++;
+        errorTrend.forEach(item => {
+            const b = buckets.find(bk => bk._key === item.date);
+            if (b) b.errors += item.errors;
         });
         return buckets;
-    }, [activities]);
+    }, [errorTrend]);
 
     return (
         <div style={{ height: '100px' }}>
@@ -1211,49 +1165,31 @@ export default function Dashboard() {
     });
 
     const [allTasks, setAllTasks] = useState<Task[]>([]);
-    const [allActivities, setAllActivities] = useState<any[]>([]);
-    const [agentActivities, setAgentActivities] = useState<Record<string, any[]>>({});
-    const [allDailyStats, setAllDailyStats] = useState<any[]>([]);
+    const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
+    // Fetch aggregated dashboard data + tasks
     useEffect(() => {
         if (agents.length === 0) return;
         const fetchData = async () => {
+            try {
+                const summary = await activityApi.dashboardSummary(90);
+                setDashboardSummary(summary);
+            } catch (e) { console.error('Failed to fetch dashboard summary:', e); }
             try {
                 const taskResults = await Promise.allSettled(agents.map(a => taskApi.list(a.id)));
                 const tasks: Task[] = [];
                 taskResults.forEach(r => { if (r.status === 'fulfilled') tasks.push(...r.value); });
                 setAllTasks(tasks);
             } catch (e) { console.error('Failed to fetch tasks:', e); }
-            try {
-                const actResults = await Promise.allSettled(agents.map(a => activityApi.list(a.id, 2000, 90)));
-                const activities: any[] = [];
-                const perAgent: Record<string, any[]> = {};
-                actResults.forEach((r, i) => {
-                    if (r.status === 'fulfilled') {
-                        perAgent[agents[i].id] = r.value;
-                        activities.push(...r.value.map((v: any) => ({ ...v, agent_id: agents[i].id })));
-                    }
-                });
-                activities.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-                setAllActivities(activities);
-                setAgentActivities(perAgent);
-            } catch (e) { console.error('Failed to fetch activities:', e); }
-            // Fetch daily aggregated stats (90 days to cover all chart ranges)
-            try {
-                const statsResults = await Promise.allSettled(
-                    agents.map(a => activityApi.dailyStats(a.id, 90)),
-                );
-                const merged: any[] = [];
-                statsResults.forEach((r, i) => {
-                    if (r.status === 'fulfilled') {
-                        merged.push(...r.value.map((v: any) => ({ ...v, agent_id: agents[i].id })));
-                    }
-                });
-                setAllDailyStats(merged);
-            } catch (e) { console.error('Failed to fetch daily stats:', e); }
         };
         fetchData();
-        const interval = setInterval(fetchData, 30000);
+        const pollSummary = async () => {
+            try {
+                const summary = await activityApi.dashboardSummary(90);
+                setDashboardSummary(summary);
+            } catch (e) { console.error('Failed to poll dashboard summary:', e); }
+        };
+        const interval = setInterval(pollSummary, 30000);
         return () => clearInterval(interval);
     }, [agents.map(a => a.id).join(',')]);
 
@@ -1363,7 +1299,7 @@ export default function Dashboard() {
                                     }).map(agent => (
                                         <AgentRow key={agent.id} agent={agent}
                                             tasks={tasksByAgent.get(agent.id) || []}
-                                            recentActivity={agentActivities[agent.id] || []}
+                                            recentActivity={dashboardSummary?.recent_activities.filter(a => a.agent_id === agent.id) || []}
                                         />
                                     ))}
                                 </div>
@@ -1376,7 +1312,7 @@ export default function Dashboard() {
                                 extra={<span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('dashboard.recentCount', { count: 20 })}</span>}
                             >
                                 <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
-                                    <ActivityFeed activities={allActivities} agents={agents} />
+                                    <ActivityFeed activities={dashboardSummary?.recent_activities || []} agents={agents} />
                                 </div>
                             </SectionCard>
 
@@ -1399,7 +1335,7 @@ export default function Dashboard() {
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                                 {/* 24h Activity Trend */}
                                 <SectionCard title={t('dashboard.hourlyTrend', '24h 活跃趋势')} icon={Icons.activity}>
-                                    <ActivityTrendChart activities={allActivities} />
+                                    <ActivityTrendChart hourlyTrend={dashboardSummary?.hourly_trend || []} />
                                 </SectionCard>
 
                                 {/* Conversation Stats */}
@@ -1407,7 +1343,7 @@ export default function Dashboard() {
                                     extra={<RangeTabs value={String(convRange)} onChange={v => setConvRange(Number(v))} options={[
                                         { key: '7', label: '7d' }, { key: '14', label: '14d' }, { key: '30', label: '30d' },
                                     ]} />}>
-                                    <ConversationStatsChart activities={allActivities} range={convRange} />
+                                    <ConversationStatsChart channelDaily={dashboardSummary?.conversation_channel_daily || []} range={convRange} />
                                 </SectionCard>
                             </div>
 
@@ -1429,7 +1365,7 @@ export default function Dashboard() {
                                         { key: 'week', label: t('dashboard.rangeWeek', '周') },
                                         { key: 'month', label: t('dashboard.rangeMonth', '月') },
                                     ]} />}>
-                                    <AgentActivityRankChart agents={agents} activities={allActivities} timeRange={activityRange} />
+                                    <AgentActivityRankChart agents={agents} agentRank={dashboardSummary?.agent_activity_rank || []} timeRange={activityRange} />
                                 </SectionCard>
                             </div>
 
@@ -1457,7 +1393,7 @@ export default function Dashboard() {
 
                                 {/* Tool Call Statistics */}
                                 <SectionCard title={t('dashboard.toolStats', '工具调用统计')} icon={Icons.tool}>
-                                    <ToolStatsChart activities={allActivities} />
+                                    <ToolStatsChart toolStats={dashboardSummary?.tool_call_stats || []} />
                                 </SectionCard>
                             </div>
 
@@ -1467,7 +1403,7 @@ export default function Dashboard() {
                                     extra={<RangeTabs value={String(deliveryRange)} onChange={v => setDeliveryRange(Number(v))} options={[
                                         { key: '7', label: '7d' }, { key: '14', label: '14d' }, { key: '30', label: '30d' },
                                     ]} />}>
-                                    <FileDeliveryChart activities={allActivities} dailyStats={allDailyStats} range={deliveryRange} />
+                                    <FileDeliveryChart dailyStats={dashboardSummary?.daily_stats || []} range={deliveryRange} />
                                 </SectionCard>
 
                                 {/* Task Pipeline */}
@@ -1497,7 +1433,7 @@ export default function Dashboard() {
 
                             {/* Activity Types */}
                             <SidebarChart title={t('dashboard.activityTypes', '活动类型')}>
-                                <ActivityTypePie activities={allActivities} />
+                                <ActivityTypePie typeCounts={dashboardSummary?.activity_type_counts || []} />
                             </SidebarChart>
 
                             {/* System Health */}

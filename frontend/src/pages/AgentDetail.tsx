@@ -2599,8 +2599,7 @@ function AgentDetailInner() {
                     filesPrompt += `[图片文件已上传: ${file.name}，保存在 ${file.path || ''}]\n`;
                 } else {
                     const wsPath = file.path || '';
-                    const codePath = wsPath.replace(/^workspace\//, '');
-                    const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)\n` : '';
+                    const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use path: "${wsPath}" (working directory is agent root)\n` : '';
                     filesPrompt += `[File: ${file.name}]${fileLoc}\n${file.text}\n\n`;
                 }
             });

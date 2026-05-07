@@ -173,4 +173,6 @@ else
 fi
 
 echo "[entrypoint] Step 4: Starting uvicorn..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+WORKERS=${UVICORN_WORKERS:-2}
+echo "[entrypoint] Starting uvicorn with ${WORKERS} worker(s)..."
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers $WORKERS

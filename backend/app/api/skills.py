@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import re
+import shutil
 import zipfile
 
 import httpx
@@ -750,6 +751,7 @@ class SkillUpdateIn(BaseModel):
     description: str | None = None
     category: str | None = None
     icon: str | None = None
+    is_default: bool | None = None
     files: list[SkillFileIn] | None = None
 
 
@@ -773,6 +775,20 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, current_user: User = 
         if body.icon is not None:
             skill.icon = body.icon
 
+        # Handle is_default toggle — push to all agents when set to True
+        if body.is_default is not None and body.is_default != skill.is_default:
+            skill.is_default = body.is_default
+            if body.is_default:
+                # Reload files if they were replaced earlier in this request
+                await db.flush()
+                await db.refresh(skill, ["files"])
+                from app.models.agent import Agent as AgentModel
+                agents = (await db.execute(select(AgentModel))).scalars().all()
+                tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+                agent_ids = [str(a.id) for a in agents]
+                if agent_ids and skill.files:
+                    await _deploy_skill_to_agents(skill, agent_ids, db, tenant_id)
+
         # Replace files if provided
         if body.files is not None:
             for f in skill.files:
@@ -782,7 +798,7 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, current_user: User = 
                 db.add(SkillFile(skill_id=skill.id, path=f.path, content=f.content))
 
         await db.commit()
-        return {"id": str(skill.id), "name": skill.name}
+        return {"id": str(skill.id), "name": skill.name, "is_default": skill.is_default}
 
 
 @router.delete("/{skill_id}")
@@ -1035,3 +1051,238 @@ async def browse_delete(path: str, current_user: User = Depends(get_current_admi
                     break
         await db.commit()
         return {"ok": True}
+
+
+# ─── Deployment Management (company-level) ───────────────────
+
+
+class DeploymentActionIn(BaseModel):
+    skill_id: str
+    agent_ids: list[str]
+
+
+def _scan_agent_deployed_skills(agent_dir) -> set[str]:
+    """Scan agent workspace to find deployed skill folder names."""
+    skills_dir = agent_dir / "skills"
+    if not skills_dir.exists():
+        return set()
+    return {
+        d.name for d in skills_dir.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+    }
+
+
+def _check_skill_is_latest(skill: Skill, agent_dir) -> bool | None:
+    """Check if deployed skill matches DB version via SKILL.md content.
+
+    Returns True (latest), False (outdated), or None (not deployed).
+    """
+    skill_folder = agent_dir / "skills" / skill.folder_name
+    if not skill_folder.exists():
+        return None
+    skill_md = skill_folder / "SKILL.md"
+    if not skill_md.exists():
+        return False
+    disk_content = skill_md.read_text(encoding="utf-8")
+    db_skill_md = next((f for f in skill.files if f.path == "SKILL.md"), None)
+    if not db_skill_md:
+        return True
+    return disk_content == db_skill_md.content
+
+
+async def _deploy_skill_to_agents(
+    skill: Skill, agent_ids: list, db, tenant_id
+) -> dict:
+    """Deploy a skill's files to specified agents' workspace directories."""
+    from app.services.agent_manager import agent_manager
+    from app.models.agent import Agent as AgentModel
+    import uuid as _uuid
+
+    if not skill.files:
+        result = await db.execute(
+            select(Skill).where(Skill.id == skill.id).options(selectinload(Skill.files))
+        )
+        skill = result.scalar_one()
+
+    deployed = 0
+    errors = []
+
+    for aid in agent_ids:
+        agent_r = await db.execute(select(AgentModel).where(AgentModel.id == _uuid.UUID(aid)))
+        agent = agent_r.scalar_one_or_none()
+        if not agent:
+            errors.append(f"Agent {aid} not found")
+            continue
+        if tenant_id and agent.tenant_id != _uuid.UUID(tenant_id):
+            errors.append(f"Agent '{agent.name}' does not belong to your company")
+            continue
+
+        agent_dir = agent_manager._agent_dir(agent.id)
+        if not agent_dir.exists():
+            errors.append(f"Agent '{agent.name}' workspace not found")
+            continue
+
+        skills_dir = agent_dir / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+        skill_folder = skills_dir / skill.folder_name
+        skill_folder.mkdir(parents=True, exist_ok=True)
+
+        for sf in skill.files:
+            file_path = skill_folder / sf.path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(sf.content, encoding="utf-8")
+
+        deployed += 1
+
+    return {"deployed": deployed, "errors": errors}
+
+
+@router.get("/deployment/status")
+async def deployment_status(
+    current_user=Depends(require_role("org_admin", "platform_admin")),
+):
+    """Return skill x agent deployment matrix for the current tenant."""
+    from app.models.agent import Agent as AgentModel
+    from sqlalchemy import or_ as _or
+    import uuid as _uuid
+    from app.services.agent_manager import agent_manager
+
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+
+    async with async_session() as db:
+        # Load skills
+        skill_q = select(Skill).order_by(Skill.name).options(selectinload(Skill.files))
+        if tenant_id:
+            skill_q = skill_q.where(
+                _or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id))
+            )
+        skills = (await db.execute(skill_q)).scalars().all()
+
+        # Load agents
+        agent_q = select(AgentModel).order_by(AgentModel.name)
+        if tenant_id:
+            agent_q = agent_q.where(AgentModel.tenant_id == _uuid.UUID(tenant_id))
+        agents = (await db.execute(agent_q)).scalars().all()
+
+        # Scan each agent's workspace
+        agents_info = []
+        agent_dirs = {}
+        for agent in agents:
+            agent_dir = agent_manager._agent_dir(agent.id)
+            deployed_folders = _scan_agent_deployed_skills(agent_dir)
+            agents_info.append({
+                "id": str(agent.id),
+                "name": agent.name,
+                "status": agent.status,
+            })
+            agent_dirs[str(agent.id)] = {
+                "dir": agent_dir,
+                "deployed": deployed_folders,
+            }
+
+        # Build skill deployment matrix
+        skills_info = []
+        for skill in skills:
+            deployments = []
+            for ai in agents_info:
+                ad = agent_dirs[ai["id"]]
+                is_deployed = skill.folder_name in ad["deployed"]
+                is_latest = _check_skill_is_latest(skill, ad["dir"]) if is_deployed else None
+                deployments.append({
+                    "agent_id": ai["id"],
+                    "agent_name": ai["name"],
+                    "deployed": is_deployed,
+                    "is_latest": is_latest,
+                })
+            skills_info.append({
+                "id": str(skill.id),
+                "name": skill.name,
+                "folder_name": skill.folder_name,
+                "icon": skill.icon,
+                "category": skill.category,
+                "is_default": skill.is_default,
+                "agent_deployments": deployments,
+            })
+
+        return {"skills": skills_info, "agents": agents_info}
+
+
+@router.post("/deployment/deploy")
+async def deployment_deploy(
+    body: DeploymentActionIn,
+    current_user=Depends(require_role("org_admin", "platform_admin")),
+):
+    """Deploy a skill to selected agents."""
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+
+    async with async_session() as db:
+        skill_r = await db.execute(
+            select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
+        )
+        skill = skill_r.scalar_one_or_none()
+        if not skill:
+            raise HTTPException(404, "Skill not found")
+
+        result = await _deploy_skill_to_agents(skill, body.agent_ids, db, tenant_id)
+        return result
+
+
+@router.post("/deployment/update")
+async def deployment_update(
+    body: DeploymentActionIn,
+    current_user=Depends(require_role("org_admin", "platform_admin")),
+):
+    """Update (re-deploy) a skill on selected agents to match DB version."""
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+
+    async with async_session() as db:
+        skill_r = await db.execute(
+            select(Skill).where(Skill.id == body.skill_id).options(selectinload(Skill.files))
+        )
+        skill = skill_r.scalar_one_or_none()
+        if not skill:
+            raise HTTPException(404, "Skill not found")
+
+        result = await _deploy_skill_to_agents(skill, body.agent_ids, db, tenant_id)
+        return {"updated": result["deployed"], "errors": result["errors"]}
+
+
+@router.post("/deployment/undeploy")
+async def deployment_undeploy(
+    body: DeploymentActionIn,
+    current_user=Depends(require_role("org_admin", "platform_admin")),
+):
+    """Remove a skill from selected agents' workspaces."""
+    from app.services.agent_manager import agent_manager
+    from app.models.agent import Agent as AgentModel
+    import uuid as _uuid
+
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+
+    async with async_session() as db:
+        skill_r = await db.execute(select(Skill).where(Skill.id == body.skill_id))
+        skill = skill_r.scalar_one_or_none()
+        if not skill:
+            raise HTTPException(404, "Skill not found")
+        if skill.is_default:
+            raise HTTPException(400, "Cannot remove a default skill via deployment management")
+
+        removed = 0
+        errors = []
+        for aid in body.agent_ids:
+            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == _uuid.UUID(aid)))
+            agent = agent_r.scalar_one_or_none()
+            if not agent:
+                errors.append(f"Agent {aid} not found")
+                continue
+            if tenant_id and agent.tenant_id != _uuid.UUID(tenant_id):
+                errors.append(f"Agent '{agent.name}' does not belong to your company")
+                continue
+
+            agent_dir = agent_manager._agent_dir(agent.id)
+            skill_folder = agent_dir / "skills" / skill.folder_name
+            if skill_folder.exists():
+                shutil.rmtree(skill_folder)
+                removed += 1
+
+        return {"removed": removed, "errors": errors}

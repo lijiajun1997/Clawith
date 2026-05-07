@@ -120,16 +120,20 @@ async def list_users(
     )
     users = result.scalars().all()
 
+    # Batch agent counts per user
+    user_ids = [u.id for u in users]
+    agent_count_map: dict = {}
+    if user_ids:
+        acq = await db.execute(
+            select(Agent.creator_id, func.count(Agent.id))
+            .where(Agent.creator_id.in_(user_ids), Agent.is_expired == False)
+            .group_by(Agent.creator_id)
+        )
+        agent_count_map = {str(r[0]): r[1] for r in acq.all()}
+
     out = []
     for u in users:
-        # Count non-expired agents
-        count_result = await db.execute(
-            select(func.count()).select_from(Agent).where(
-                Agent.creator_id == u.id,
-                Agent.is_expired == False,
-            )
-        )
-        agents_count = count_result.scalar() or 0
+        agents_count = agent_count_map.get(str(u.id), 0)
 
         user_dict = {
             "id": u.id,

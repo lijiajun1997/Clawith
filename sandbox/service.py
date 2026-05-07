@@ -62,8 +62,21 @@ _DANGEROUS_BASH_NETWORK = [
     "nc ", "ncat ", "ssh ", "scp ",
 ]
 _DANGEROUS_PYTHON_ALWAYS = [
-    "shutil.rmtree", "os.system", "os.popen",
+    # Removed: "shutil.rmtree" — agent workspace cleanup is legitimate (sandboxed to work_dir)
+    "os.system", "os.popen",
     "os.exec", "os.spawn",
+]
+
+# Path traversal — prevent accessing files outside agent directory
+_PATH_TRAVERSAL_PATTERNS = [
+    "../../../",      # directory traversal
+    "..\\..\\..\\",   # Windows-style traversal
+    "/etc/",          # system files
+    "/root/",         # root home
+    "/var/",          # system data
+    "/proc/",         # process info
+    "/sys/",          # kernel info
+    "/home/",         # other users' homes
 ]
 _DANGEROUS_PYTHON_NETWORK = [
     "socket", "http.client", "ftplib", "smtplib", "telnetlib", "ctypes",
@@ -79,6 +92,11 @@ _DANGEROUS_NODE_NETWORK = [
 def _check_code_safety(language: str, code: str, allow_network: bool = True) -> str | None:
     """检查代码安全性。返回错误信息或 None（安全）。"""
     code_lower = code.lower()
+
+    # Path traversal — applies to all languages
+    for pat in _PATH_TRAVERSAL_PATTERNS:
+        if pat in code_lower:
+            return "Blocked: path traversal not allowed"
 
     if language == "bash":
         for p in _DANGEROUS_BASH_ALWAYS:

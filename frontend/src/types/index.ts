@@ -78,3 +78,25 @@ export interface TokenResponse {
     user: User;
     needs_company_setup?: boolean;
 }
+
+export interface DashboardSummary {
+    activity_type_counts: { action_type: string; count: number }[];
+    hourly_trend: { hour: string; count: number }[];
+    conversation_channel_daily: {
+        date: string; feishu: number; web: number;
+        dingtalk: number; wecom: number; other: number;
+    }[];
+    agent_activity_rank: {
+        agent_id: string; agent_name: string;
+        count_day: number; count_week: number; count_month: number;
+    }[];
+    tool_call_stats: { tool: string; calls: number; success: number }[];
+    error_trend: { date: string; errors: number }[];
+    daily_stats: {
+        date: string; action_type: string; detail_tool: string | null; count: number;
+    }[];
+    recent_activities: {
+        id: string; agent_id: string; action_type: string;
+        summary: string; created_at: string | null;
+    }[];
+}

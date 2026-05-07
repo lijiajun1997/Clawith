@@ -25,6 +25,8 @@ interface WorkspaceFileNode {
     name: string;
     path: string;
     is_dir: boolean;
+    size?: number;
+    modified_at?: string;
     children?: WorkspaceFileNode[];
 }
 
@@ -63,7 +65,7 @@ function isEnterprisePath(path?: string | null): boolean {
     return !!path && (path === ENTERPRISE_ROOT || path.startsWith(`${ENTERPRISE_ROOT}/`));
 }
 const DEFAULT_UPLOAD_DIR = 'workspace/uploads';
-type TreeScope = 'workspace' | 'all';
+type TreeScope = 'recent' | 'workspace' | 'all';
 const EDITABLE_EXTS = new Set(['.md', '.markdown', '.csv']);
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
 const PREVIEW_EXTS = new Set(['.md', '.markdown', '.csv', '.html', '.htm', '.pdf', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt', '.txt', '.log', '.json', ...IMAGE_EXTS]);
@@ -127,6 +129,39 @@ function parseCsv(text: string): string[][] {
 
 function fileName(path: string): string {
     return path.split('/').pop() || path;
+}
+
+function fileIcon(name: string): string {
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')).toLowerCase() : '';
+    if (IMAGE_EXTS.has(ext)) return '🖼️';
+    if (ext === '.md' || ext === '.markdown') return '📝';
+    if (ext === '.pdf') return '📄';
+    if (ext === '.xlsx' || ext === '.xls' || ext === '.csv') return '📊';
+    if (ext === '.docx' || ext === '.doc') return '📃';
+    if (ext === '.pptx' || ext === '.ppt') return '📑';
+    if (ext === '.html' || ext === '.htm') return '🌐';
+    if (ext === '.json') return '{ }';
+    if (ext === '.py') return '🐍';
+    if (ext === '.js' || ext === '.ts') return '📜';
+    return '📄';
+}
+
+function formatModifiedTime(value: string): string {
+    const num = parseFloat(value);
+    const dt = num > 0 ? new Date(num * 1000) : new Date(value);
+    if (Number.isNaN(dt.getTime())) return '';
+    const now = new Date();
+    const diffMs = now.getTime() - dt.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return '刚刚';
+    if (diffMin < 60) return `${diffMin}分钟前`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}小时前`;
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    const hh = String(dt.getHours()).padStart(2, '0');
+    const min = String(dt.getMinutes()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:${min}`;
 }
 
 function isPreviewable(path: string): boolean {
@@ -412,12 +447,13 @@ export default function WorkspaceOperationPanel({
     const setActivityOpen = onActivityToggle ?? setActivityOpenInternal;
     const [treeOpen, setTreeOpen] = useState(true);
     const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
-    const [treeScope, setTreeScope] = useState<TreeScope>('workspace');
+    const [treeScope, setTreeScope] = useState<TreeScope>('recent');
     const [pendingSwitchPath, setPendingSwitchPath] = useState<string | null>(null);
     const [sideWidth, setSideWidth] = useState(DEFAULT_TREE_WIDTH);
     const canModifyPath = (path?: string | null) => !isEnterprisePath(path) || canManageEnterpriseInfo;
 
     const [selectedDirPath, setSelectedDirPath] = useState(WORKSPACE_ROOT);
+    const [showHiddenFiles, setShowHiddenFiles] = useState(false);
     const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
     const [isSideResizing, setIsSideResizing] = useState(false);
     const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -435,6 +471,18 @@ export default function WorkspaceOperationPanel({
     const panelSideWidth = activityOpen ? Math.max(sideWidth, DEFAULT_HISTORY_WIDTH) : sideWidth;
     const draftMatchesActiveFile = !!(liveDraft?.path && activePath && liveDraft.path === activePath);
     const shouldRenderLiveDraft = !!liveDraft && (!activePath || !liveDraft.path || draftMatchesActiveFile);
+
+    // Recent files: top 30 by modification time across workspace
+    const [recentFiles, setRecentFiles] = useState<WorkspaceFileNode[]>([]);
+    const loadRecentFiles = async () => {
+        try {
+            const res = await fileApi.recent(agentId, 30, false);
+            setRecentFiles(res.files || []);
+        } catch (err) {
+            console.error('[WorkspaceOp] loadRecentFiles failed:', err);
+            setRecentFiles([]);
+        }
+    };
 
     const load = async () => {
         if (!activePath) {
@@ -471,9 +519,18 @@ export default function WorkspaceOperationPanel({
     };
 
     const loadFileTree = async () => {
+        if (treeScope === 'recent') {
+            await loadRecentFiles();
+            return;
+        }
         const rootPath = treeScope === 'workspace' ? WORKSPACE_ROOT : '';
-        const items = await fileApi.list(agentId, rootPath).catch(() => []);
-        setFileTree(items);
+        try {
+            const items = await fileApi.list(agentId, rootPath);
+            setFileTree(items);
+        } catch (err) {
+            console.error('[WorkspaceOp] loadFileTree failed:', err);
+            setFileTree([]);
+        }
     };
 
     const loadChildDir = async (dirPath: string): Promise<void> => {
@@ -663,7 +720,6 @@ export default function WorkspaceOperationPanel({
         return [];
     }, [previewType, content, draft, editing]);
 
-    const xlsxRows = previewType === 'xlsx' ? (preview.sheets?.[0]?.rows || []).map(trimTrailingEmpty).filter((row: string[]) => row.length) : [];
 
     const finishEditing = async () => {
         if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -727,6 +783,9 @@ export default function WorkspaceOperationPanel({
         setTreeScope(scope);
         if (scope === 'workspace') {
             setSelectedDirPath(WORKSPACE_ROOT);
+        }
+        if (scope === 'recent') {
+            loadRecentFiles();
         }
     };
 
@@ -885,7 +944,7 @@ export default function WorkspaceOperationPanel({
             return (
                 <div className="workspace-op-live">
                     <div className="workspace-op-live-banner">{liveDraft.status === 'drafting' ? 'Drafting file...' : 'Writing file...'}</div>
-                    {draftContent ? <MarkdownRenderer content={draftContent} /> : <div className="workspace-op-empty">Preparing file content...</div>}
+                    {draftContent ? <MarkdownRenderer content={draftContent} onFileLink={switchToPath} /> : <div className="workspace-op-empty">Preparing file content...</div>}
                 </div>
             );
         }
@@ -917,7 +976,7 @@ export default function WorkspaceOperationPanel({
             );
         }
         if (previewType === 'md' || previewType === 'markdown') {
-            return <MarkdownRenderer content={content || ''} />;
+            return <MarkdownRenderer content={content || ''} onFileLink={switchToPath} />;
         }
         if (previewType === 'text') {
             return <pre className="workspace-op-text-preview">{preview.content || preview.text || ''}</pre>;
@@ -938,31 +997,6 @@ export default function WorkspaceOperationPanel({
                         )}
                         <tbody>
                             {bodyRows.map((row, i) => (
-                                <tr key={i}>
-                                    {Array.from({ length: maxCols }).map((_, j) => <td key={j}>{row[j] || ''}</td>)}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            );
-        }
-        if (previewType === 'xlsx') {
-            const rows = xlsxRows;
-            const maxCols = rows.reduce((max: number, row: string[]) => Math.max(max, row.length), 0);
-            const [header, ...bodyRows] = rows;
-            return (
-                <div className="workspace-op-table-wrap">
-                    <table className="workspace-op-table">
-                        {!!header?.length && (
-                            <thead>
-                                <tr>
-                                    {Array.from({ length: maxCols }).map((_, j) => <th key={j}>{header[j] || ''}</th>)}
-                                </tr>
-                            </thead>
-                        )}
-                        <tbody>
-                            {bodyRows.map((row: string[], i: number) => (
                                 <tr key={i}>
                                     {Array.from({ length: maxCols }).map((_, j) => <td key={j}>{row[j] || ''}</td>)}
                                 </tr>
@@ -1035,7 +1069,9 @@ export default function WorkspaceOperationPanel({
             </div>
         ));
 
-    const renderFileTreeNodes = (nodes: WorkspaceFileNode[], depth = 0) => nodes.map((node) => {
+    const renderFileTreeNodes = (nodes: WorkspaceFileNode[], depth = 0) => nodes
+        .filter(node => showHiddenFiles || !node.name.startsWith('.'))
+        .map((node) => {
         const selected = node.path === activePath;
         if (node.is_dir) {
             const expanded = expandedDirs.has(node.path);
@@ -1226,6 +1262,15 @@ export default function WorkspaceOperationPanel({
                             <div className="workspace-op-tree-tools workspace-op-tree-tools-full">
                                 <div className="workspace-op-tree-scope" role="tablist" aria-label="File tree scope">
                                     <button
+                                        className={treeScope === 'recent' ? 'active' : ''}
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={treeScope === 'recent'}
+                                        onClick={() => switchTreeScope('recent')}
+                                    >
+                                        Recent
+                                    </button>
+                                    <button
                                         className={treeScope === 'workspace' ? 'active' : ''}
                                         type="button"
                                         role="tab"
@@ -1244,6 +1289,7 @@ export default function WorkspaceOperationPanel({
                                         All
                                     </button>
                                 </div>
+                                {treeScope !== 'recent' && (
                                 <div className="workspace-op-tree-actions">
                                     <button
                                         className="workspace-op-mini-btn workspace-op-mini-btn-icon"
@@ -1271,12 +1317,51 @@ export default function WorkspaceOperationPanel({
                                             <path d="M9.5 13h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
                                         </svg>
                                     </button>
+                                    <button
+                                        className="workspace-op-mini-btn workspace-op-mini-btn-icon"
+                                        type="button"
+                                        onClick={() => setShowHiddenFiles(v => !v)}
+                                        title={showHiddenFiles ? 'Hide dotfiles' : 'Show dotfiles'}
+                                        style={showHiddenFiles ? { background: 'var(--accent-subtle)', color: 'var(--accent-primary)' } : undefined}
+                                    >
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            {showHiddenFiles
+                                                ? <><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23" /></>
+                                                : <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>
+                                            }
+                                        </svg>
+                                    </button>
                                 </div>
+                                )}
                             </div>
                         </div>
                         <div className="workspace-op-tree-list">
-                            {treeScope === 'workspace' && renderUploadRows(WORKSPACE_ROOT, -1)}
-                            {fileTree.length ? renderFileTreeNodes(fileTree, 0) : <div className="workspace-op-tree-empty">No files yet.</div>}
+                            {treeScope === 'recent' ? (
+                                recentFiles.length ? recentFiles.map((f) => {
+                                    const selected = f.path === activePath;
+                                    return (
+                                        <div
+                                            key={f.path}
+                                            className={`workspace-op-tree-file ${selected ? 'active' : ''}`}
+                                            style={{ paddingLeft: '18px' }}
+                                            onClick={() => switchToPath(f.path)}
+                                            title={f.path}
+                                        >
+                                            <div className="workspace-op-tree-file-name">{f.name}</div>
+                                            {f.modified_at && (
+                                                <span className="workspace-op-tree-file-meta">
+                                                    {formatModifiedTime(f.modified_at)}
+                                                </span>
+                                            )}
+                                        </div>
+                                    );
+                                }) : <div className="workspace-op-tree-empty">No recent files.</div>
+                            ) : (
+                                <>
+                                    {treeScope === 'workspace' && renderUploadRows(WORKSPACE_ROOT, -1)}
+                                    {fileTree.length ? renderFileTreeNodes(fileTree, 0) : <div className="workspace-op-tree-empty">No files yet.</div>}
+                                </>
+                            )}
                         </div>
                         <input
                             ref={fileInputRef}

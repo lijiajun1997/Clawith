@@ -4,7 +4,7 @@
  * - Agent Workspace, Skills, Soul, Memory tabs
  * - Enterprise Knowledge Base
  */
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import MarkdownRenderer from './MarkdownRenderer';
 import DocumentViewer, { isSupportedDocumentFormat } from './DocumentViewer';
@@ -374,11 +374,14 @@ export default function FileBrowser({
     // Show hidden files (starting with .)
     const [showHiddenFiles, setShowHiddenFiles] = useState(initialSort.showHiddenFiles);
 
-    // Pagination
+    // Pagination — memoized to avoid re-slicing on every render
     const [currentPage, setCurrentPage] = useState(1);
     const pageSize = 50;
     const totalPages = Math.ceil(files.length / pageSize);
-    const paginatedFiles = files.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+    const paginatedFiles = useMemo(
+        () => files.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+        [files, currentPage, pageSize]
+    );
 
     // Debounced search query
     const debouncedSearchQuery = useDebounce(searchQuery, 300);

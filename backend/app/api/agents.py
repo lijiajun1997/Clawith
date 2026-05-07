@@ -106,9 +106,13 @@ async def _lazy_reset_token_counters(agent: Agent, db: AsyncSession) -> bool:
 
 
 async def _enrich_agents_with_creator(agents: list[Agent], db: AsyncSession) -> list[AgentOut]:
-    """Batch fetch creator usernames and return enriched AgentOut list."""
+    """Batch fetch creator usernames and compute real last_active_at, return enriched AgentOut list."""
     if not agents:
         return []
+
+    from sqlalchemy import func
+    from app.models.audit import ChatMessage
+    from app.models.chat_session import ChatSession
 
     # Batch fetch creators
     creator_ids = {a.creator_id for a in agents if a.creator_id}
@@ -117,12 +121,35 @@ async def _enrich_agents_with_creator(agents: list[Agent], db: AsyncSession) -> 
         user_result = await db.execute(select(User).where(User.id.in_(creator_ids)))
         users = {u.id: u for u in user_result.scalars().all()}
 
-    # Build response with creator_username
+    # Compute real last_active_at from user messages, excluding trigger/agent sessions
+    agent_ids = [a.id for a in agents]
+    excl_result = await db.execute(
+        select(ChatSession.id).where(ChatSession.source_channel.in_(["trigger", "agent"]))
+    )
+    excl_conv_ids = {str(sid) for (sid,) in excl_result.all()}
+
+    active_q = select(
+        ChatMessage.agent_id, func.max(ChatMessage.created_at)
+    ).where(
+        ChatMessage.agent_id.in_(agent_ids),
+        ChatMessage.role == "user",
+    )
+    if excl_conv_ids:
+        active_q = active_q.where(ChatMessage.conversation_id.notin_(excl_conv_ids))
+    active_q = active_q.group_by(ChatMessage.agent_id)
+    active_result = await db.execute(active_q)
+    real_active_map: dict = {aid: ts for aid, ts in active_result.all()}
+
+    # Build response with creator_username and corrected last_active_at
     result = []
     for a in agents:
         agent_out = AgentOut.model_validate(a)
         creator = users.get(a.creator_id)
         agent_out.creator_username = (creator.display_name or creator.username) if creator else None
+        # Override with real user-initiated last active time
+        real_active = real_active_map.get(a.id)
+        if real_active:
+            agent_out.last_active_at = real_active
         result.append(agent_out)
     return result
 

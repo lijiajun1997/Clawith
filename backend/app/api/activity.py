@@ -1,5 +1,6 @@
 """Activity log API — view agent work history."""
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -11,9 +12,201 @@ from app.core.security import get_current_user
 from app.core.permissions import check_agent_access
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
+from app.models.agent import Agent, AgentPermission
 from app.models.user import User
 
 router = APIRouter(tags=["activity"])
+
+
+# ─── Dashboard aggregated endpoint ──────────────────────────
+
+async def _resolve_accessible_agent_ids(
+    current_user: User, db: AsyncSession, tenant_id: str | None,
+) -> list[str]:
+    """Return agent_id strings the current user may see (mirrors list_agents logic)."""
+    if current_user.role in ("platform_admin", "org_admin"):
+        tid = uuid.UUID(tenant_id) if tenant_id else current_user.tenant_id
+        q = select(Agent.id)
+        if tid:
+            q = q.where(Agent.tenant_id == tid)
+        result = await db.execute(q)
+        return [str(r[0]) for r in result.all()]
+
+    # Regular user / agent_admin: own agents + permitted agents
+    user_tenant = current_user.tenant_id
+    created_q = select(Agent.id).where(
+        Agent.creator_id == current_user.id, Agent.tenant_id == user_tenant,
+    )
+    permitted_ids = (
+        select(AgentPermission.agent_id)
+        .where(
+            (AgentPermission.scope_type == "company")
+            | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
+        )
+    )
+    perm_q = select(Agent.id).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
+    from sqlalchemy import union_all
+    combined = union_all(created_q, perm_q).subquery()
+    result = await db.execute(select(combined.c.id))
+    return [str(r[0]) for r in result.all()]
+
+
+_VALID_CHANNELS = {"feishu", "web", "dingtalk", "wecom"}
+
+
+@router.get("/dashboard/activity-summary")
+async def get_dashboard_activity_summary(
+    days: int = Query(90, ge=1, le=90),
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Single-request aggregated dashboard data for all accessible agents.
+
+    Returns pre-computed chart data so the frontend avoids pulling 2000 raw
+    activity records per agent and aggregating client-side.
+    """
+    aids = await _resolve_accessible_agent_ids(current_user, db, tenant_id)
+    if not aids:
+        return {
+            "activity_type_counts": [],
+            "hourly_trend": [],
+            "conversation_channel_daily": [],
+            "agent_activity_rank": [],
+            "tool_call_stats": [],
+            "error_trend": [],
+            "daily_stats": [],
+            "recent_activities": [],
+        }
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    params_base = {"aids": aids, "since": since}
+
+    async def _q(sql: str, p: dict | None = None):
+        return (await db.execute(text(sql), p or params_base)).all()
+
+    # Fire all queries concurrently
+    rows_type_counts, rows_hourly, rows_conv, rows_rank, \
+        rows_tool, rows_error, rows_recent, rows_daily = await asyncio.gather(
+        _q("""
+            SELECT action_type, COUNT(*) AS count
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids) AND created_at >= :since
+            GROUP BY action_type ORDER BY count DESC
+        """),
+        _q("""
+            SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS count
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids) AND created_at >= NOW() - INTERVAL '24 hours'
+            GROUP BY hour ORDER BY hour
+        """),
+        _q("""
+            SELECT DATE(created_at) AS day,
+                   COALESCE(detail_json->>'channel', 'other') AS channel,
+                   COUNT(*) AS count
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids) AND action_type = 'chat_reply'
+              AND created_at >= :since
+            GROUP BY day, channel ORDER BY day
+        """),
+        _q("""
+            SELECT a.id AS agent_id, a.name AS agent_name,
+                   COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '1 day') AS count_day,
+                   COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '7 days') AS count_week,
+                   COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '30 days') AS count_month
+            FROM agents a
+            LEFT JOIN agent_activity_logs al ON al.agent_id = a.id AND al.created_at >= :since
+            WHERE a.id = ANY(:aids)
+            GROUP BY a.id, a.name
+            HAVING COUNT(al.id) > 0
+            ORDER BY count_week DESC
+        """),
+        _q("""
+            SELECT COALESCE(detail_json->>'tool', 'unknown') AS tool,
+                   COUNT(*) AS calls,
+                   COUNT(*) FILTER (WHERE detail_json->>'result' IS NULL
+                                    OR NOT (detail_json->>'result' LIKE '❌%')) AS success
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids) AND action_type = 'tool_call' AND created_at >= :since
+            GROUP BY tool ORDER BY calls DESC LIMIT 10
+        """),
+        _q("""
+            SELECT DATE(created_at) AS day, COUNT(*) AS errors
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids) AND action_type = 'error'
+              AND created_at >= NOW() - INTERVAL '14 days'
+            GROUP BY day ORDER BY day
+        """),
+        _q("""
+            SELECT id, agent_id, action_type, summary, created_at
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids)
+            ORDER BY created_at DESC LIMIT 50
+        """),
+        _q("""
+            SELECT DATE(created_at) AS day, action_type,
+                   detail_json->>'tool' AS detail_tool, COUNT(*) AS count
+            FROM agent_activity_logs
+            WHERE agent_id = ANY(:aids) AND created_at >= :since
+            GROUP BY day, action_type, detail_json->>'tool' ORDER BY day
+        """),
+    )
+
+    # --- Build response ---
+
+    # Q1: activity_type_counts
+    activity_type_counts = [{"action_type": r.action_type, "count": r.count} for r in rows_type_counts]
+
+    # Q2: hourly_trend
+    hourly_trend = [{"hour": r.hour.isoformat(), "count": r.count} for r in rows_hourly]
+
+    # Q3: conversation_channel_daily — pivot rows into per-day objects
+    conv_map: dict[str, dict] = {}
+    for r in rows_conv:
+        day = str(r.day)
+        if day not in conv_map:
+            conv_map[day] = {"date": day, "feishu": 0, "web": 0, "dingtalk": 0, "wecom": 0, "other": 0}
+        ch = r.channel if r.channel in _VALID_CHANNELS else "other"
+        conv_map[day][ch] += r.count
+    conversation_channel_daily = list(conv_map.values())
+
+    # Q4: agent_activity_rank
+    agent_activity_rank = [
+        {"agent_id": str(r.agent_id), "agent_name": r.agent_name,
+         "count_day": r.count_day, "count_week": r.count_week, "count_month": r.count_month}
+        for r in rows_rank
+    ]
+
+    # Q5: tool_call_stats
+    tool_call_stats = [{"tool": r.tool, "calls": r.calls, "success": r.success} for r in rows_tool]
+
+    # Q6: error_trend
+    error_trend = [{"date": str(r.day), "errors": r.errors} for r in rows_error]
+
+    # Q7: recent_activities
+    recent_activities = [
+        {"id": str(r.id), "agent_id": str(r.agent_id), "action_type": r.action_type,
+         "summary": r.summary, "created_at": r.created_at.isoformat() if r.created_at else None}
+        for r in rows_recent
+    ]
+
+    # Q8: daily_stats
+    daily_stats = [
+        {"date": str(r.day), "action_type": r.action_type,
+         "detail_tool": r.detail_tool, "count": r.count}
+        for r in rows_daily
+    ]
+
+    return {
+        "activity_type_counts": activity_type_counts,
+        "hourly_trend": hourly_trend,
+        "conversation_channel_daily": conversation_channel_daily,
+        "agent_activity_rank": agent_activity_rank,
+        "tool_call_stats": tool_call_stats,
+        "error_trend": error_trend,
+        "daily_stats": daily_stats,
+        "recent_activities": recent_activities,
+    }
 
 
 @router.get("/agents/{agent_id}/activity")

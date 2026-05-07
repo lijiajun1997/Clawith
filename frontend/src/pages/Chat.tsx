@@ -761,8 +761,7 @@ export default function Chat() {
                 userMsg = userMsg || `[图片] ${attachedFile.name}`;
             } else {
                 const wsPath = attachedFile.path || '';
-                const codePath = wsPath.replace(/^workspace\//, '');
-                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use relative path: "${codePath}" (working directory is workspace/)` : '';
+                const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use path: "${wsPath}" (working directory is agent root)` : '';
                 const fileContext = `[文件: ${attachedFile.name}]${fileLoc}\n\n${attachedFile.text}`;
                 contentForLLM = userMsg
                     ? `${fileContext}\n\n用户问题: ${userMsg}`

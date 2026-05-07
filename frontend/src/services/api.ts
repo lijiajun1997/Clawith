@@ -1,6 +1,6 @@
 /** API service layer */
 
-import type { Agent, TokenResponse, User, Task, ChatMessage } from '../types';
+import type { Agent, TokenResponse, User, Task, ChatMessage, DashboardSummary } from '../types';
 
 const API_BASE = '/api';
 
@@ -385,6 +385,9 @@ export const fileApi = {
             method: 'DELETE',
         }),
 
+    recent: (agentId: string, limit: number = 30, excludeCode: boolean = false) =>
+        request<{ files: any[]; total: number }>(`/agents/${agentId}/files/recent?limit=${limit}&exclude_code=${excludeCode}`),
+
     revisions: (agentId: string, path: string) =>
         request<any[]>(`/agents/${agentId}/files/revisions?path=${encodeURIComponent(path)}`),
 
@@ -462,6 +465,13 @@ export const activityApi = {
         request<{ date: string; action_type: string; detail_tool: string | null; count: number }[]>(
             `/agents/${agentId}/activity/daily-stats?days=${days}`,
         ),
+
+    dashboardSummary: (days: number = 90): Promise<DashboardSummary> => {
+        const tid = localStorage.getItem('current_tenant_id');
+        return request<DashboardSummary>(
+            `/dashboard/activity-summary?days=${days}${tid ? `&tenant_id=${tid}` : ''}`,
+        );
+    },
 };
 
 // ─── Messages ─────────────────────────────────────────
@@ -549,6 +559,32 @@ export const skillApi = {
             request<any>(`/agents/${agentId}/files/import-from-clawhub`, { method: 'POST', body: JSON.stringify({ slug }) }),
         fromUrl: (agentId: string, url: string) =>
             request<any>(`/agents/${agentId}/files/import-from-url`, { method: 'POST', body: JSON.stringify({ url }) }),
+    },
+    // Deployment management (company-level)
+    deployment: {
+        status: () => request<{
+            skills: Array<{
+                id: string; name: string; folder_name: string; icon: string;
+                category: string; is_default: boolean;
+                agent_deployments: Array<{
+                    agent_id: string; agent_name: string;
+                    deployed: boolean; is_latest: boolean | null;
+                }>;
+            }>;
+            agents: Array<{ id: string; name: string; status: string }>;
+        }>('/skills/deployment/status'),
+        deploy: (data: { skill_id: string; agent_ids: string[] }) =>
+            request<{ deployed: number; errors: string[] }>('/skills/deployment/deploy', {
+                method: 'POST', body: JSON.stringify(data),
+            }),
+        update: (data: { skill_id: string; agent_ids: string[] }) =>
+            request<{ updated: number; errors: string[] }>('/skills/deployment/update', {
+                method: 'POST', body: JSON.stringify(data),
+            }),
+        undeploy: (data: { skill_id: string; agent_ids: string[] }) =>
+            request<{ removed: number; errors: string[] }>('/skills/deployment/undeploy', {
+                method: 'POST', body: JSON.stringify(data),
+            }),
     },
 };
 

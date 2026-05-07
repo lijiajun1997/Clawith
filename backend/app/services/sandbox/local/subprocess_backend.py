@@ -42,9 +42,21 @@ _DANGEROUS_BASH_NETWORK = [
 
 _DANGEROUS_PYTHON_IMPORTS_ALWAYS = [
     # Removed: "subprocess" — allow pip install via subprocess.run([sys.executable, "-m", "pip", ...])
-    # Agent needs to install packages during execution
-    "shutil.rmtree", "os.system", "os.popen",
+    # Removed: "shutil.rmtree" — agent workspace cleanup is legitimate (sandboxed to workspace dir)
+    "os.system", "os.popen",
     "os.exec", "os.spawn",
+]
+
+# Path traversal patterns — prevent accessing files outside agent directory
+_PATH_TRAVERSAL_PATTERNS = [
+    "../../../",      # directory traversal
+    "..\\..\\..\\",   # Windows-style traversal
+    "/etc/",          # system files
+    "/root/",         # root home
+    "/var/",          # system data
+    "/proc/",         # process info
+    "/sys/",          # kernel info
+    "/home/",         # other users' homes
 ]
 
 _DANGEROUS_PYTHON_IMPORTS_NETWORK = [
@@ -66,6 +78,12 @@ def _check_code_safety(language: str, code: str, allow_network: bool = False) ->
     """Check code for dangerous patterns. Returns error message if unsafe, None if ok."""
     code_lower = code.lower()
 
+    # Path traversal check — applies to all languages
+    for pat in _PATH_TRAVERSAL_PATTERNS:
+        if pat in code_lower:
+            logger.warning(f"Blocked: path traversal detected")
+            return "Blocked: path traversal not allowed"
+
     if language == "bash":
         # Always check dangerous patterns
         for pattern in _DANGEROUS_BASH_ALWAYS:
@@ -76,7 +94,7 @@ def _check_code_safety(language: str, code: str, allow_network: bool = False) ->
         if not allow_network:
             for pattern in _DANGEROUS_BASH_NETWORK:
                 if pattern.lower() in code_lower:
-                    logger.warning(f"Blocked: network command not allowed ({pattern.strip()})")        
+                    logger.warning(f"Blocked: network command not allowed ({pattern.strip()})")
                     return f"Blocked: network command not allowed ({pattern.strip()})"
         if "../../" in code:
             return "Blocked: directory traversal not allowed"

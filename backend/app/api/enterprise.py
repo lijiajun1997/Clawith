@@ -19,7 +19,7 @@ from app.models.identity import IdentityProvider
 from app.models.user import User
 from app.models.agent import Agent
 from app.models.llm import LLMModel
-from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo
+from app.models.audit import AuditLog, ApprovalRequest, EnterpriseInfo, ChatMessage
 from app.schemas.schemas import (
     ApprovalAction, ApprovalRequestOut, AuditLogOut, EnterpriseInfoOut,
     EnterpriseInfoUpdate, LLMModelCreate, LLMModelOut, LLMModelUpdate,
@@ -411,6 +411,140 @@ async def list_audit_logs(
         query = query.where(AuditLog.agent_id == agent_id)
     result = await db.execute(query)
     return [AuditLogOut.model_validate(log) for log in result.scalars().all()]
+
+
+# ─── Chat Logs (Conversation Audit) ────────────────────
+
+@router.get("/chat-logs")
+async def list_chat_logs(
+    user_id: uuid.UUID | None = None,
+    agent_id: uuid.UUID | None = None,
+    tenant_id: str | None = None,
+    page: int = 1,
+    page_size: int = 30,
+    current_user: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List chat Q&A turns for audit purposes, scoped to tenant (admin only)."""
+    import json as _json
+
+    tid = tenant_id or (str(current_user.tenant_id) if current_user.tenant_id else None)
+    if not tid:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    tenant_agent_ids = select(Agent.id).where(Agent.tenant_id == tid)
+
+    # Exclude trigger/agent sessions (auto-triggered conversations)
+    from app.models.chat_session import ChatSession
+    excl_result = await db.execute(
+        select(ChatSession.id).where(
+            ChatSession.source_channel.in_(["trigger", "agent"])
+        )
+    )
+    excl_conv_ids = {str(sid) for (sid,) in excl_result.all()}
+
+    # Base filter: tenant agents, non-system role, exclude auto-triggered
+    base_where = [
+        ChatMessage.agent_id.in_(tenant_agent_ids),
+        ChatMessage.role != "system",
+    ]
+    if excl_conv_ids:
+        base_where.append(ChatMessage.conversation_id.notin_(excl_conv_ids))
+    if user_id:
+        base_where.append(ChatMessage.user_id == user_id)
+    if agent_id:
+        base_where.append(ChatMessage.agent_id == agent_id)
+
+    # Fetch all matching messages for grouping (capped for performance)
+    query = (
+        select(ChatMessage)
+        .where(*base_where)
+        .order_by(ChatMessage.created_at.asc())
+        .limit(5000)
+    )
+    result = await db.execute(query)
+    messages = result.scalars().all()
+
+    # Group into Q&A turns
+    turns: list[dict] = []
+    current_tools: list[dict] = []
+    current_user_msg: dict | None = None
+
+    def flush_turn():
+        if current_user_msg:
+            turns.append({"user": current_user_msg, "assistant": None, "tools": list(current_tools)})
+
+    for m in messages:
+        if m.role == "user":
+            flush_turn()
+            current_user_msg = {"id": str(m.id), "content": m.content,
+                                "user_id": str(m.user_id), "created_at": m.created_at.isoformat() if m.created_at else None,
+                                "agent_id": str(m.agent_id), "conversation_id": m.conversation_id}
+            current_tools = []
+        elif m.role == "tool_call" and current_user_msg:
+            tool_info: dict = {"id": str(m.id)}
+            try:
+                data = _json.loads(m.content)
+                tool_info["tool_name"] = data.get("name", "")
+            except Exception:
+                tool_info["tool_name"] = ""
+            current_tools.append(tool_info)
+        elif m.role == "assistant" and current_user_msg:
+            turns.append({
+                "user": current_user_msg,
+                "assistant": {"id": str(m.id), "content": m.content,
+                              "created_at": m.created_at.isoformat() if m.created_at else None},
+                "tools": list(current_tools),
+            })
+            current_user_msg = None
+            current_tools = []
+    flush_turn()
+
+    # Reverse for newest-first display
+    turns.reverse()
+
+    # Resolve names
+    uids = {t["user"]["user_id"] for t in turns if t["user"].get("user_id")}
+    aids = {t["user"]["agent_id"] for t in turns if t["user"].get("agent_id")}
+
+    user_names: dict[str, str] = {}
+    if uids:
+        from app.models.user import Identity
+        u_result = await db.execute(
+            select(User.id, User.display_name, Identity.username, Identity.email)
+            .join(Identity, User.identity_id == Identity.id, isouter=True)
+            .where(User.id.in_(uids))
+        )
+        for uid, dn, un, em in u_result.all():
+            user_names[str(uid)] = dn or un or em or str(uid)[:8]
+
+    agent_names: dict[str, str] = {}
+    if aids:
+        a_result = await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(aids)))
+        for aid, name in a_result.all():
+            agent_names[str(aid)] = name or str(aid)[:8]
+
+    # Build output items with names
+    items = []
+    for t in turns:
+        u = t["user"]
+        a = t["assistant"]
+        items.append({
+            "id": u["id"],
+            "user_display_name": user_names.get(u.get("user_id", ""), ""),
+            "agent_name": agent_names.get(u.get("agent_id", ""), ""),
+            "conversation_id": u.get("conversation_id", ""),
+            "question": u["content"],
+            "answer": a["content"] if a else None,
+            "answer_time": a["created_at"] if a else None,
+            "tools": list({t2["tool_name"] for t2 in t["tools"] if t2.get("tool_name")}),
+            "created_at": u["created_at"],
+        })
+
+    total = len(items)
+    start = (page - 1) * page_size
+    page_items = items[start:start + page_size]
+    return {"items": page_items, "total": total, "page": page, "page_size": page_size}
 
 
 # ─── Dashboard Stats ────────────────────────────────────
