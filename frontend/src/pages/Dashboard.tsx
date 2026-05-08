@@ -7,8 +7,8 @@ import {
     Tooltip, BarChart, Bar, XAxis, YAxis,
     LineChart, Line, CartesianGrid, AreaChart, Area,
 } from 'recharts';
-import { agentApi, taskApi, activityApi, fetchJson, enterpriseApi } from '../services/api';
-import type { Agent, Task, DashboardSummary } from '../types';
+import { agentApi, activityApi, fetchJson, enterpriseApi } from '../services/api';
+import type { Agent, DashboardSummary } from '../types';
 
 /* ────── Color Palette ────── */
 const STATUS_COLORS: Record<string, string> = {
@@ -20,7 +20,7 @@ const ACTIVITY_COLORS: Record<string, string> = {
     schedule_run: '#06b6d4', heartbeat: '#22c55e',
 };
 const TASK_COLORS: Record<string, string> = {
-    pending: '#f59e0b', doing: '#3b82f6', done: '#22c55e', paused: '#64748b',
+    pending: '#f59e0b', doing: '#3b82f6', done: '#22c55e',
 };
 
 /* ────── Helpers ────── */
@@ -312,35 +312,29 @@ function TokenTopBar({ agents }: { agents: Agent[] }) {
 
 /* ────── Task Pipeline ────── */
 
-function TaskPipeline({ tasks }: { tasks: Task[] }) {
+function TaskPipeline({ byStatus }: { byStatus: { pending: number; doing: number; done: number } }) {
     const { t } = useTranslation();
-    const counts = useMemo(() => {
-        const c = { pending: 0, doing: 0, done: 0, paused: 0 };
-        tasks.forEach(t => { if (t.status in c) c[t.status as keyof typeof c]++; });
-        return c;
-    }, [tasks]);
-    const total = counts.pending + counts.doing + counts.done + counts.paused;
+    const total = byStatus.pending + byStatus.doing + byStatus.done;
 
     const labels: Record<string, string> = {
         pending: t('dashboard.task.pending', '待处理'),
         doing: t('dashboard.task.doing', '进行中'),
         done: t('dashboard.task.done', '已完成'),
-        paused: t('dashboard.task.paused', '已暂停'),
     };
 
     return (
         <div>
             <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'var(--bg-tertiary)', marginBottom: '10px' }}>
-                {total > 0 && Object.entries(counts).map(([s, c]) => c > 0 ? (
+                {total > 0 && Object.entries(byStatus).map(([s, c]) => c > 0 ? (
                     <div key={s} style={{ width: `${(c / total) * 100}%`, background: TASK_COLORS[s], transition: 'width 0.4s' }} />
                 ) : null)}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                {(['pending', 'doing', 'done', 'paused'] as const).map(s => (
+                {(['pending', 'doing', 'done'] as const).map(s => (
                     <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px' }}>
                         <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: TASK_COLORS[s], flexShrink: 0 }} />
                         <span style={{ color: 'var(--text-secondary)' }}>{labels[s]}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)', marginLeft: 'auto' }}>{counts[s]}</span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)', marginLeft: 'auto' }}>{byStatus[s as keyof typeof byStatus]}</span>
                     </div>
                 ))}
             </div>
@@ -434,23 +428,23 @@ function ActivityTrendChart({ hourlyTrend }: { hourlyTrend: { hour: string; coun
 /* ────── Conversation Stats (multi-channel line chart) ────── */
 
 const CHANNEL_COLORS: Record<string, string> = {
-    feishu: '#3b82f6', web: '#10b981', dingtalk: '#f59e0b', wecom: '#06b6d4', other: '#8b5cf6',
+    feishu: '#3b82f6', web: '#10b981', dingtalk: '#f59e0b', wechat: '#06b6d4', other: '#8b5cf6',
 };
 const CHANNEL_NAMES: Record<string, string> = {
-    feishu: '飞书', web: 'Web', dingtalk: '钉钉', wecom: '企微', other: '其他',
+    feishu: '飞书', web: 'Web', dingtalk: '钉钉', wechat: '微信', other: '其他',
 };
 
-function ConversationStatsChart({ channelDaily, range }: { channelDaily: { date: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[]; range: number }) {
+function ConversationStatsChart({ channelDaily, range }: { channelDaily: { date: string; feishu: number; web: number; dingtalk: number; wechat: number; other: number }[]; range: number }) {
     const data = useMemo(() => {
         const now = new Date();
-        const buckets: { _key: string; day: string; feishu: number; web: number; dingtalk: number; wecom: number; other: number }[] = [];
+        const buckets: { _key: string; day: string; feishu: number; web: number; dingtalk: number; wechat: number; other: number }[] = [];
         for (let i = range - 1; i >= 0; i--) {
             const d = new Date(now.getTime() - i * 86400000);
             const key = `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, '0')}-${d.getDate().toString().padStart(2, '0')}`;
             buckets.push({
                 _key: key,
                 day: `${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getDate().toString().padStart(2, '0')}`,
-                feishu: 0, web: 0, dingtalk: 0, wecom: 0, other: 0,
+                feishu: 0, web: 0, dingtalk: 0, wechat: 0, other: 0,
             });
         }
         channelDaily.forEach(item => {
@@ -459,14 +453,14 @@ function ConversationStatsChart({ channelDaily, range }: { channelDaily: { date:
                 b.feishu += item.feishu;
                 b.web += item.web;
                 b.dingtalk += item.dingtalk;
-                b.wecom += item.wecom;
+                b.wechat += item.wechat || 0;
                 b.other += item.other;
             }
         });
         return buckets;
     }, [channelDaily, range]);
 
-    const channels = ['feishu', 'web', 'dingtalk', 'wecom', 'other'];
+    const channels = ['feishu', 'web', 'dingtalk', 'wechat', 'other'];
 
     return (
         <div style={{ height: '140px' }}>
@@ -894,12 +888,11 @@ function RangeTabs({ value, onChange, options }: {
 
 /* ────── Agent Row ────── */
 
-function AgentRow({ agent, tasks, recentActivity }: {
-    agent: Agent; tasks: Task[]; recentActivity: any[];
+function AgentRow({ agent, pendingTasks, recentActivity }: {
+    agent: Agent; pendingTasks: { id: string; title: string; priority: string; status: string }[]; recentActivity: any[];
 }) {
     const { t } = useTranslation();
     const navigate = useNavigate();
-    const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'doing');
     const latestActivity = recentActivity[0];
     const maxTokens = agent.max_tokens_per_day || 0;
     const usedTokens = agent.tokens_used_today || 0;
@@ -1164,10 +1157,9 @@ export default function Dashboard() {
         staleTime: 300000,
     });
 
-    const [allTasks, setAllTasks] = useState<Task[]>([]);
     const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
 
-    // Fetch aggregated dashboard data + tasks
+    // Fetch aggregated dashboard data (includes task summary)
     useEffect(() => {
         if (agents.length === 0) return;
         const fetchData = async () => {
@@ -1175,39 +1167,28 @@ export default function Dashboard() {
                 const summary = await activityApi.dashboardSummary(90);
                 setDashboardSummary(summary);
             } catch (e) { console.error('Failed to fetch dashboard summary:', e); }
-            try {
-                const taskResults = await Promise.allSettled(agents.map(a => taskApi.list(a.id)));
-                const tasks: Task[] = [];
-                taskResults.forEach(r => { if (r.status === 'fulfilled') tasks.push(...r.value); });
-                setAllTasks(tasks);
-            } catch (e) { console.error('Failed to fetch tasks:', e); }
         };
         fetchData();
-        const pollSummary = async () => {
-            try {
-                const summary = await activityApi.dashboardSummary(90);
-                setDashboardSummary(summary);
-            } catch (e) { console.error('Failed to poll dashboard summary:', e); }
-        };
-        const interval = setInterval(pollSummary, 30000);
+        const interval = setInterval(fetchData, 30000);
         return () => clearInterval(interval);
     }, [agents.map(a => a.id).join(',')]);
 
+    // Derive task data from server-side aggregation
+    const taskSummary = dashboardSummary?.task_summary;
     const tasksByAgent = useMemo(() => {
-        const map = new Map<string, Task[]>();
-        allTasks.forEach(t => { if (!map.has(t.agent_id)) map.set(t.agent_id, []); map.get(t.agent_id)!.push(t); });
+        const map = new Map<string, { id: string; title: string; priority: string; status: string }[]>();
+        taskSummary?.agent_tasks.forEach(at => {
+            map.set(at.agent_id, at.tasks);
+        });
         return map;
-    }, [allTasks]);
+    }, [taskSummary]);
 
-    // Metrics
+    // Metrics (from server-side aggregation)
     const totalAgents = agents.length;
     const activeAgents = agents.filter(a => a.status === 'running' || a.status === 'idle').length;
     const errorAgents = agents.filter(a => a.status === 'error').length;
-    const pendingTasks = allTasks.filter(t => t.status === 'pending' || t.status === 'doing').length;
-    const completedToday = allTasks.filter(t => {
-        if (t.status !== 'done' || !t.completed_at) return false;
-        return new Date(t.completed_at).toDateString() === new Date().toDateString();
-    }).length;
+    const pendingTasks = (taskSummary?.by_status.pending || 0) + (taskSummary?.by_status.doing || 0);
+    const completedToday = taskSummary?.completed_today || 0;
     const totalTokensToday = agents.reduce((s, a) => s + (a.tokens_used_today || 0), 0);
     const totalTokensMonth = agents.reduce((s, a) => s + (a.tokens_used_month || 0), 0);
     const recentlyActive = agents.filter(a => a.last_active_at && Date.now() - new Date(a.last_active_at).getTime() < 3600000).length;
@@ -1298,7 +1279,7 @@ export default function Dashboard() {
                                         return (b.last_active_at ? new Date(b.last_active_at).getTime() : 0) - (a.last_active_at ? new Date(a.last_active_at).getTime() : 0);
                                     }).map(agent => (
                                         <AgentRow key={agent.id} agent={agent}
-                                            tasks={tasksByAgent.get(agent.id) || []}
+                                            pendingTasks={tasksByAgent.get(agent.id) || []}
                                             recentActivity={dashboardSummary?.recent_activities.filter(a => a.agent_id === agent.id) || []}
                                         />
                                     ))}
@@ -1408,7 +1389,7 @@ export default function Dashboard() {
 
                                 {/* Task Pipeline */}
                                 <SectionCard title={t('dashboard.taskPipeline', '任务状态分布')} icon={Icons.tasks}>
-                                    <TaskPipeline tasks={allTasks} />
+                                    <TaskPipeline byStatus={taskSummary?.by_status || { pending: 0, doing: 0, done: 0 }} />
                                 </SectionCard>
                             </div>
                         </div>
@@ -1428,7 +1409,7 @@ export default function Dashboard() {
 
                             {/* Task Pipeline */}
                             <SidebarChart title={t('dashboard.taskPipeline', '任务流水线')}>
-                                <TaskPipeline tasks={allTasks} />
+                                <TaskPipeline byStatus={taskSummary?.by_status || { pending: 0, doing: 0, done: 0 }} />
                             </SidebarChart>
 
                             {/* Activity Types */}

@@ -1,6 +1,7 @@
 """Activity log API — view agent work history."""
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user
 from app.core.permissions import check_agent_access
+from app.core.events import get_redis
 from app.database import get_db
 from app.models.activity_log import AgentActivityLog
 from app.models.agent import Agent, AgentPermission
@@ -20,182 +22,189 @@ router = APIRouter(tags=["activity"])
 
 # ─── Dashboard aggregated endpoint ──────────────────────────
 
-async def _resolve_accessible_agent_ids(
-    current_user: User, db: AsyncSession, tenant_id: str | None,
-) -> list[str]:
-    """Return agent_id strings the current user may see (mirrors list_agents logic)."""
-    if current_user.role in ("platform_admin", "org_admin"):
-        tid = uuid.UUID(tenant_id) if tenant_id else current_user.tenant_id
-        q = select(Agent.id)
-        if tid:
-            q = q.where(Agent.tenant_id == tid)
-        result = await db.execute(q)
-        return [str(r[0]) for r in result.all()]
-
-    # Regular user / agent_admin: own agents + permitted agents
-    user_tenant = current_user.tenant_id
-    created_q = select(Agent.id).where(
-        Agent.creator_id == current_user.id, Agent.tenant_id == user_tenant,
-    )
-    permitted_ids = (
-        select(AgentPermission.agent_id)
-        .where(
-            (AgentPermission.scope_type == "company")
-            | ((AgentPermission.scope_type == "user") & (AgentPermission.scope_id == current_user.id))
-        )
-    )
-    perm_q = select(Agent.id).where(Agent.id.in_(permitted_ids), Agent.tenant_id == user_tenant)
-    from sqlalchemy import union_all
-    combined = union_all(created_q, perm_q).subquery()
-    result = await db.execute(select(combined.c.id))
-    return [str(r[0]) for r in result.all()]
+_VALID_CHANNELS = {"feishu", "web", "dingtalk", "wecom", "wechat"}
+_CACHE_TTL = 30  # seconds
 
 
-_VALID_CHANNELS = {"feishu", "web", "dingtalk", "wecom"}
-
-
-@router.get("/dashboard/activity-summary")
-async def get_dashboard_activity_summary(
-    days: int = Query(90, ge=1, le=90),
-    tenant_id: str | None = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Single-request aggregated dashboard data for all accessible agents.
-
-    Returns pre-computed chart data so the frontend avoids pulling 2000 raw
-    activity records per agent and aggregating client-side.
-    """
-    aids = await _resolve_accessible_agent_ids(current_user, db, tenant_id)
-    if not aids:
-        return {
-            "activity_type_counts": [],
-            "hourly_trend": [],
-            "conversation_channel_daily": [],
-            "agent_activity_rank": [],
-            "tool_call_stats": [],
-            "error_trend": [],
-            "daily_stats": [],
-            "recent_activities": [],
-        }
-
+async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days: int = 90) -> dict:
+    """Build dashboard summary from DB queries. Tenant-scoped, no per-user filtering."""
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    params_base = {"aids": aids, "since": since}
+    params = {"tid": tenant_id, "since": since}
 
-    async def _q(sql: str, p: dict | None = None):
-        return (await db.execute(text(sql), p or params_base)).all()
+    async def _q(sql: str) -> list:
+        return (await db.execute(text(sql), params)).all()
+
+    async def _q_safe(sql: str) -> list:
+        """Execute query with rollback on failure to prevent cascading abort."""
+        try:
+            return (await db.execute(text(sql), params)).all()
+        except Exception:
+            await db.rollback()
+            return []
 
     # Fire all queries concurrently
-    rows_type_counts, rows_hourly, rows_conv, rows_rank, \
-        rows_tool, rows_error, rows_recent, rows_daily = await asyncio.gather(
-        _q("""
+    (rows_type_counts, rows_hourly, rows_conv, rows_rank,
+     rows_tool, rows_error, rows_recent, rows_daily,
+     rows_task_agg, rows_task_top) = await asyncio.gather(
+        _q("""  -- Q1: activity type counts
             SELECT action_type, COUNT(*) AS count
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids) AND created_at >= :since
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.created_at >= :since
             GROUP BY action_type ORDER BY count DESC
         """),
-        _q("""
-            SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS count
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids) AND created_at >= NOW() - INTERVAL '24 hours'
+        _q("""  -- Q2: hourly trend (24h)
+            SELECT DATE_TRUNC('hour', al.created_at) AS hour, COUNT(*) AS count
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.created_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hour ORDER BY hour
         """),
-        _q("""
-            SELECT DATE(created_at) AS day,
-                   COALESCE(detail_json->>'channel', 'other') AS channel,
+        _q("""  -- Q3: conversation channel daily
+            SELECT DATE(al.created_at) AS day,
+                   COALESCE(al.detail_json->>'channel', 'other') AS channel,
                    COUNT(*) AS count
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids) AND action_type = 'chat_reply'
-              AND created_at >= :since
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.action_type = 'chat_reply'
+              AND al.created_at >= :since
             GROUP BY day, channel ORDER BY day
         """),
-        _q("""
+        _q("""  -- Q4: agent activity rank
             SELECT a.id AS agent_id, a.name AS agent_name,
                    COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '1 day') AS count_day,
                    COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '7 days') AS count_week,
                    COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '30 days') AS count_month
             FROM agents a
             LEFT JOIN agent_activity_logs al ON al.agent_id = a.id AND al.created_at >= :since
-            WHERE a.id = ANY(:aids)
+            WHERE a.tenant_id = :tid
             GROUP BY a.id, a.name
             HAVING COUNT(al.id) > 0
             ORDER BY count_week DESC
         """),
-        _q("""
-            SELECT COALESCE(detail_json->>'tool', 'unknown') AS tool,
+        _q_safe("""  -- Q5: tool call stats
+            SELECT COALESCE(al.detail_json->>'tool', 'unknown') AS tool,
                    COUNT(*) AS calls,
-                   COUNT(*) FILTER (WHERE detail_json->>'result' IS NULL
-                                    OR NOT (detail_json->>'result' LIKE '❌%')) AS success
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids) AND action_type = 'tool_call' AND created_at >= :since
+                   COUNT(*) FILTER (WHERE al.detail_json->>'result' IS NULL
+                                    OR LEFT(al.detail_json->>'result', 1) NOT IN (chr(10060), chr(9940))) AS success
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.action_type = 'tool_call' AND al.created_at >= :since
             GROUP BY tool ORDER BY calls DESC LIMIT 10
         """),
-        _q("""
-            SELECT DATE(created_at) AS day, COUNT(*) AS errors
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids) AND action_type = 'error'
-              AND created_at >= NOW() - INTERVAL '14 days'
+        _q("""  -- Q6: error trend (14d)
+            SELECT DATE(al.created_at) AS day, COUNT(*) AS errors
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.action_type = 'error'
+              AND al.created_at >= NOW() - INTERVAL '14 days'
             GROUP BY day ORDER BY day
         """),
-        _q("""
-            SELECT id, agent_id, action_type, summary, created_at
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids)
-            ORDER BY created_at DESC LIMIT 50
+        _q_safe("""  -- Q7: recent activities
+            SELECT al.id, al.agent_id, al.action_type, al.summary, al.created_at
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid
+            ORDER BY al.created_at DESC LIMIT 50
         """),
-        _q("""
-            SELECT DATE(created_at) AS day, action_type,
-                   detail_json->>'tool' AS detail_tool, COUNT(*) AS count
-            FROM agent_activity_logs
-            WHERE agent_id = ANY(:aids) AND created_at >= :since
-            GROUP BY day, action_type, detail_json->>'tool' ORDER BY day
+        _q_safe("""  -- Q8: daily stats
+            SELECT DATE(al.created_at) AS day, al.action_type,
+                   al.detail_json->>'tool' AS detail_tool, COUNT(*) AS count
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.created_at >= :since
+            GROUP BY day, al.action_type, al.detail_json->>'tool' ORDER BY day
+        """),
+        _q_safe("""  -- Q9: task aggregation by status
+            SELECT t.agent_id,
+                   COUNT(*) FILTER (WHERE t.status = 'pending') AS pending,
+                   COUNT(*) FILTER (WHERE t.status = 'doing') AS doing,
+                   COUNT(*) FILTER (WHERE t.status = 'done') AS done,
+                   COUNT(*) FILTER (WHERE t.status = 'done' AND t.completed_at >= CURRENT_DATE) AS completed_today
+            FROM tasks t
+            JOIN agents a ON a.id = t.agent_id
+            WHERE a.tenant_id = :tid
+            GROUP BY t.agent_id
+        """),
+        _q_safe("""  -- Q10: top 3 pending/doing tasks per agent
+            SELECT agent_id, id, title, priority, status FROM (
+                SELECT t.agent_id, t.id, t.title, t.priority, t.status,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY t.agent_id ORDER BY
+                               CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                                                WHEN 'medium' THEN 2 ELSE 3 END,
+                               t.created_at DESC) AS rn
+                FROM tasks t
+                JOIN agents a ON a.id = t.agent_id
+                WHERE a.tenant_id = :tid AND t.status IN ('pending', 'doing')
+            ) sub WHERE rn <= 3
         """),
     )
 
     # --- Build response ---
-
-    # Q1: activity_type_counts
     activity_type_counts = [{"action_type": r.action_type, "count": r.count} for r in rows_type_counts]
 
-    # Q2: hourly_trend
     hourly_trend = [{"hour": r.hour.isoformat(), "count": r.count} for r in rows_hourly]
 
-    # Q3: conversation_channel_daily — pivot rows into per-day objects
     conv_map: dict[str, dict] = {}
     for r in rows_conv:
         day = str(r.day)
         if day not in conv_map:
-            conv_map[day] = {"date": day, "feishu": 0, "web": 0, "dingtalk": 0, "wecom": 0, "other": 0}
+            conv_map[day] = {"date": day, "feishu": 0, "web": 0, "dingtalk": 0, "wecom": 0, "wechat": 0, "other": 0}
         ch = r.channel if r.channel in _VALID_CHANNELS else "other"
         conv_map[day][ch] += r.count
     conversation_channel_daily = list(conv_map.values())
 
-    # Q4: agent_activity_rank
     agent_activity_rank = [
         {"agent_id": str(r.agent_id), "agent_name": r.agent_name,
          "count_day": r.count_day, "count_week": r.count_week, "count_month": r.count_month}
         for r in rows_rank
     ]
 
-    # Q5: tool_call_stats
     tool_call_stats = [{"tool": r.tool, "calls": r.calls, "success": r.success} for r in rows_tool]
 
-    # Q6: error_trend
     error_trend = [{"date": str(r.day), "errors": r.errors} for r in rows_error]
 
-    # Q7: recent_activities
     recent_activities = [
         {"id": str(r.id), "agent_id": str(r.agent_id), "action_type": r.action_type,
          "summary": r.summary, "created_at": r.created_at.isoformat() if r.created_at else None}
         for r in rows_recent
     ]
 
-    # Q8: daily_stats
     daily_stats = [
         {"date": str(r.day), "action_type": r.action_type,
          "detail_tool": r.detail_tool, "count": r.count}
         for r in rows_daily
     ]
+
+    by_status = {"pending": 0, "doing": 0, "done": 0}
+    completed_today = 0
+    agent_task_agg: dict[str, dict] = {}
+    for r in rows_task_agg:
+        aid = str(r.agent_id)
+        by_status["pending"] += r.pending
+        by_status["doing"] += r.doing
+        by_status["done"] += r.done
+        completed_today += r.completed_today
+        agent_task_agg[aid] = {
+            "pending": r.pending, "doing": r.doing,
+            "done": r.done,
+            "completed_today": r.completed_today,
+            "tasks": [],
+        }
+    for r in rows_task_top:
+        aid = str(r.agent_id)
+        if aid not in agent_task_agg:
+            agent_task_agg[aid] = {"pending": 0, "doing": 0, "done": 0, "completed_today": 0, "tasks": []}
+        agent_task_agg[aid]["tasks"].append({
+            "id": str(r.id), "title": r.title,
+            "priority": r.priority, "status": r.status,
+        })
+    task_summary = {
+        "by_status": by_status,
+        "completed_today": completed_today,
+        "agent_tasks": [{"agent_id": aid, **data} for aid, data in agent_task_agg.items()],
+    }
 
     return {
         "activity_type_counts": activity_type_counts,
@@ -206,7 +215,55 @@ async def get_dashboard_activity_summary(
         "error_trend": error_trend,
         "daily_stats": daily_stats,
         "recent_activities": recent_activities,
+        "task_summary": task_summary,
     }
+
+
+_EMPTY_SUMMARY = {
+    "activity_type_counts": [], "hourly_trend": [], "conversation_channel_daily": [],
+    "agent_activity_rank": [], "tool_call_stats": [], "error_trend": [],
+    "daily_stats": [], "recent_activities": [],
+    "task_summary": {"by_status": {"pending": 0, "doing": 0, "done": 0}, "completed_today": 0, "agent_tasks": []},
+}
+
+
+@router.get("/dashboard/activity-summary")
+async def get_dashboard_activity_summary(
+    days: int = Query(90, ge=1, le=90),
+    tenant_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tenant-level aggregated dashboard data with Redis caching.
+
+    Shows company-wide statistics — no per-user permission filtering.
+    Cached for 30s per tenant to avoid repeated DB queries.
+    """
+    tid = uuid.UUID(tenant_id) if tenant_id else current_user.tenant_id
+    if not tid:
+        return _EMPTY_SUMMARY
+
+    cache_key = f"dashboard_summary:{tid}:{days}"
+
+    # Try Redis cache first
+    try:
+        r = await get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception:
+        cached = None
+
+    result = await _build_dashboard_summary(tid, db, days)
+
+    # Cache the result
+    try:
+        r = await get_redis()
+        await r.set(cache_key, json.dumps(result, default=str), ex=_CACHE_TTL)
+    except Exception:
+        pass
+
+    return result
 
 
 @router.get("/agents/{agent_id}/activity")

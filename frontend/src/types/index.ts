@@ -84,7 +84,7 @@ export interface DashboardSummary {
     hourly_trend: { hour: string; count: number }[];
     conversation_channel_daily: {
         date: string; feishu: number; web: number;
-        dingtalk: number; wecom: number; other: number;
+        dingtalk: number; wechat: number; other: number;
     }[];
     agent_activity_rank: {
         agent_id: string; agent_name: string;
@@ -99,4 +99,14 @@ export interface DashboardSummary {
         id: string; agent_id: string; action_type: string;
         summary: string; created_at: string | null;
     }[];
+    task_summary: {
+        by_status: { pending: number; doing: number; done: number };
+        completed_today: number;
+        agent_tasks: {
+            agent_id: string;
+            pending: number; doing: number; done: number;
+            completed_today: number;
+            tasks: { id: string; title: string; priority: string; status: string }[];
+        }[];
+    };
 }
