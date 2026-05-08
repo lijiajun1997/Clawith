@@ -12,10 +12,11 @@ settings = get_settings()
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
-    pool_size=20,
-    max_overflow=10,
+    pool_size=30,
+    max_overflow=20,
+    pool_timeout=30,
     pool_pre_ping=True,
-    pool_recycle=3600,
+    pool_recycle=1800,
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -28,11 +29,15 @@ class Base(DeclarativeBase):
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency for getting async database sessions."""
+    """Dependency for getting async database sessions.
+
+    Uses BaseException handler so CancelledError (from middleware timeout)
+    also triggers rollback instead of leaving sessions in idle-in-transaction.
+    """
     async with async_session() as session:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except BaseException:
             await session.rollback()
             raise
