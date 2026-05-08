@@ -546,6 +546,139 @@ async def call_llm(
     return "[Error] Too many tool call rounds"
 
 
+async def _safe_ws_send(websocket: WebSocket, data: dict) -> None:
+    """Send JSON to WebSocket, silently ignoring errors if disconnected."""
+    try:
+        await websocket.send_json(data)
+    except Exception:
+        pass
+
+
+def _build_tool_call_summary(tool_calls: list[dict]) -> str:
+    """Convert tool_call DB records into a plain-text summary for LLM context.
+
+    Provider-agnostic: any LLM can understand this text summary without
+    requiring the exact tool_calls message format (which varies by provider).
+    """
+    if not tool_calls:
+        return ""
+    parts = ["[Previous tool calls in this session:]"]
+    for tc in tool_calls:
+        name = tc.get("name", "unknown")
+        args = tc.get("args", {})
+        result = tc.get("result", "")
+        status = tc.get("status", "done")
+        if isinstance(args, dict):
+            args_str = ", ".join(
+                f'{k}="{v}"' if isinstance(v, str) else f"{k}={v}"
+                for k, v in args.items()
+            )
+        else:
+            args_str = str(args)
+        result_preview = (result[:300] + "...") if len(result or "") > 300 else (result or "")
+        if status == "done":
+            parts.append(f"  - Called {name}({args_str}) => {result_preview}")
+        else:
+            parts.append(f"  - Called {name}({args_str}) [status: {status}]")
+    return "\n".join(parts)
+
+
+async def _complete_llm_background(
+    llm_task: "asyncio.Task",
+    agent_id: uuid.UUID,
+    user_id: uuid.UUID,
+    conv_id: str,
+    agent_id_str: str,
+    partial_chunks: list[str],
+    thinking_content: list[str],
+    user_content: str,
+) -> None:
+    """Complete an LLM task in the background after WebSocket disconnect.
+
+    Saves the result to DB and cleans up Redis state markers.
+    """
+    from app.core.events import get_redis
+    from datetime import datetime, timezone as tz
+
+    redis_bg_key = f"bg_llm:{agent_id_str}:{conv_id}"
+    redis_inflight_key = f"inflight:{agent_id_str}:{conv_id}"
+    try:
+        response = await llm_task
+        logger.info(f"[BG] Background LLM task completed for session {conv_id}: {response[:80]}")
+
+        # Save assistant message to DB
+        async with async_session() as db:
+            asst_msg = ChatMessage(
+                agent_id=agent_id,
+                user_id=user_id,
+                role="assistant",
+                content=response,
+                thinking="".join(thinking_content) if thinking_content else None,
+                conversation_id=conv_id,
+            )
+            db.add(asst_msg)
+            await db.commit()
+
+        # Update agent last_active_at
+        try:
+            async with async_session() as _db:
+                from app.models.agent import Agent as AgentModel
+                _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+                _agent = _ar.scalar_one_or_none()
+                if _agent:
+                    _agent.last_active_at = datetime.now(tz.utc)
+                    await _db.commit()
+        except Exception:
+            pass
+
+        # Record activity
+        try:
+            from app.services.activity_logger import log_activity
+            await log_activity(agent_id, "chat_reply", f"Background LLM reply: {response[:80]}",
+                               detail={"channel": "web", "user_text": user_content[:200], "reply": response[:500]})
+        except Exception:
+            pass
+
+        # Mark completion in Redis
+        r = await get_redis()
+        await r.set(redis_bg_key, json.dumps({
+            "status": "done",
+            "content": response[:500],
+            "completed_at": datetime.now(tz.utc).isoformat(),
+        }), ex=600)
+        await r.delete(redis_inflight_key)
+
+    except asyncio.CancelledError:
+        # Task was cancelled (e.g. server shutdown) — save partial if any
+        partial_text = "".join(partial_chunks).strip()
+        if partial_text:
+            async with async_session() as db:
+                asst_msg = ChatMessage(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=partial_text + "\n\n*[Generation stopped]*",
+                    conversation_id=conv_id,
+                )
+                db.add(asst_msg)
+                await db.commit()
+        r = await get_redis()
+        await r.set(redis_bg_key, json.dumps({"status": "cancelled"}), ex=300)
+        await r.delete(redis_inflight_key)
+
+    except Exception as e:
+        logger.error(f"[BG] Background LLM task failed: {e}")
+        try:
+            r = await get_redis()
+            await r.set(redis_bg_key, json.dumps({
+                "status": "error",
+                "error": str(e)[:200],
+            }), ex=300)
+            await r.delete(redis_inflight_key)
+        except Exception:
+            pass
+
+
 @router.websocket("/ws/chat/{agent_id}")
 async def websocket_chat(
     websocket: WebSocket,
@@ -734,19 +867,33 @@ async def websocket_chat(
     await websocket.send_json({"type": "connected", "session_id": conv_id})
 
     # Build conversation context from history
-    # Only keep plain user/assistant text messages for cross-model compatibility.
-    # tool_call records and reasoning_content from previous sessions are discarded
-    # because different LLM providers have incompatible requirements for these fields
-    # (DeepSeek requires reasoning_content roundtrip, others reject unknown tool formats).
-    # The LLM will re-invoke tools as needed in the current session.
+    # Include tool_call records as plain-text summaries so the LLM can see what
+    # was done previously and avoid repeating work. Tool calls are converted to a
+    # provider-agnostic text format to maintain cross-model compatibility.
     conversation: list[dict] = []
+    _tool_call_buffer: list[dict] = []
+
     for msg in history_messages:
         if msg.role == "tool_call":
-            continue  # Skip tool_call records entirely
+            try:
+                tc_data = json.loads(msg.content)
+                _tool_call_buffer.append(tc_data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            continue
         if msg.role in ("user", "assistant"):
+            if _tool_call_buffer:
+                summary = _build_tool_call_summary(_tool_call_buffer)
+                conversation.append({"role": "assistant", "content": summary})
+                _tool_call_buffer.clear()
             entry = {"role": msg.role, "content": msg.content or ""}
-            # Note: thinking/reasoning_content intentionally omitted for compatibility
             conversation.append(entry)
+
+    # Flush any trailing tool calls
+    if _tool_call_buffer:
+        summary = _build_tool_call_summary(_tool_call_buffer)
+        conversation.append({"role": "assistant", "content": summary})
+        _tool_call_buffer.clear()
 
     # Truncate conversation to prevent context overflow in long sessions.
     # Each tool_call in history expands to 2 messages (assistant+tool), so a
@@ -756,6 +903,46 @@ async def websocket_chat(
     if len(conversation) > ctx_size:
         conversation = conversation[-ctx_size:]
         logger.info(f"[WS] Truncated conversation to last {ctx_size} messages")
+
+    # ── Reconnect notification: check for background task results / interrupted rounds ──
+    try:
+        from app.core.events import get_redis as _get_redis_reconnect
+        _rr = await _get_redis_reconnect()
+
+        # Check background task status
+        _bg_key = f"bg_llm:{agent_id_str}:{conv_id}"
+        _bg_data = await _rr.get(_bg_key)
+        if _bg_data:
+            _bg_info = json.loads(_bg_data)
+            _bg_status = _bg_info.get("status")
+            if _bg_status == "done":
+                await websocket.send_json({
+                    "type": "info",
+                    "content": f"Background task completed: {_bg_info.get('content', '')[:100]}...",
+                })
+            elif _bg_status == "running":
+                await websocket.send_json({
+                    "type": "info",
+                    "content": "A previous request is still processing in the background...",
+                })
+            elif _bg_status == "error":
+                await websocket.send_json({
+                    "type": "info",
+                    "content": f"Background task failed: {_bg_info.get('error', 'unknown error')[:100]}",
+                })
+            await _rr.delete(_bg_key)
+
+        # Check for interrupted round (inflight marker still present)
+        _inflight_key = f"inflight:{agent_id_str}:{conv_id}"
+        _inflight_data = await _rr.get(_inflight_key)
+        if _inflight_data:
+            await websocket.send_json({
+                "type": "info",
+                "content": "The previous response was interrupted. You can ask the AI to continue from where it left off.",
+            })
+            await _rr.delete(_inflight_key)
+    except Exception:
+        pass
 
     try:
         # Send welcome message on new session (no history)
@@ -915,7 +1102,10 @@ async def websocket_chat(
                     async def stream_to_ws(text: str):
                         """Send each chunk to client in real-time."""
                         partial_chunks.append(text)
-                        await websocket.send_json({"type": "chunk", "content": text})
+                        try:
+                            await websocket.send_json({"type": "chunk", "content": text})
+                        except Exception:
+                            pass  # WebSocket may be disconnected; background task continues
                     
                     # Track which agentbay live URLs have been sent to avoid redundant pushes
                     _sent_live_envs: set[str] = set()
@@ -948,7 +1138,10 @@ async def websocket_chat(
                             except Exception as _lp_err:
                                 logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
 
-                        await websocket.send_json({"type": "tool_call", **data})
+                        try:
+                            await websocket.send_json({"type": "tool_call", **data})
+                        except Exception:
+                            pass  # WebSocket may be disconnected; continue to save to DB
 
                         # Save completed tool calls to DB so they persist in chat history
                         if data.get("status") == "done":
@@ -984,7 +1177,10 @@ async def websocket_chat(
                     async def thinking_to_ws(text: str):
                         """Send thinking chunks to client for collapsible display."""
                         thinking_content.append(text)
-                        await websocket.send_json({"type": "thinking", "content": text})
+                        try:
+                            await websocket.send_json({"type": "thinking", "content": text})
+                        except Exception:
+                            pass
 
                     import asyncio as _aio
 
@@ -1002,8 +1198,21 @@ async def websocket_chat(
                         on_thinking=thinking_to_ws,
                         supports_vision=getattr(llm_model, 'supports_vision', False),
                         fallback_model=fallback_llm_model,
-                        on_notify=lambda msg: websocket.send_json({"type": "info", "content": msg}),
+                        on_notify=lambda msg: _safe_ws_send(websocket, {"type": "info", "content": msg}),
                     ))
+
+                    # Mark session as "LLM processing" for interrupt detection
+                    _r_inflight_key = f"inflight:{agent_id_str}:{conv_id}"
+                    try:
+                        from app.core.events import get_redis as _get_redis
+                        _r = await _get_redis()
+                        from datetime import datetime as _dt, timezone as _tz
+                        await _r.set(_r_inflight_key, json.dumps({
+                            "user_content": content[:200],
+                            "started_at": _dt.now(_tz.utc).isoformat(),
+                        }), ex=600)
+                    except Exception:
+                        pass
 
                     # Listen for abort while LLM is running
                     aborted = False
@@ -1024,7 +1233,24 @@ async def websocket_chat(
                         except _aio.TimeoutError:
                             continue
                         except WebSocketDisconnect:
-                            llm_task.cancel()
+                            if llm_task.done():
+                                raise
+                            # Task still running — let it complete in background
+                            logger.info(f"[WS] Disconnect while LLM running, continuing in background")
+                            try:
+                                from app.core.events import get_redis as _get_redis_bg
+                                _r_bg = await _get_redis_bg()
+                                await _r_bg.set(
+                                    f"bg_llm:{agent_id_str}:{conv_id}",
+                                    json.dumps({"status": "running"}),
+                                    ex=600,
+                                )
+                            except Exception:
+                                pass
+                            _aio.create_task(_complete_llm_background(
+                                llm_task, agent_id, user_id, conv_id, agent_id_str,
+                                partial_chunks, thinking_content, content,
+                            ))
                             raise
 
                     if aborted:
@@ -1042,6 +1268,14 @@ async def websocket_chat(
                     else:
                         assistant_response = await llm_task
                         logger.info(f"[WS] LLM response: {assistant_response[:80]}")
+
+                    # Clear inflight marker on normal completion or abort
+                    try:
+                        from app.core.events import get_redis as _get_redis_clear
+                        _r_clear = await _get_redis_clear()
+                        await _r_clear.delete(_r_inflight_key)
+                    except Exception:
+                        pass
 
                     # Update last_active_at
                     from datetime import datetime, timezone as tz
