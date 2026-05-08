@@ -637,7 +637,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_document",
-            "description": "Read office documents (PDF, Word, Excel, PPT) and images (JPG, PNG, etc.) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents. For images: uses OCR when configured. Automatically saves parsed content as Markdown in converted/ for efficient subsequent reading. Use start/count for pagination on long documents.",
+            "description": "Read office documents (PDF, Word, Excel, PPT) and images (JPG, PNG, etc.) with structure analysis. For PDFs: uses pdfplumber for text PDFs, and OCR for scanned documents. For images: uses OCR when configured. For Excel: reads up to 200 rows by default with total row/column count shown; use start/count to paginate through large spreadsheets. Automatically saves parsed content as Markdown in converted/ for efficient subsequent reading.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -655,7 +655,7 @@ AGENT_TOOLS = [
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Maximum characters to return (default: 15000, max: 50000).",
+                        "description": "Maximum characters to return (default: 15000, 30000 for Excel, max: 50000).",
                     },
                 },
                 "required": ["path"],
@@ -2166,6 +2166,16 @@ def _persist_tool_result_sync(ws: Path, tool_name: str, arguments: dict, result:
     return result
 
 
+async def _invalidate_recent_files_cache(agent_id: uuid.UUID) -> None:
+    """Invalidate recent-files cache when agent modifies files."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        await r.delete(f"recent_files:{agent_id}")
+    except Exception:
+        pass
+
+
 async def _execute_tool_direct(
     tool_name: str,
     arguments: dict,
@@ -2215,6 +2225,9 @@ async def _execute_tool_direct(
             result = await _send_file_to_agent(agent_id, ws, arguments)
         else:
             result = f"Tool {tool_name} does not support post-approval execution"
+        # Invalidate recent-files cache when agent modifies files
+        if tool_name in ("write_file", "edit_file", "delete_file") and isinstance(result, str) and result.startswith("✅"):
+            await _invalidate_recent_files_cache(agent_id)
         # Persist tool result (same logic as execute_tool)
         result = _persist_tool_result_sync(ws, tool_name, arguments, result)
         return result
@@ -2299,9 +2312,12 @@ async def execute_tool(
             path = arguments.get("path")
             if not path:
                 return "❌ Missing required argument 'path' for read_document"
-            max_chars = min(int(arguments.get("max_chars", 15000)), 50000)
+            ext = Path(path).suffix.lower()
+            default_count = 200 if ext == ".xlsx" else 50
+            default_max_chars = 30000 if ext == ".xlsx" else 15000
+            max_chars = min(int(arguments.get("max_chars", default_max_chars)), 50000)
             start = int(arguments.get("start", 1))
-            count = int(arguments.get("count", 50))
+            count = int(arguments.get("count", default_count))
             result = await _read_document(
                 ws, path, max_chars=max_chars, tenant_id=_agent_tenant_id,
                 start=start, count=count, agent_id=agent_id,
@@ -2544,6 +2560,10 @@ async def execute_tool(
         else:
             # Try MCP tool execution (use original name for MCP server lookup)
             result = await _execute_mcp_tool(_original_name, arguments, agent_id=agent_id)
+
+        # Invalidate recent-files cache when agent modifies files
+        if tool_name in ("write_file", "edit_file", "delete_file") and isinstance(result, str) and result.startswith("✅"):
+            await _invalidate_recent_files_cache(agent_id)
 
         # Log tool call activity (skip noisy read operations)
         if tool_name not in ("list_files", "read_file", "read_document"):
@@ -4050,7 +4070,7 @@ async def _extract_docx(file_path: Path) -> str:
     return "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
 
 
-def _extract_xlsx(file_path: Path, start: int = 1, count: int = 50) -> str:
+def _extract_xlsx(file_path: Path, start: int = 1, count: int = 200) -> str:
     """Extract text from XLSX with pagination support."""
     from openpyxl import load_workbook
 
@@ -4061,12 +4081,21 @@ def _extract_xlsx(file_path: Path, start: int = 1, count: int = 50) -> str:
         rows = []
         sr = max(1, start)
         er = sr + count - 1
-        for row in sheet.iter_rows(min_row=sr, max_row=er, values_only=True):
+        total_rows = sheet.max_row or 0
+        total_cols = sheet.max_column or 0
+        for idx, row in enumerate(sheet.iter_rows(min_row=sr, max_row=min(er, total_rows), values_only=True), start=sr):
             row_str = "\t".join(str(c) if c is not None else "" for c in row)
             if row_str.strip():
                 rows.append(row_str)
+        col_letters = []
+        if total_cols > 0:
+            from openpyxl.utils import get_column_letter
+            col_letters = [get_column_letter(c) for c in range(1, total_cols + 1)]
         if rows:
-            sheets.append(f"=== Sheet: {ws_name} ===\n" + "\n".join(rows))
+            header = f"=== Sheet: {ws_name} ({total_rows} rows x {total_cols} cols, showing rows {sr}-{min(er, total_rows)}) ==="
+            if col_letters:
+                header += f"\nColumns: {', '.join(col_letters)}"
+            sheets.append(header + "\n" + "\n".join(rows))
     wb.close()
     return "\n\n".join(sheets) if sheets else "(Excel is empty)"
 
