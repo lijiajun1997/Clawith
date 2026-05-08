@@ -619,6 +619,14 @@ export default function WorkspaceOperationPanel({
         loadFileTree();
     }, [agentId, liveDraft?.path, treeScope]);
 
+    // Reload recent files when agent completes file operations
+    const writeOpsCount = useMemo(() => activities.filter(a => a.action !== 'delete' && a.ok).length, [activities]);
+    useEffect(() => {
+        if (writeOpsCount > 0 && treeScope === 'recent') {
+            loadRecentFiles();
+        }
+    }, [writeOpsCount, treeScope]);
+
     useEffect(() => {
         if (!activePath || treeScope !== 'workspace') return;
         if (activePath === WORKSPACE_ROOT || activePath.startsWith(`${WORKSPACE_ROOT}/`)) return;
