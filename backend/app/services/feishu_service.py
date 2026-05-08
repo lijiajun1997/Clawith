@@ -41,6 +41,8 @@ class FeishuService:
         self.app_id = settings.FEISHU_APP_ID
         self.app_secret = settings.FEISHU_APP_SECRET
         self._app_access_token: str | None = None
+        # Token cache: {(app_id, app_secret): (token, expires_at)}
+        self._token_cache: dict[tuple[str, str], tuple[str, float]] = {}
         # OrderedDict is used as a simple LRU cache: move_to_end() on each hit
         # keeps the most-recently-used entries at the tail so we can evict from
         # the head when the cache is full.
@@ -86,21 +88,36 @@ class FeishuService:
         return await self.get_tenant_access_token(self.app_id, self.app_secret)
         
     async def get_tenant_access_token(self, app_id: str = None, app_secret: str = None) -> str:
-        """Get or refresh the app-level access token (tenant_access_token)."""
+        """Get or refresh the app-level access token (tenant_access_token).
+
+        Caches tokens per (app_id, app_secret) pair with a 7200s TTL,
+       提前 300s 过期以避免边界情况。
+        """
+        import time
         target_app_id = app_id or self.app_id
         target_app_secret = app_secret or self.app_secret
-        
+        cache_key = (target_app_id, target_app_secret)
+
+        # Check cache
+        cached = self._token_cache.get(cache_key)
+        if cached and time.time() < cached[1]:
+            return cached[0]
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(FEISHU_APP_TOKEN_URL, json={
                 "app_id": target_app_id,
                 "app_secret": target_app_secret,
             })
             data = resp.json()
-            
+
             token = data.get("tenant_access_token") or data.get("app_access_token", "")
-            if not app_id: # only cache default app token
+            if token:
+                expire_in = data.get("expire", 7200)
+                # Cache with TTL, expire 5 minutes early to avoid edge cases
+                self._token_cache[cache_key] = (token, time.time() + min(expire_in, 7200) - 300)
+            if not app_id:
                 self._app_access_token = token
-                
+
             return token
 
     async def fetch_bot_open_id(self, app_id: str, app_secret: str) -> str | None:
@@ -133,8 +150,6 @@ class FeishuService:
                 return open_id
         except Exception as e:
             logger.exception(f"[Feishu] fetch_bot_open_id error: {e}")
-            return None
-        except Exception:
             return None
 
     async def exchange_code_for_user(self, code: str) -> dict:

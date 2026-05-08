@@ -97,6 +97,7 @@ class FeishuWSManager:
         # Connection status: "connecting" | "connected" | "disconnected"
         self._status: Dict[uuid.UUID, str] = {}
         self._MAX_RECONNECT_DELAY = 300  # 5 minutes max
+        self._main_loop: asyncio.AbstractEventLoop | None = None
 
     def _create_event_handler(self, agent_id: uuid.UUID) -> lark.EventDispatcherHandler:
         """Create an event dispatcher for a specific agent."""
@@ -146,10 +147,11 @@ class FeishuWSManager:
                 loop.create_task(self._async_handle_message(agent_id, data))
             except RuntimeError:
                 try:
-                    # If no running loop in this thread, try to find the main event loop
-                    # This is a heuristic and might need adjustment depending on the exact async framework setup
-                    main_loop = [t for t in asyncio.all_tasks() if t.get_name() != "feishu-ws"][0].get_loop()
-                    asyncio.run_coroutine_threadsafe(self._async_handle_message(agent_id, data), main_loop)
+                    # If no running loop in this thread, dispatch to saved main loop
+                    if self._main_loop and not self._main_loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(self._async_handle_message(agent_id, data), self._main_loop)
+                    else:
+                        logger.error("[Feishu WS] No main event loop available for dispatch")
                 except Exception as e:
                     logger.exception(f"[Feishu WS] Could not dispatch event to main loop: {e}")
 
@@ -325,6 +327,8 @@ class FeishuWSManager:
 
     async def start_all(self):
         """Start WS clients for all configured Feishu agents."""
+        # Save the main event loop reference for thread-safe dispatch from SDK callbacks
+        self._main_loop = asyncio.get_running_loop()
         if not _HAS_LARK:
             logger.info("[Feishu WS] lark-oapi not installed, skipping Feishu WS initialization")
             return
