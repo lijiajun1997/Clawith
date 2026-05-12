@@ -155,7 +155,14 @@ export default function App() {
         if (effectiveToken && !user) {
             authApi.me()
                 .then((u) => setAuth(u, effectiveToken!))
-                .catch(() => useAuthStore.getState().logout())
+                .catch((err) => {
+                    // Only logout on confirmed 401 (auth failure), not on network errors
+                    const status = (err as any)?.status;
+                    if (status === 401) {
+                        useAuthStore.getState().logout();
+                    }
+                    // Network errors / 5xx: keep token, user stays on page
+                })
                 .finally(() => setLoading(false));
         } else {
             setLoading(false);

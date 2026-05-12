@@ -438,7 +438,8 @@ async def list_chat_logs(
     from app.models.chat_session import ChatSession
     excl_result = await db.execute(
         select(ChatSession.id).where(
-            ChatSession.source_channel.in_(["trigger", "agent"])
+            ChatSession.source_channel.in_(["trigger", "agent"]),
+            ChatSession.agent_id.in_(tenant_agent_ids),
         )
     )
     excl_conv_ids = {str(sid) for (sid,) in excl_result.all()}
@@ -455,15 +456,15 @@ async def list_chat_logs(
     if agent_id:
         base_where.append(ChatMessage.agent_id == agent_id)
 
-    # Fetch all matching messages for grouping (capped for performance)
+    # Fetch newest matching messages for grouping (capped for performance)
     query = (
         select(ChatMessage)
         .where(*base_where)
-        .order_by(ChatMessage.created_at.asc())
+        .order_by(ChatMessage.created_at.desc())
         .limit(5000)
     )
     result = await db.execute(query)
-    messages = result.scalars().all()
+    messages = list(reversed(result.scalars().all()))
 
     # Group into Q&A turns
     turns: list[dict] = []

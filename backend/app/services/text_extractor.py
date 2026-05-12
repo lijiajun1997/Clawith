@@ -122,24 +122,31 @@ def _extract_docx(data: bytes) -> str:
     return "\n\n".join(parts)
 
 
-def _extract_xlsx(data: bytes) -> str:
+def _extract_xlsx(data: bytes, max_col: int = 100) -> str:
     """Extract text from XLSX using openpyxl."""
     from openpyxl import load_workbook
-    
+
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     parts = []
-    
+
     for sheet in wb.sheetnames:
         ws = wb[sheet]
+        col_limit = min(max_col, ws.max_column or max_col)
+
         rows = []
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) if c is not None else "" for c in row]
+        for row in ws.iter_rows(max_col=col_limit, values_only=True):
+            stripped = list(row)
+            while stripped and stripped[-1] is None:
+                stripped.pop()
+            if not any(c is not None for c in stripped):
+                continue
+            cells = [str(c) if c is not None else "" for c in stripped]
             if any(c.strip() for c in cells):
                 rows.append(" | ".join(cells))
-        
+
         if rows:
             parts.append(f"## 工作表: {sheet}\n" + "\n".join(rows))
-    
+
     wb.close()
     return "\n\n".join(parts)
 

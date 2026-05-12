@@ -195,7 +195,7 @@ class BaseSandboxBackend(ABC):
         if not work_dir:
             return None
         try:
-            out_dir = Path(work_dir) / "workspace"
+            out_dir = Path(work_dir) / ".logs"
             out_dir.mkdir(parents=True, exist_ok=True)
             ts = int(_time.time() * 1000)
             file_path = out_dir / f"_exec_{prefix}_{ts}{suffix}"

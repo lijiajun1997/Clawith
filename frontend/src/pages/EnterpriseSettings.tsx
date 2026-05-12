@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { enterpriseApi, skillApi, agentApi } from '../services/api';
 import PromptModal from '../components/PromptModal';
+import ConfirmModal from '../components/ConfirmModal';
 import FileBrowser from '../components/FileBrowser';
 import type { FileBrowserApi } from '../components/FileBrowser';
 import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS } from '../utils/theme';
@@ -1057,6 +1058,7 @@ function SkillsTab() {
     const [clawhubKeyInput, setClawhubKeyInput] = useState('');
     const [savingClawhubKey, setSavingClawhubKey] = useState(false);
     const [skillsView, setSkillsView] = useState<'registry' | 'deployment'>('registry');
+    const [overwriteConfirm, setOverwriteConfirm] = useState<{ type: 'clawhub' | 'url' | 'zip'; payload: any } | null>(null);
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setToast({ message, type });
@@ -1084,17 +1086,20 @@ function SkillsTab() {
         setSearching(false);
     };
 
-    const handleInstall = async (slug: string) => {
+    const handleInstall = async (slug: string, overwrite = false) => {
         setInstalling(slug);
         try {
-            const result = await skillApi.clawhub.install(slug);
+            const result = await skillApi.clawhub.install(slug, overwrite);
             const tierLabel = result.tier === 1 ? 'Tier 1 (Pure Prompt)' : result.tier === 2 ? 'Tier 2 (CLI/API)' : 'Tier 3 (OpenClaw Native)';
             showToast(`Installed "${result.name}" — ${tierLabel}, ${result.file_count} files`);
             setRefreshKey(k => k + 1);
-            // Remove from search results
             setSearchResults(prev => prev.filter(r => r.slug !== slug));
         } catch (e: any) {
-            showToast(e.message || 'Install failed', 'error');
+            if (e.status === 409 && !overwrite) {
+                setOverwriteConfirm({ type: 'clawhub', payload: slug });
+            } else {
+                showToast(e.message || 'Install failed', 'error');
+            }
         }
         setInstalling(null);
     };
@@ -1112,20 +1117,47 @@ function SkillsTab() {
         setUrlPreviewing(false);
     };
 
-    const handleUrlImport = async () => {
+    const handleUrlImport = async (overwrite = false) => {
         if (!urlInput.trim()) return;
         setUrlImporting(true);
         try {
-            const result = await skillApi.importFromUrl(urlInput);
+            const result = await skillApi.importFromUrl(urlInput, overwrite);
             showToast(`Imported "${result.name}" — ${result.file_count} files`);
             setRefreshKey(k => k + 1);
             setShowUrlModal(false);
             setUrlInput('');
             setUrlPreview(null);
         } catch (e: any) {
-            showToast(e.message || 'Import failed', 'error');
+            if (e.status === 409 && !overwrite) {
+                setOverwriteConfirm({ type: 'url', payload: urlInput });
+            } else {
+                showToast(e.message || 'Import failed', 'error');
+            }
         }
         setUrlImporting(false);
+    };
+
+    const handleOverwriteConfirm = async () => {
+        const oc = overwriteConfirm;
+        setOverwriteConfirm(null);
+        if (!oc) return;
+        if (oc.type === 'clawhub') {
+            await handleInstall(oc.payload, true);
+        } else if (oc.type === 'url') {
+            await handleUrlImport(true);
+        } else if (oc.type === 'zip') {
+            setZipImporting(true);
+            try {
+                const res = await skillApi.importZip(oc.payload, true);
+                setToast({ message: `✅ 成功导入 "${res.name}" (${res.files?.length || 0} 个文件)`, type: 'success' });
+                setShowZipModal(false);
+                setRefreshKey(k => k + 1);
+            } catch (err: any) {
+                setZipError(err?.message || '导入失败');
+            } finally {
+                setZipImporting(false);
+            }
+        }
     };
 
     const tierBadge = (tier: number) => {
@@ -1526,7 +1558,7 @@ function SkillsTab() {
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                                     <button className="btn btn-secondary" onClick={() => setShowUrlModal(false)} style={{ fontSize: '13px' }}>Cancel</button>
-                                    <button className="btn btn-primary" onClick={handleUrlImport} disabled={urlImporting} style={{ fontSize: '13px' }}>
+                                    <button className="btn btn-primary" onClick={() => handleUrlImport()} disabled={urlImporting} style={{ fontSize: '13px' }}>
                                         {urlImporting ? 'Importing...' : 'Import'}
                                     </button>
                                 </div>
@@ -1578,7 +1610,12 @@ function SkillsTab() {
                                             setShowZipModal(false);
                                             setRefreshKey(k => k + 1);
                                         } catch (err: any) {
-                                            setZipError(err?.data?.detail || err?.message || '导入失败');
+                                            const isConflict = err?.status === 409 || err?.message?.includes('already exists');
+                                            if (isConflict) {
+                                                setOverwriteConfirm({ type: 'zip', payload: file });
+                                            } else {
+                                                setZipError(err?.detail || err?.data?.detail || err?.message || '导入失败');
+                                            }
                                         } finally {
                                             setZipImporting(false);
                                         }
@@ -1603,6 +1640,15 @@ function SkillsTab() {
             )}
             </>
             )}
+            <ConfirmModal
+                open={!!overwriteConfirm}
+                title={t('enterprise.skillDeployment.overwriteTitle')}
+                message={t('enterprise.skillDeployment.overwriteMessage')}
+                confirmLabel={t('enterprise.skillDeployment.overwriteConfirm')}
+                danger
+                onConfirm={handleOverwriteConfirm}
+                onCancel={() => setOverwriteConfirm(null)}
+            />
         </div>
     );
 }
@@ -1919,8 +1965,10 @@ function SkillsDeploymentView() {
                                     {filteredAgents.map((agent: any) => {
                                         const dep = selected.agent_deployments.find((d: any) => d.agent_id === agent.id);
                                         const checked = modalAgentIds.includes(agent.id);
-                                        const statusColor = agent.status === 'running' ? 'var(--success, #34c759)'
-                                            : agent.status === 'idle' ? 'var(--warning, #ff9f0a)'
+                                        const ds = agent.display_status || agent.status;
+                                        const statusColor = ['working', 'active', 'running'].includes(ds) ? 'var(--success, #34c759)'
+                                            : ['standby', 'idle'].includes(ds) ? 'var(--warning, #ff9f0a)'
+                                            : ds === 'dormant' ? 'var(--text-tertiary)'
                                             : 'var(--text-tertiary)';
                                         return (
                                             <label key={agent.id} style={{
@@ -1934,7 +1982,7 @@ function SkillsDeploymentView() {
                                                     )} />
                                                 <span style={{ fontWeight: 500 }}>{agent.name}</span>
                                                 <span style={{ fontSize: '11px', color: statusColor }}>
-                                                    {agent.status}
+                                                    {ds}
                                                 </span>
                                                 {showModal === 'deploy' && dep?.deployed && (
                                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
@@ -2627,6 +2675,7 @@ export default function EnterpriseSettings() {
         queryKey: ['chat-logs', selectedTenantId, chatLogUserFilter, chatLogAgentFilter, chatLogPage],
         queryFn: () => fetchJson<{ items: any[]; total: number; page: number; page_size: number }>(`/enterprise/chat-logs?${chatLogParams.toString()}`),
         enabled: activeTab === 'audit' && auditFilter === 'chat',
+        refetchInterval: 30000,
     });
     // Users & agents for chat log filter dropdowns
     const { data: chatLogUsers = [] } = useQuery({

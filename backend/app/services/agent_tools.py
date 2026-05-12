@@ -3782,17 +3782,18 @@ def _resolve_workspace_file(ws: Path, rel_path: str, tenant_id: str | None = Non
 
 async def _load_ocr_config(agent_id: uuid.UUID | None) -> dict:
     """Load OCR config from read_file tool settings (shared across tools)."""
+    default_ocr_url = "http://localhost:6008/ocr/file"
     try:
         config = await _get_tool_config(agent_id, "read_file") if agent_id else None
         if config:
             return {
                 "ocr_enabled": config.get("ocr_enabled", False),
-                "ocr_url": config.get("ocr_url", ""),
+                "ocr_url": config.get("ocr_url", "") or default_ocr_url,
                 "ocr_api_key": config.get("ocr_api_key", ""),
             }
     except Exception:
         pass
-    return {}
+    return {"ocr_url": default_ocr_url}
 
 
 def _get_converted_md_path(ws: Path, original_file: Path) -> Path:
@@ -4009,16 +4010,18 @@ async def _read_pdf(
     extracted = "\n\n".join(text_parts)
     page_info = f" (pages {sp}-{ep} of {total_pages})"
 
-    # If text is sparse, try OCR
+    # If text is sparse, try OCR automatically
     total_text = sum(len(p.split("--- Page")[-1].strip()) for p in text_parts)
-    if total_text < 100 and ocr_config.get("ocr_enabled") and ocr_config.get("ocr_url"):
+    ocr_url = ocr_config.get("ocr_url", "http://localhost:6008/ocr/file")
+    ocr_api_key = ocr_config.get("ocr_api_key", "")
+    if total_text < 100 and ocr_url:
         try:
             from app.services.text_extractor import extract_text_with_ocr
 
             ocr_text = await extract_text_with_ocr(
                 file_path.read_bytes(), file_path.name,
-                ocr_url=ocr_config["ocr_url"],
-                ocr_api_key=ocr_config.get("ocr_api_key", ""),
+                ocr_url=ocr_url,
+                ocr_api_key=ocr_api_key,
             )
             if ocr_text and len(ocr_text) > total_text:
                 logger.info(f"[ReadDocument] OCR used for scanned PDF: {file_path.name}")
@@ -4070,32 +4073,43 @@ async def _extract_docx(file_path: Path) -> str:
     return "\n".join(lines) if lines else "(Document is empty or uses unsupported formatting)"
 
 
-def _extract_xlsx(file_path: Path, start: int = 1, count: int = 200) -> str:
+def _extract_xlsx(file_path: Path, start: int = 1, count: int = 200, max_col: int = 100) -> str:
     """Extract text from XLSX with pagination support."""
     from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
 
     wb = load_workbook(str(file_path), read_only=True, data_only=True)
     sheets = []
     for ws_name in wb.sheetnames[:10]:
         sheet = wb[ws_name]
-        rows = []
         sr = max(1, start)
         er = sr + count - 1
         total_rows = sheet.max_row or 0
-        total_cols = sheet.max_column or 0
-        for idx, row in enumerate(sheet.iter_rows(min_row=sr, max_row=min(er, total_rows), values_only=True), start=sr):
-            row_str = "\t".join(str(c) if c is not None else "" for c in row)
+        # Cap columns to avoid reading 16384 empty cols in read_only mode
+        col_limit = min(max_col, sheet.max_column or max_col)
+
+        rows = []
+        actual_max_col = 0
+        for idx, row in enumerate(sheet.iter_rows(min_row=sr, max_row=min(er, total_rows), max_col=col_limit, values_only=True), start=sr):
+            # Trim trailing empty cells and track actual data width
+            stripped = list(row)
+            while stripped and stripped[-1] is None:
+                stripped.pop()
+            if not any(c is not None for c in stripped):
+                continue
+            actual_max_col = max(actual_max_col, len(stripped))
+            row_str = "\t".join(str(c) if c is not None else "" for c in stripped)
             if row_str.strip():
                 rows.append(row_str)
-        col_letters = []
-        if total_cols > 0:
-            from openpyxl.utils import get_column_letter
-            col_letters = [get_column_letter(c) for c in range(1, total_cols + 1)]
-        if rows:
-            header = f"=== Sheet: {ws_name} ({total_rows} rows x {total_cols} cols, showing rows {sr}-{min(er, total_rows)}) ==="
-            if col_letters:
-                header += f"\nColumns: {', '.join(col_letters)}"
-            sheets.append(header + "\n" + "\n".join(rows))
+
+        if not rows:
+            continue
+
+        col_letters = [get_column_letter(c) for c in range(1, actual_max_col + 1)]
+        header = f"=== Sheet: {ws_name} ({total_rows} rows x {actual_max_col} cols, showing rows {sr}-{min(er, total_rows)}) ==="
+        if col_letters:
+            header += f"\nColumns: {', '.join(col_letters)}"
+        sheets.append(header + "\n" + "\n".join(rows))
     wb.close()
     return "\n\n".join(sheets) if sheets else "(Excel is empty)"
 
@@ -10860,7 +10874,8 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
         if not action:
             return json.dumps({
                 "success": False,
-                "error": "action is required"
+                "error": "action is required",
+                "valid_actions": ["create_document", "get_document_info", "get_document_text", "copy_document", "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace", "create_custom_style", "format_text", "set_cell_alignment", "merge_cells", "protect_document", "unprotect_document", "get_usage_guide", "find_text", "convert_to_pdf"]
             }, ensure_ascii=False)
 
         # Document Operations
@@ -11039,7 +11054,8 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
         if not action:
             return json.dumps({
                 "success": False,
-                "error": "action is required"
+                "error": "action is required",
+                "valid_actions": ["create_workbook", "read_workbook", "write_data", "add_sheet", "list_sheets", "delete_sheet"]
             }, ensure_ascii=False)
 
         # 创建工作簿
@@ -11233,7 +11249,8 @@ async def fetch_advanced(arguments: dict, agent_id: uuid.UUID | None = None, cre
         if not action:
             return json.dumps({
                 "success": False,
-                "error": "action is required"
+                "error": "action is required",
+                "valid_actions": ["fetch", "check_robots"]
             }, ensure_ascii=False)
 
         if action == "fetch":
@@ -11364,7 +11381,8 @@ async def sec_edgar_advanced(arguments: dict, agent_id: uuid.UUID | None = None,
         if not action:
             return json.dumps({
                 "success": False,
-                "error": "action is required"
+                "error": "action is required",
+                "valid_actions": ["get_cik_by_ticker", "get_company_info", "search_companies", "get_recent_filings", "get_company_facts", "get_filings_summary"]
             }, ensure_ascii=False)
 
         # Initialize SEC EDGAR tools

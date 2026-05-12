@@ -8,7 +8,7 @@ import shutil
 import zipfile
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIUploadFile, File as FastAPIFile
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile as FastAPIUploadFile, File as FastAPIFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -26,7 +26,7 @@ GITHUB_API = "https://api.github.com"
 
 MAX_SKILL_SIZE = 5_242_880  # 5 MB total limit per skill
 MAX_SKILL_ZIP_SIZE = 30 * 1024 * 1024  # 30 MB  # 5 MB
-MAX_SINGLE_FILE_SIZE = 1024 * 1024  # 1 MB
+MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
@@ -245,6 +245,7 @@ async def _save_skill_to_db(
     category: str, icon: str, files: list[dict],
     source_url: str | None = None,
     tenant_id: str | None = None,
+    overwrite: bool = False,
 ) -> dict:
     """Create a Skill + SkillFile records in the database."""
     import uuid as _uuid
@@ -256,11 +257,19 @@ async def _save_skill_to_db(
         else:
             conflict_q = conflict_q.where(Skill.tenant_id.is_(None))
         existing = await db.execute(conflict_q)
-        if existing.scalar_one_or_none():
-            raise HTTPException(
-                409, f"A skill with folder name '{folder_name}' already exists. "
-                     "Delete it first or use a different name."
-            )
+        existing_skill = existing.scalar_one_or_none()
+        if existing_skill:
+            if not overwrite:
+                raise HTTPException(
+                    409, f"A skill with folder name '{folder_name}' already exists. "
+                         "Delete it first or use a different name."
+                )
+            if existing_skill.is_builtin:
+                raise HTTPException(
+                    403, f"Cannot overwrite built-in skill '{folder_name}'."
+                )
+            await db.delete(existing_skill)
+            await db.flush()
 
         skill = Skill(
             name=name,
@@ -332,7 +341,7 @@ async def clawhub_detail(slug: str, current_user: User = Depends(get_current_use
 
 
 @router.post("/clawhub/install")
-async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depends(get_current_user)):
+async def install_from_clawhub(body: ClawhubInstallIn, overwrite: bool = Query(False), current_user: User = Depends(get_current_user)):
     """Install a skill from ClawHub into the global registry."""
     # Resolve tenant GitHub token
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
@@ -417,8 +426,8 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
         files=files,
         source_url=f"https://clawhub.ai/skills/{slug}",
         tenant_id=tenant_id,
+        overwrite=overwrite,
     )
-
     result["tier"] = tier
     result["is_suspicious"] = is_suspicious
     result["moderation_summary"] = moderation_summary
@@ -429,25 +438,51 @@ async def install_from_clawhub(body: ClawhubInstallIn, current_user: User = Depe
 
 
 def _parse_zip_skill_frontmatter(content: str) -> tuple[str | None, str | None]:
-    """Parse SKILL.md frontmatter. Returns (name, description)."""
+    """Parse SKILL.md frontmatter. Returns (name, description).
+
+    Only parses within YAML frontmatter delimiters (--- ... ---).
+    Falls back to first matching line in the whole file if no delimiters found.
+    """
     name = None
     description = None
-    for line in content.split("\n"):
+
+    # Extract YAML frontmatter between first pair of --- lines
+    lines = content.split("\n")
+    in_frontmatter = False
+    frontmatter_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "---":
+            if not in_frontmatter:
+                in_frontmatter = True
+            else:
+                break  # end of frontmatter
+        elif in_frontmatter:
+            frontmatter_lines.append(line)
+
+    # If no frontmatter delimiters found, fall back to scanning entire file
+    target_lines = frontmatter_lines if frontmatter_lines else lines
+
+    for line in target_lines:
         line = line.strip()
-        if line.lower().startswith("name:"):
+        lower = line.lower()
+        if name is None and lower.startswith("name:"):
             val = line[5:].strip().strip('"').strip("'")
             if val:
                 name = val
-        elif line.lower().startswith("description:"):
+        elif description is None and lower.startswith("description:"):
             val = line[12:].strip().strip('"').strip("'")
             if val:
                 description = val
+        if name and description:
+            break
     return name, description
 
 
 @router.post("/import-zip")
 async def import_skill_zip(
     file: FastAPIUploadFile = FastAPIFile(..., alias="file"),
+    overwrite: bool = Query(False),
     current_user: User = Depends(get_current_user),
 ):
     """Import a skill from a ZIP file into the global registry."""
@@ -571,6 +606,7 @@ async def import_skill_zip(
                 files=files,
                 source_url="",
                 tenant_id=tenant_id,
+                overwrite=overwrite,
             )
             result["files"] = [f["path"] for f in files]
             return result
@@ -580,7 +616,7 @@ async def import_skill_zip(
 
 
 @router.post("/import-from-url")
-async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_current_user)):
+async def import_from_url(body: UrlImportIn, overwrite: bool = Query(False), current_user: User = Depends(get_current_user)):
     """Import a skill from any GitHub URL into the global registry."""
     tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
     token = await _get_github_token(tenant_id)
@@ -619,6 +655,7 @@ async def import_from_url(body: UrlImportIn, current_user: User = Depends(get_cu
         files=files,
         source_url=body.url,
         tenant_id=tenant_id,
+        overwrite=overwrite,
     )
 
     result["tier"] = tier

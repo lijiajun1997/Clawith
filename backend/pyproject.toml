@@ -41,11 +41,18 @@ dependencies = [
     "anyascii>=0.3.2",
     "Pillow>=10.0.0",
     "weasyprint>=62.0",
+    "msoffcrypto-tool>=4.7.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
 teams = [
     "azure-identity>=1.15.0",
+]
+mcp = [
+    "fastmcp>=2.0.0",
+    "mcp>=1.0.0",
 ]
 dev = [
     "pytest>=8.0.0",

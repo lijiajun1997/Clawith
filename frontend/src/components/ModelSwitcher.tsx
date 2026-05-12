@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { IconChevronDown, IconCheck } from '@tabler/icons-react';
+import { IconChevronDown, IconCheck, IconEye } from '@tabler/icons-react';
 import { enterpriseApi } from '../services/api';
 
 interface Model {
@@ -11,6 +11,7 @@ interface Model {
     model: string;
     label?: string;
     enabled?: boolean;
+    supports_vision?: boolean;
 }
 
 interface Props {
@@ -120,6 +121,9 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
                 }}>
                     {selected ? labelFor(selected) : t('chat.modelSwitcher.none', 'No model')}
                 </span>
+                {selected?.supports_vision && (
+                    <IconEye size={13} stroke={1.5} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                )}
                 <IconChevronDown
                     size={13}
                     stroke={2}
@@ -170,6 +174,9 @@ export default function ModelSwitcher({ value, onChange, tenantDefaultId, disabl
                                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                     {labelFor(m)}
                                 </span>
+                                {m.supports_vision && (
+                                    <IconEye size={13} stroke={1.5} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                                )}
                                 {isDefault && (
                                     <span style={{
                                         fontSize: '10px', padding: '2px 6px',

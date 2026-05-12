@@ -10,7 +10,11 @@ import datetime
 import io 
 from typing import List, Optional, Dict, Any
 from docx import Document
-import msoffcrypto 
+
+try:
+    import msoffcrypto
+except ImportError:
+    msoffcrypto = None
 
 from app.services.word_document_server.utils.file_utils import check_file_writeable, ensure_docx_extension
 
@@ -41,6 +45,9 @@ async def protect_document(filename: str, password: str) -> str:
         return f"Cannot protect document: {error_message}"
 
     try:
+        if msoffcrypto is None:
+            return "Cannot protect document: msoffcrypto package is not installed"
+
         # Read the original file content
         with open(filename, "rb") as infile:
             original_data = infile.read()
@@ -240,6 +247,9 @@ async def unprotect_document(filename: str, password: str) -> str:
         return f"Cannot modify document: {error_message}"
 
     try:
+        if msoffcrypto is None:
+            return "Cannot unprotect document: msoffcrypto package is not installed"
+
         # Read the encrypted file content
         with open(filename, "rb") as infile:
             encrypted_data = infile.read()

@@ -138,10 +138,10 @@ def _truncate_output(text: str, limit: int, work_dir: str | None, prefix: str) -
     if len(text) <= limit:
         return text, None
 
-    # 保存完整输出到工作区
+    # 保存完整输出到 .logs 子目录（避免污染 workspace 根目录）
     if work_dir:
         try:
-            out_dir = Path(work_dir) / "workspace"
+            out_dir = Path(work_dir) / "workspace" / ".logs"
             out_dir.mkdir(parents=True, exist_ok=True)
             ts = int(time.time() * 1000)
             file_path = out_dir / f"_exec_{prefix}_{ts}.log"

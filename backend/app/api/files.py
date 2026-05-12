@@ -44,7 +44,7 @@ router = APIRouter(prefix="/agents/{agent_id}/files", tags=["files"])
 
 # Skill import limits
 MAX_SKILL_ZIP_SIZE = 30 * 1024 * 1024  # 30 MB  # 5 MB
-MAX_SINGLE_FILE_SIZE = 1024 * 1024    # 1 MB
+MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # Folder download limits
 MAX_FOLDER_DOWNLOAD_SIZE = 100 * 1024 * 1024  # 100 MB

@@ -628,6 +628,18 @@ export default function Chat() {
                             return [...msgs, { role: 'assistant', content: '', toolCalls: [newCall], timestamp: now, _isToolGroup: true }];
                         });
 
+                        // ── send_channel_file: auto-open file in workspace preview ──
+                        if (data.name === 'send_channel_file' && (data as any).file_preview) {
+                            const fp = (data as any).file_preview as { name: string; path: string; url: string };
+                            const fileKey = `send-${fp.name}-${Date.now()}`;
+                            setGeneratingFiles(prev => {
+                                const next = new Map(prev);
+                                next.set(fileKey, { name: fp.name, status: 'done', path: fp.path });
+                                return next;
+                            });
+                            setCanvasPanelVisible(true);
+                        }
+
                         // ── AgentBay live preview (embedded in tool_call) ──
                         if (data.live_preview) {
                             const lp = data.live_preview;

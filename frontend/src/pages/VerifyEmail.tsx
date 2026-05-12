@@ -44,7 +44,7 @@ export default function VerifyEmail() {
 
             // Auto-login with the returned token
             if (res.access_token && res.user) {
-                setAuth(res.user, res.access_token);
+                setAuth(res.user, res.access_token, res.refresh_token);
 
                 // Redirect based on needs_company_setup
                 setTimeout(() => {

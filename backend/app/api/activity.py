@@ -42,25 +42,22 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             await db.rollback()
             return []
 
-    # Fire all queries concurrently
-    (rows_type_counts, rows_hourly, rows_conv, rows_rank,
-     rows_tool, rows_error, rows_recent, rows_daily,
-     rows_task_agg, rows_task_top) = await asyncio.gather(
-        _q("""  -- Q1: activity type counts
+    # Execute queries sequentially (asyncpg does not support concurrent queries on one session)
+    rows_type_counts = await _q("""  -- Q1: activity type counts
             SELECT action_type, COUNT(*) AS count
             FROM agent_activity_logs al
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid AND al.created_at >= :since
             GROUP BY action_type ORDER BY count DESC
-        """),
-        _q("""  -- Q2: hourly trend (24h)
+        """)
+    rows_hourly = await _q("""  -- Q2: hourly trend (24h)
             SELECT DATE_TRUNC('hour', al.created_at) AS hour, COUNT(*) AS count
             FROM agent_activity_logs al
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid AND al.created_at >= NOW() - INTERVAL '24 hours'
             GROUP BY hour ORDER BY hour
-        """),
-        _q("""  -- Q3: conversation channel daily
+        """)
+    rows_conv = await _q("""  -- Q3: conversation channel daily
             SELECT DATE(al.created_at) AS day,
                    COALESCE(al.detail_json->>'channel', 'other') AS channel,
                    COUNT(*) AS count
@@ -69,8 +66,8 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             WHERE a.tenant_id = :tid AND al.action_type = 'chat_reply'
               AND al.created_at >= :since
             GROUP BY day, channel ORDER BY day
-        """),
-        _q("""  -- Q4: agent activity rank
+        """)
+    rows_rank = await _q("""  -- Q4: agent activity rank
             SELECT a.id AS agent_id, a.name AS agent_name,
                    COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '1 day') AS count_day,
                    COUNT(al.id) FILTER (WHERE al.created_at >= NOW() - INTERVAL '7 days') AS count_week,
@@ -81,8 +78,8 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             GROUP BY a.id, a.name
             HAVING COUNT(al.id) > 0
             ORDER BY count_week DESC
-        """),
-        _q_safe("""  -- Q5: tool call stats
+        """)
+    rows_tool = await _q_safe("""  -- Q5: tool call stats
             SELECT COALESCE(al.detail_json->>'tool', 'unknown') AS tool,
                    COUNT(*) AS calls,
                    COUNT(*) FILTER (WHERE al.detail_json->>'result' IS NULL
@@ -91,31 +88,31 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid AND al.action_type = 'tool_call' AND al.created_at >= :since
             GROUP BY tool ORDER BY calls DESC LIMIT 10
-        """),
-        _q("""  -- Q6: error trend (14d)
+        """)
+    rows_error = await _q("""  -- Q6: error trend (14d)
             SELECT DATE(al.created_at) AS day, COUNT(*) AS errors
             FROM agent_activity_logs al
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid AND al.action_type = 'error'
               AND al.created_at >= NOW() - INTERVAL '14 days'
             GROUP BY day ORDER BY day
-        """),
-        _q_safe("""  -- Q7: recent activities
+        """)
+    rows_recent = await _q_safe("""  -- Q7: recent activities
             SELECT al.id, al.agent_id, al.action_type, al.summary, al.created_at
             FROM agent_activity_logs al
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid
             ORDER BY al.created_at DESC LIMIT 50
-        """),
-        _q_safe("""  -- Q8: daily stats
+        """)
+    rows_daily = await _q_safe("""  -- Q8: daily stats
             SELECT DATE(al.created_at) AS day, al.action_type,
                    al.detail_json->>'tool' AS detail_tool, COUNT(*) AS count
             FROM agent_activity_logs al
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid AND al.created_at >= :since
             GROUP BY day, al.action_type, al.detail_json->>'tool' ORDER BY day
-        """),
-        _q_safe("""  -- Q9: task aggregation by status
+        """)
+    rows_task_agg = await _q_safe("""  -- Q9: task aggregation by status
             SELECT t.agent_id,
                    COUNT(*) FILTER (WHERE t.status = 'pending') AS pending,
                    COUNT(*) FILTER (WHERE t.status = 'doing') AS doing,
@@ -125,8 +122,8 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             JOIN agents a ON a.id = t.agent_id
             WHERE a.tenant_id = :tid
             GROUP BY t.agent_id
-        """),
-        _q_safe("""  -- Q10: top 3 pending/doing tasks per agent
+        """)
+    rows_task_top = await _q_safe("""  -- Q10: top 3 pending/doing tasks per agent
             SELECT agent_id, id, title, priority, status FROM (
                 SELECT t.agent_id, t.id, t.title, t.priority, t.status,
                        ROW_NUMBER() OVER (
@@ -138,8 +135,7 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
                 JOIN agents a ON a.id = t.agent_id
                 WHERE a.tenant_id = :tid AND t.status IN ('pending', 'doing')
             ) sub WHERE rn <= 3
-        """),
-    )
+        """)
 
     # --- Build response ---
     activity_type_counts = [{"action_type": r.action_type, "count": r.count} for r in rows_type_counts]
