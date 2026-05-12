@@ -268,7 +268,14 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "Surgically replace a specific string inside an existing file without rewriting the whole content. Prefer this over write_file when you only need to change one or more sections — it avoids accidentally overwriting content outside the edit target and is safer in multi-agent scenarios. The old_string must match exactly (including all whitespace and newlines).",
+            "description": (
+                "Surgically edit a file without rewriting the whole content. Supports 3 mutually exclusive modes:\n"
+                "1) String replacement: provide old_string + new_string (exact match required including whitespace).\n"
+                "2) Line range replacement: provide start_line + end_line + new_string. Use read_file first to get line numbers, "
+                "then replace lines start_line through end_line (inclusive) with new_string.\n"
+                "3) Insert/Append: provide insert_after_line + new_string. Insert content after a specific line number, or use -1 to append at end of file.\n"
+                "Tip: Always read_file before editing to ensure you have the exact current content."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -278,18 +285,30 @@ AGENT_TOOLS = [
                     },
                     "old_string": {
                         "type": "string",
-                        "description": "Exact text to find and replace. Must match exactly including whitespace and newlines.",
+                        "description": "(Mode 1) Exact text to find and replace. Must match exactly including whitespace and newlines. Ignored when start_line or insert_after_line is used.",
                     },
                     "new_string": {
                         "type": "string",
-                        "description": "Replacement text",
+                        "description": "Replacement or insertion text",
                     },
                     "replace_all": {
                         "type": "boolean",
-                        "description": "Replace all occurrences if true (default: false). Set to true when you want to replace every match.",
+                        "description": "(Mode 1 only) Replace all occurrences if true (default: false).",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "(Mode 2) 1-indexed starting line number. Use with end_line to replace a line range. Get line numbers from read_file output.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "(Mode 2) 1-indexed ending line number (inclusive). Lines start_line through end_line will be replaced with new_string.",
+                    },
+                    "insert_after_line": {
+                        "type": "integer",
+                        "description": "(Mode 3) Insert new_string AFTER this line number (1-indexed). Use -1 to append at end of file. Mutually exclusive with old_string and start_line.",
                     },
                 },
-                "required": ["path", "old_string", "new_string"],
+                "required": ["path", "new_string"],
             },
         },
     },
@@ -2167,8 +2186,44 @@ def _persist_tool_result_sync(ws: Path, tool_name: str, arguments: dict, result:
     return result
 
 
-async def _invalidate_recent_files_cache(agent_id: uuid.UUID) -> None:
-    """Invalidate recent-files cache when agent modifies files."""
+# Path-to-cache-sub-key mapping for precise invalidation
+_FILE_CACHE_MAP: dict[str, list[str]] = {
+    "soul.md": ["soul"],
+    "relationships.md": ["rels"],
+    "COMPANY_SYSTEM_PROMPT.md": ["company"],
+}
+_SKILLS_PREFIX = "skills/"
+
+
+async def _invalidate_context_cache(agent_id: uuid.UUID, rel_path: str) -> None:
+    """Invalidate relevant context cache keys when a file is modified.
+
+    Args:
+        agent_id: Agent UUID
+        rel_path: Relative file path that was written/edited/deleted
+    """
+    sub_keys: list[str] = []
+    rel_normalized = rel_path.strip("/").replace("\\", "/")
+
+    # Exact file matches
+    for pattern, keys in _FILE_CACHE_MAP.items():
+        if rel_normalized == pattern:
+            sub_keys.extend(keys)
+
+    # Skills directory — any write under skills/ invalidates the skills index
+    if rel_normalized.startswith(_SKILLS_PREFIX) or rel_normalized == "skills":
+        sub_keys.append("skills")
+
+    if not sub_keys:
+        return
+
+    try:
+        from app.services.agent_context import invalidate_agent_cache
+        await invalidate_agent_cache(agent_id, *sub_keys)
+    except Exception:
+        pass
+
+    # Also invalidate the legacy recent-files cache
     try:
         from app.core.events import get_redis
         r = await get_redis()
@@ -2226,9 +2281,9 @@ async def _execute_tool_direct(
             result = await _send_file_to_agent(agent_id, ws, arguments)
         else:
             result = f"Tool {tool_name} does not support post-approval execution"
-        # Invalidate recent-files cache when agent modifies files
+        # Invalidate context cache when agent modifies files
         if tool_name in ("write_file", "edit_file", "delete_file") and isinstance(result, str) and result.startswith("✅"):
-            await _invalidate_recent_files_cache(agent_id)
+            await _invalidate_context_cache(agent_id, arguments.get("path", ""))
         # Persist tool result (same logic as execute_tool)
         result = _persist_tool_result_sync(ws, tool_name, arguments, result)
         return result
@@ -2279,7 +2334,11 @@ async def execute_tool(
                         return f"❌ Action denied: {result_check.get('message', 'unknown reason')}"
         except Exception as e:
             logger.exception(f"[Autonomy] Check failed: {e}")
-            return f"⚠️ Autonomy check failed ({e}). Operation blocked for safety. Please retry or contact admin."
+            # Notification delivery failures (e.g. Feishu HTTP 400) should not block the action
+            if "send_message" in str(e) or "send_approval_card" in str(e) or "Feishu" in str(e):
+                logger.warning(f"[Autonomy] Notification delivery failed, allowing action: {e}")
+            else:
+                return f"⚠️ Autonomy check failed ({e}). Operation blocked for safety. Please retry or contact admin."
 
     # Pre-inject session_id into arguments for AgentBay tools so each
     # _agentbay_* handler can pass it to get_agentbay_client_for_agent()
@@ -2336,16 +2395,20 @@ async def execute_tool(
         # --- Enhanced file management tools ---
         elif tool_name == "edit_file":
             path = arguments.get("path")
-            old_string = arguments.get("old_string")
             new_string = arguments.get("new_string")
             if not path:
                 return "❌ Missing required argument 'path' for edit_file"
-            if old_string is None:
-                return "❌ Missing required argument 'old_string' for edit_file"
             if new_string is None:
                 return "❌ Missing required argument 'new_string' for edit_file"
-            replace_all = arguments.get("replace_all", False)
-            result = _edit_file(ws, path, old_string, new_string, replace_all=replace_all, tenant_id=_agent_tenant_id)
+            result = _edit_file(
+                ws, path, new_string,
+                old_string=arguments.get("old_string"),
+                replace_all=arguments.get("replace_all", False),
+                start_line=arguments.get("start_line"),
+                end_line=arguments.get("end_line"),
+                insert_after_line=arguments.get("insert_after_line"),
+                tenant_id=_agent_tenant_id,
+            )
         elif tool_name == "search_files":
             pattern = arguments.get("pattern")
             if not pattern:
@@ -2562,9 +2625,13 @@ async def execute_tool(
             # Try MCP tool execution (use original name for MCP server lookup)
             result = await _execute_mcp_tool(_original_name, arguments, agent_id=agent_id)
 
-        # Invalidate recent-files cache when agent modifies files
+        # Invalidate context cache when agent modifies files
         if tool_name in ("write_file", "edit_file", "delete_file") and isinstance(result, str) and result.startswith("✅"):
-            await _invalidate_recent_files_cache(agent_id)
+            await _invalidate_context_cache(agent_id, arguments.get("path", ""))
+
+        # Invalidate skills cache on skill install
+        if tool_name == "install_skill" and isinstance(result, str) and result.startswith("✅"):
+            await _invalidate_context_cache(agent_id, "skills/")
 
         # Log tool call activity (skip noisy read operations)
         if tool_name not in ("list_files", "read_file", "read_document"):
@@ -2852,7 +2919,7 @@ async def _search_zhipu(query: str, api_key: str, max_results: int) -> str:
             json={
                 "search_query": query,
                 "search_engine": "search_pro",
-                "search_intent": True,
+                "search_intent": False,
                 "count": min(max_results, 50),
             },
             headers={
@@ -4184,28 +4251,44 @@ def _delete_file(ws: Path, rel_path: str) -> str:
         return f"Delete failed: {e}"
 
 
-def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replace_all: bool = False, tenant_id: str | None = None) -> str:
-    """Perform surgical string replacement in a file.
+def _edit_file(
+    ws: Path,
+    rel_path: str,
+    new_string: str,
+    old_string: str | None = None,
+    replace_all: bool = False,
+    start_line: int | None = None,
+    end_line: int | None = None,
+    insert_after_line: int | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    """Edit a file using one of three modes: string replacement, line-range replacement, or insert/append."""
 
-    Args:
-        ws: Workspace root path
-        rel_path: Relative file path
-        old_string: Exact text to find and replace
-        new_string: Replacement text
-        replace_all: Replace all occurrences if True
-        tenant_id: Optional tenant ID for enterprise_info
+    # --- Mode detection & mutual-exclusion validation ---
+    has_old = old_string is not None
+    has_lines = start_line is not None or end_line is not None
+    has_insert = insert_after_line is not None
 
-    Returns:
-        Success message or error
-    """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    mode_count = sum([has_old, has_lines, has_insert])
+    if mode_count == 0:
+        return "❌ Must provide one of: old_string (string replacement), start_line+end_line (line range), or insert_after_line (insert/append)."
+    if mode_count > 1:
+        return "❌ old_string, start_line/end_line, and insert_after_line are mutually exclusive — provide only one mode."
+
+    if has_lines:
+        if start_line is None or end_line is None:
+            return "❌ Both start_line and end_line must be provided together for line-range mode."
+
+    # --- Path resolution (shared logic) ---
     if rel_path and rel_path.startswith("enterprise_info"):
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
         else:
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = rel_path[len("enterprise_info"):].lstrip("/")
-        file_path = (enterprise_root / sub).resolve() if sub else enterprise_root
+        if not sub:
+            return f"❌ Cannot edit directory: {rel_path}. Provide a file path."
+        file_path = (enterprise_root / sub).resolve()
         if not str(file_path).startswith(str(enterprise_root)):
             return "Access denied for this path"
     else:
@@ -4214,33 +4297,101 @@ def _edit_file(ws: Path, rel_path: str, old_string: str, new_string: str, replac
             return "Access denied for this path"
 
     if not file_path.exists():
-        return f"File not found: {rel_path}"
-
+        return f"❌ File not found: {rel_path}. Use list_files or find_files to locate the file first."
     if not file_path.is_file():
-        return f"Not a file: {rel_path}"
+        return f"❌ Not a file: {rel_path}"
 
     try:
         content = file_path.read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
 
-        if old_string not in content:
-            return f"❌ 'old_string' not found in {rel_path}. Please check the exact text including whitespace and newlines."
-
-        if replace_all:
-            new_content = content.replace(old_string, new_string)
+        # === Mode 1: String replacement ===
+        if has_old:
+            if old_string not in content:
+                # Try to find similar content for hint
+                hint = _find_similar_lines(content, old_string, rel_path)
+                return hint
             count = content.count(old_string)
-        else:
-            # Ensure uniqueness for single replacement
-            count = content.count(old_string)
-            if count > 1:
-                return f"❌ 'old_string' appears {count} times in {rel_path}. Use replace_all=true or provide more context to make the match unique."
-            new_content = content.replace(old_string, new_string, 1)
-            count = 1
+            if count > 1 and not replace_all:
+                line_nums = [i + 1 for i, _ in enumerate(lines) if old_string in _]
+                return (
+                    f"❌ 'old_string' appears {count} times in {rel_path} "
+                    f"(at lines {line_nums}). Use replace_all=true or provide more "
+                    f"surrounding context to make the match unique."
+                )
+            if replace_all:
+                new_content = content.replace(old_string, new_string)
+            else:
+                new_content = content.replace(old_string, new_string, 1)
+            file_path.write_text(new_content, encoding="utf-8")
+            return f"✅ Replaced {count} occurrence(s) in {rel_path}"
 
-        file_path.write_text(new_content, encoding="utf-8")
-        return f"✅ Replaced {count} occurrence(s) in {rel_path}"
+        # === Mode 2: Line-range replacement ===
+        if has_lines:
+            if start_line < 1 or end_line < start_line or end_line > total_lines:
+                return f"❌ Invalid line range {start_line}-{end_line}. File has {total_lines} lines (1-indexed)."
+            new_lines = new_string.splitlines(keepends=True)
+            # Ensure last line has newline if original content had trailing newline
+            if new_lines and not new_lines[-1].endswith("\n"):
+                new_lines[-1] += "\n"
+            lines[start_line - 1 : end_line] = new_lines
+            file_path.write_text("".join(lines), encoding="utf-8")
+            return f"✅ Replaced lines {start_line}-{end_line} in {rel_path} with {len(new_lines)} line(s)"
+
+        # === Mode 3: Insert / Append ===
+        if has_insert:
+            insert_lines = new_string.splitlines(keepends=True)
+            if insert_lines and not insert_lines[-1].endswith("\n"):
+                insert_lines[-1] += "\n"
+            if insert_after_line == -1:
+                # Append at end of file
+                lines.extend(insert_lines)
+                file_path.write_text("".join(lines), encoding="utf-8")
+                return f"✅ Appended {len(insert_lines)} line(s) to end of {rel_path}"
+            elif insert_after_line < 0 or insert_after_line > total_lines:
+                return f"❌ insert_after_line={insert_after_line} is out of range. File has {total_lines} lines. Use -1 for end of file."
+            else:
+                # Insert after the specified line (0-indexed: insert at index insert_after_line)
+                lines[insert_after_line:insert_after_line] = insert_lines
+                file_path.write_text("".join(lines), encoding="utf-8")
+                return f"✅ Inserted {len(insert_lines)} line(s) after line {insert_after_line} in {rel_path}"
 
     except Exception as e:
         return f"Edit failed: {e}"
+
+
+def _find_similar_lines(content: str, old_string: str, rel_path: str) -> str:
+    """When old_string exact match fails, find similar lines and return a helpful hint."""
+    lines = content.splitlines()
+    stripped_query = old_string.strip()
+    query_words = set(stripped_query.lower().split())
+
+    best_idx = -1
+    best_score = 0
+    for i, line in enumerate(lines):
+        # Score by word overlap
+        line_lower = line.lower()
+        overlap = sum(1 for w in query_words if w in line_lower)
+        if overlap > best_score:
+            best_score = overlap
+            best_idx = i
+
+    base_msg = (
+        f"❌ 'old_string' not found in {rel_path}.\n"
+        f"   → Use read_file path=\"{rel_path}\" to view current content, then retry with exact text."
+    )
+
+    if best_idx >= 0 and best_score > 0:
+        start = max(0, best_idx - 2)
+        end = min(len(lines), best_idx + 3)
+        ctx = "\n".join(f"     {j+1} | {lines[j]}" for j in range(start, end))
+        return (
+            f"{base_msg}\n"
+            f"   Similar content near line {best_idx + 1}:\n{ctx}"
+        )
+
+    return base_msg
 
 
 def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
