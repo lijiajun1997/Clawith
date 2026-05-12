@@ -127,6 +127,7 @@ async def call_llm(
     fallback_model: LLMModel | None = None,
     on_notify=None,
     max_tool_rounds_override: int | None = None,
+    on_token_summary=None,
 ) -> str:
     """Call LLM via unified client with function-calling tool loop.
 
@@ -136,6 +137,7 @@ async def call_llm(
         on_tool_call: Optional async callback(dict) for tool call status updates.
         fallback_model: Optional fallback model for retry alternation (LLM_RETRY_MAX config).
         on_notify: Optional async callback(str) to notify client about retry status.
+        on_token_summary: Optional async callback(dict) with {prompt_tokens, context_window, ratio}.
     """
     from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
     from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
@@ -154,7 +156,7 @@ async def call_llm(
             pass
 
     # ── Token limit check & config ──
-    _max_tool_rounds = 50  # default
+    _max_tool_rounds = 200  # Fallback when context_window_size is unknown; compression is primary guard
 
     async def _clear_working():
         """Clear working_agents marker for this agent."""
@@ -175,9 +177,7 @@ async def call_llm(
                 _ar = await _db.execute(select(AgentModel).where(AgentModel.id == agent_id))
                 _agent = _ar.scalar_one_or_none()
                 if _agent:
-                    _max_tool_rounds = _agent.max_tool_rounds or 50
-                    if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
-                        _max_tool_rounds = max_tool_rounds_override
+                    # max_tool_rounds kept for UI display but not enforced (context window is the real guard)
                     if _agent.max_tokens_per_day and _agent.tokens_used_today >= _agent.max_tokens_per_day:
                         await _clear_working()
                         return f"⚠️ Daily token usage has reached the limit ({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). Please try again tomorrow or ask admin to increase the limit."
@@ -186,9 +186,6 @@ async def call_llm(
                         return f"⚠️ Monthly token usage has reached the limit ({_agent.tokens_used_month:,}/{_agent.max_tokens_per_month:,}). Please ask admin to increase the limit."
         except Exception:
             pass
-
-    if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
-        _max_tool_rounds = max_tool_rounds_override
 
     # Build rich prompt with soul, memory, skills, relationships
     from app.services.agent_context import build_agent_context
@@ -208,6 +205,12 @@ async def call_llm(
 
     # Load tools dynamically from DB
     tools_for_llm = await get_agent_tools_for_llm(agent_id) if agent_id else AGENT_TOOLS
+
+    # Resolve token-level context window (NULL = legacy message-count mode)
+    from app.services.context_manager import get_effective_context_window
+    _effective_window = get_effective_context_window(model) if model else None
+    if _effective_window:
+        _max_tool_rounds = 9999  # Context window compression is the real guard
 
     # Convert messages to LLMMessage format
     # Filter out non-LLM roles (e.g. "tool_call" is UI-only) to prevent
@@ -342,32 +345,14 @@ async def call_llm(
     # ── Per-round token accumulator ──
     from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
     _accumulated_tokens = 0
+    _last_prompt_tokens: int | None = None  # Latest prompt_tokens for frontend context display
 
     # ── Empty response tracking for retry logic ──
     _consecutive_empty_responses = 0
     _max_consecutive_empty = 30  # Maximum allowed consecutive empty responses (increased from 3)
 
-    # Tool-calling loop (configurable per agent, default 50)
+    # Tool-calling loop — effectively unlimited; context window compression is the real guard
     for round_i in range(_max_tool_rounds):
-        # ── Dynamic tool-call limit warning (Aware engine) ──
-        # Don't tell the agent about limits at the start — only warn when approaching.
-        # This prevents models from rushing to complete tasks prematurely.
-        _warn_threshold_80 = int(_max_tool_rounds * 0.8)
-        _warn_threshold_96 = _max_tool_rounds - 2
-        if round_i == _warn_threshold_80:
-            api_messages.append(LLMMessage(
-                role="user",
-                content=(
-                    f"⚠️ 你已使用 {round_i}/{_max_tool_rounds} 轮工具调用。"
-                    "如果当前任务尚未完成，请尽快保存进度到 focus.md，"
-                    "并使用 set_trigger 设置续接触发器，在剩余轮次中做好收尾。"
-                ),
-            ))
-        elif round_i == _warn_threshold_96:
-            api_messages.append(LLMMessage(
-                role="user",
-                content=f"🚨 仅剩 2 轮工具调用。请立即保存进度到 focus.md 并设置续接触发器。",
-            ))
 
         # ── LLM call with retry + model alternation ──
         response = None
@@ -428,6 +413,37 @@ async def call_llm(
         else:
             round_chars = sum(len(m.content or '') if isinstance(m.content, str) else 0 for m in api_messages) + len(response.content or '')
             _accumulated_tokens += estimate_tokens_from_chars(round_chars)
+
+        # ── Context window check: trigger background compression if near limit ──
+        if _effective_window and response.usage:
+            from app.services.context_manager import maybe_trigger_compression, extract_prompt_tokens, emergency_truncate
+            _prompt_tokens = extract_prompt_tokens(response.usage)
+            if _prompt_tokens:
+                _last_prompt_tokens = _prompt_tokens
+                if _prompt_tokens >= _effective_window * 0.95:
+                    await emergency_truncate(agent_id, session_id, _prompt_tokens, _effective_window)
+                else:
+                    await maybe_trigger_compression(
+                        agent_id, session_id, _prompt_tokens, _effective_window,
+                        agent_name=agent_name, role_description=role_description,
+                        model=model, fallback_model=fallback_model,
+                    )
+        elif response.usage:
+            from app.services.context_manager import extract_prompt_tokens as _ext
+            _pt = _ext(response.usage)
+            if _pt:
+                _last_prompt_tokens = _pt
+
+        # ── Send token summary to frontend ──
+        if _last_prompt_tokens and on_token_summary:
+            try:
+                await on_token_summary({
+                    "prompt_tokens": _last_prompt_tokens,
+                    "context_window": _effective_window,
+                    "ratio": round(_last_prompt_tokens / _effective_window, 2) if _effective_window else None,
+                })
+            except Exception:
+                pass
 
         # ── Check for problematic responses that need retry ──
         # Case 1: Empty content with no tool calls
@@ -591,30 +607,15 @@ async def _safe_ws_send(websocket: WebSocket, data: dict) -> None:
 def _build_tool_call_summary(tool_calls: list[dict]) -> str:
     """Convert tool_call DB records into a plain-text summary for LLM context.
 
-    Provider-agnostic: any LLM can understand this text summary without
-    requiring the exact tool_calls message format (which varies by provider).
+    Uses graduated detail levels via context_manager:
+    - Last 5 rounds: full detail (result with head+tail preservation)
+    - Next 45 (up to 50 total): moderate detail (result truncated to 300 chars)
+    - Beyond 50: single-line summary (100 chars max)
     """
     if not tool_calls:
         return ""
-    parts = ["[Previous tool calls in this session:]"]
-    for tc in tool_calls:
-        name = tc.get("name", "unknown")
-        args = tc.get("args", {})
-        result = tc.get("result", "")
-        status = tc.get("status", "done")
-        if isinstance(args, dict):
-            args_str = ", ".join(
-                f'{k}="{v}"' if isinstance(v, str) else f"{k}={v}"
-                for k, v in args.items()
-            )
-        else:
-            args_str = str(args)
-        result_preview = truncate_head_tail(result or "", 300, tail_chars=120)
-        if status == "done":
-            parts.append(f"  - Called {name}({args_str}) => {result_preview}")
-        else:
-            parts.append(f"  - Called {name}({args_str}) [status: {status}]")
-    return "\n".join(parts)
+    from app.services.context_manager import build_graduated_tool_summary
+    return build_graduated_tool_summary(tool_calls)
 
 
 async def _complete_llm_background(
@@ -810,6 +811,10 @@ async def websocket_chat(
                 fallback_llm_model = None  # No further fallback available
                 logger.info(f"[WS] Primary model unavailable, using fallback: {llm_model.model}")
 
+            # Resolve token-level context window for compression awareness
+            from app.services.context_manager import get_effective_context_window
+            _ws_effective_window = get_effective_context_window(llm_model) if llm_model else None
+
             # Resolve or create chat session
             from app.models.chat_session import ChatSession
             from sqlalchemy import select as _sel
@@ -937,6 +942,12 @@ async def websocket_chat(
     if len(conversation) > ctx_size:
         conversation = conversation[-ctx_size:]
         logger.info(f"[WS] Truncated conversation to last {ctx_size} messages")
+
+    # ── Inject compression summary if available ──
+    # Background compression stores the result in Redis; we pick it up here.
+    if _ws_effective_window:
+        from app.services.context_manager import check_inject_summary
+        conversation = await check_inject_summary(agent_id_str, conv_id, conversation)
 
     # ── Reconnect notification: check for background task results / interrupted rounds ──
     try:
@@ -1171,15 +1182,15 @@ async def websocket_chat(
                             except Exception as _lp_err:
                                 logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
 
-                            # ── send_channel_file: embed file_preview for workspace auto-open ──
-                            if tool_name == "send_channel_file":
+                            # ── send_channel_file: embed file_preview for canvas auto-open ──
+                            if tool_name == "send_channel_file" and not data.get("file_preview"):
+                                # Try regex match on result text (web chat fallback format)
                                 import re as _re_fp
                                 tool_result = data.get("result", "") or ""
                                 _fm = _re_fp.match(r"File ready:\s*\[([^\]]+)\]\(([^)]+)\)", tool_result)
                                 if _fm:
                                     file_name = _fm.group(1)
                                     download_url = _fm.group(2)
-                                    # Extract relative path from download URL query string
                                     try:
                                         from urllib.parse import urlparse, parse_qs
                                         _parsed = urlparse(download_url)
@@ -1188,7 +1199,22 @@ async def websocket_chat(
                                     except Exception:
                                         file_rel = ""
                                     data["file_preview"] = {"name": file_name, "path": file_rel, "url": download_url}
-                                    logger.info(f"[WS][FilePreview] Embedded for send_channel_file: {file_name}")
+                                else:
+                                    # Channel-sent file: construct preview from tool arguments
+                                    _args = data.get("args") or {}
+                                    _fp = (_args.get("file_path") or "").strip()
+                                    if _fp:
+                                        from pathlib import Path as _P
+                                        file_name = _P(_fp).name
+                                        file_rel = _fp
+                                        aid = str(agent_id)
+                                        from app.config import get_settings as _gs
+                                        _s = _gs()
+                                        base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
+                                        download_url = f"{base_url}/api/agents/{aid}/files/download?path={_fp}"
+                                        data["file_preview"] = {"name": file_name, "path": file_rel, "url": download_url}
+                                if data.get("file_preview"):
+                                    logger.info(f"[WS][FilePreview] Embedded for send_channel_file: {data['file_preview']['name']}")
 
                         try:
                             await websocket.send_json({"type": "tool_call", **data})
@@ -1251,6 +1277,7 @@ async def websocket_chat(
                         supports_vision=getattr(llm_model, 'supports_vision', False),
                         fallback_model=fallback_llm_model,
                         on_notify=lambda msg: _safe_ws_send(websocket, {"type": "info", "content": msg}),
+                        on_token_summary=lambda data: _safe_ws_send(websocket, {"type": "token_summary", **data}),
                     ))
 
                     # Mark session as "LLM processing" for interrupt detection

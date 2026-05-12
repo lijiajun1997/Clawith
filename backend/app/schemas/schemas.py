@@ -428,6 +428,7 @@ class LLMModelCreate(BaseModel):
     supports_vision: bool = False
     max_output_tokens: int | None = None
     request_timeout: int | None = None
+    context_window_size: int | None = None
 
 class LLMModelUpdate(BaseModel):
     provider: str | None = None
@@ -441,6 +442,7 @@ class LLMModelUpdate(BaseModel):
     supports_vision: bool | None = None
     max_output_tokens: int | None = None
     request_timeout: int | None = None
+    context_window_size: int | None = None
 
 
 class LLMModelOut(BaseModel):
@@ -456,6 +458,7 @@ class LLMModelOut(BaseModel):
     supports_vision: bool = False
     max_output_tokens: int | None = None
     request_timeout: int | None = None
+    context_window_size: int | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

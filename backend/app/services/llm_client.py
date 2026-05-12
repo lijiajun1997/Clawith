@@ -1464,21 +1464,23 @@ class AnthropicClient(LLMClient):
                 if formatted:
                     anthropic_messages.append(formatted)
 
-        # In Anthropic prompt caching, we also want to cache_control the last user message
-        # So we add cache_control to the very last message in the history if it's a user message
-        if anthropic_messages and anthropic_messages[-1]["role"] == "user":
-            user_msg = anthropic_messages[-1]
-            if isinstance(user_msg["content"], list) and user_msg["content"]:
-                # Ensure the last block of the user message has cache_control
-                user_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
-            elif isinstance(user_msg["content"], str):
-                user_msg["content"] = [
-                    {
-                        "type": "text",
-                        "text": user_msg["content"],
-                        "cache_control": {"type": "ephemeral"}
-                    }
-                ]
+        # Prompt caching: add cache_control to the last message for prefix reuse.
+        # Anthropic caches the prefix up to the cache_control breakpoint, so placing it
+        # on the last message means the entire history prefix is cached across turns.
+        # Works for both plain user messages and tool_result (which has role="user").
+        if anthropic_messages:
+            last_msg = anthropic_messages[-1]
+            if last_msg.get("role") in ("user", "assistant"):
+                if isinstance(last_msg.get("content"), list) and last_msg["content"]:
+                    last_msg["content"][-1]["cache_control"] = {"type": "ephemeral"}
+                elif isinstance(last_msg.get("content"), str):
+                    last_msg["content"] = [
+                        {
+                            "type": "text",
+                            "text": last_msg["content"],
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
 
         payload: dict[str, Any] = {
             "model": self.model,
