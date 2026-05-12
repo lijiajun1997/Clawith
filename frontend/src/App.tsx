@@ -169,6 +169,34 @@ export default function App() {
         }
     }, []);
 
+    // Periodic silent token refresh — keeps sessions alive across long idle periods
+    // and survives backend restarts (refresh token is 30d, access token is 24h).
+    useEffect(() => {
+        const INTERVAL = 20 * 60 * 1000; // every 20 minutes
+        let timer: ReturnType<typeof setInterval>;
+        const refresh = async () => {
+            const rt = localStorage.getItem('refresh_token');
+            if (!rt) return;
+            try {
+                const res = await fetch('/api/auth/refresh', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ refresh_token: rt }),
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                localStorage.setItem('token', data.access_token);
+                if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
+                useAuthStore.setState({ token: data.access_token });
+            } catch { /* network error — ignore */ }
+        };
+        // Only start refresh timer when user is logged in
+        if (token) {
+            timer = setInterval(refresh, INTERVAL);
+        }
+        return () => { if (timer) clearInterval(timer); };
+    }, [token]);
+
 
     if (loading) {
         return (

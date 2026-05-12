@@ -2600,7 +2600,7 @@ export default function EnterpriseSettings() {
     });
     const [showAddModel, setShowAddModel] = useState(false);
     const [editingModelId, setEditingModelId] = useState<string | null>(null);
-    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, temperature: '' as string });
+    const [modelForm, setModelForm] = useState({ provider: 'anthropic', model: '', api_key: '', base_url: '', label: '', supports_vision: false, max_output_tokens: '' as string, request_timeout: '' as string, context_window_size: '' as string, temperature: '' as string });
     const { data: providerSpecs = [] } = useQuery({
         queryKey: ['llm-provider-specs'],
         queryFn: () => fetchJson<LLMProviderSpec[]>('/enterprise/llm-providers'),
@@ -2727,6 +2727,7 @@ export default function EnterpriseSettings() {
                                     label: '', supports_vision: false,
                                     max_output_tokens: defaultSpec ? String(defaultSpec.default_max_tokens) : '4096',
                                     request_timeout: '',
+                                    context_window_size: '',
                                     temperature: '',
                                 });
                                 setShowAddModel(true);
@@ -2798,6 +2799,11 @@ export default function EnterpriseSettings() {
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.requestTimeoutDesc', 'Increase for slow local models.')}</div>
                                     </div>
                                     <div className="form-group">
+                                        <label className="form-label">{t('enterprise.llm.contextWindowSize', 'Context Window Size')}</label>
+                                        <input className="form-input" type="number" min="1000" placeholder={t('enterprise.llm.contextWindowSizePlaceholder', 'e.g. 200000 (Leave empty for auto-detect)')} value={modelForm.context_window_size} onChange={e => setModelForm({ ...modelForm, context_window_size: e.target.value })} />
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.contextWindowSizeDesc', 'Max input tokens. Auto-detected if empty. Enables context compression when set.')}</div>
+                                    </div>
+                                    <div className="form-group">
                                         <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
                                         <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
@@ -2836,6 +2842,7 @@ export default function EnterpriseSettings() {
                                             ...modelForm,
                                             max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
                                             request_timeout: modelForm.request_timeout ? Number(modelForm.request_timeout) : null,
+                                            context_window_size: modelForm.context_window_size ? Number(modelForm.context_window_size) : null,
                                             temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                         };
                                         addModel.mutate(data);
@@ -2907,6 +2914,11 @@ export default function EnterpriseSettings() {
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.requestTimeoutDesc', 'Increase for slow local models.')}</div>
                                                 </div>
                                                 <div className="form-group">
+                                                    <label className="form-label">{t('enterprise.llm.contextWindowSize', 'Context Window Size')}</label>
+                                                    <input className="form-input" type="number" min="1000" placeholder={t('enterprise.llm.contextWindowSizePlaceholder', 'e.g. 200000 (Leave empty for auto-detect)')} value={modelForm.context_window_size} onChange={e => setModelForm({ ...modelForm, context_window_size: e.target.value })} />
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.contextWindowSizeDesc', 'Max input tokens. Auto-detected if empty. Enables context compression when set.')}</div>
+                                                </div>
+                                                <div className="form-group">
                                                     <label className="form-label">{t('enterprise.llm.temperature', 'Temperature')}</label>
                                                     <input className="form-input" type="number" step="0.1" min="0" max="2" placeholder={t('enterprise.llm.temperaturePlaceholder', 'e.g. 0.7 or 1.0 (Leave empty for default)')} value={modelForm.temperature} onChange={e => setModelForm({ ...modelForm, temperature: e.target.value })} />
                                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{t('enterprise.llm.temperatureDesc', 'Leave empty to use the provider default. o1/o3 reasoning models usually require 1.0')}</div>
@@ -2946,6 +2958,7 @@ export default function EnterpriseSettings() {
                                                         ...modelForm,
                                                         max_output_tokens: modelForm.max_output_tokens ? Number(modelForm.max_output_tokens) : null,
                                                         request_timeout: modelForm.request_timeout ? Number(modelForm.request_timeout) : null,
+                                                        context_window_size: modelForm.context_window_size ? Number(modelForm.context_window_size) : null,
                                                         temperature: modelForm.temperature !== '' ? Number(modelForm.temperature) : null
                                                     };
                                                     updateModel.mutate({ id: editingModelId!, data });
@@ -2992,9 +3005,10 @@ export default function EnterpriseSettings() {
                                                     }} />
                                                 </button>
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
+                                                {(m as any).context_window_size && <span className="badge" style={{ background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)', fontSize: '10px' }}>{((m as any).context_window_size / 1000).toFixed(0)}K ctx</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
                                                     setEditingModelId(m.id);
-                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
+                                                    setModelForm({ provider: m.provider, model: m.model, label: m.label, base_url: m.base_url || '', api_key: m.api_key_masked || '', supports_vision: m.supports_vision || false, max_output_tokens: m.max_output_tokens ? String(m.max_output_tokens) : '', request_timeout: m.request_timeout ? String(m.request_timeout) : '', context_window_size: (m as any).context_window_size ? String((m as any).context_window_size) : '', temperature: m.temperature !== null && m.temperature !== undefined ? String(m.temperature) : '' });
                                                     setShowAddModel(true);
                                                 }} style={{ fontSize: '12px' }}>✏️ {t('enterprise.tools.edit')}</button>
                                                 <button className="btn btn-ghost" onClick={() => deleteModel.mutate({ id: m.id })} style={{ color: 'var(--error)' }}>{t('common.delete')}</button>

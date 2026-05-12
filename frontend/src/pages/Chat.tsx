@@ -48,6 +48,12 @@ interface ToolCall {
     result?: string;
 }
 
+interface FilePreview {
+    name: string;
+    path: string;
+    url: string;
+}
+
 interface Message {
     role: 'user' | 'assistant';
     content: string;
@@ -57,6 +63,7 @@ interface Message {
     imageUrl?: string;
     timestamp?: string;
     _isToolGroup?: boolean;
+    filePreviews?: FilePreview[];
 }
 
 // CSS keyframe for the pulse/breathing LED — injected once into <head>
@@ -263,6 +270,132 @@ function ChatToolChain({ toolCalls }: { toolCalls: ToolCall[] }) {
     );
 }
 
+// File type icon mapping
+const FILE_TYPE_ICONS: Record<string, string> = {
+    pdf: '📄', csv: '📊', xlsx: '📊', xls: '📊',
+    docx: '📝', doc: '📝', pptx: '📑', ppt: '📑',
+    png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️', webp: '🖼️', bmp: '🖼️',
+    zip: '📦', tar: '📦', gz: '📦', rar: '📦',
+    md: '📋', txt: '📋', json: '📋',
+};
+
+function getFileTypeIcon(fileName: string): string {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    return FILE_TYPE_ICONS[ext] || '📎';
+}
+
+function getFileTypeName(fileName: string): string {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    const map: Record<string, string> = {
+        pdf: 'PDF', csv: 'CSV', xlsx: 'Excel', xls: 'Excel',
+        docx: 'Word', doc: 'Word', pptx: 'PPT', ppt: 'PPT',
+        png: 'Image', jpg: 'Image', jpeg: 'Image', gif: 'Image', webp: 'Image',
+        md: 'Markdown', txt: 'Text', json: 'JSON',
+    };
+    return map[ext] || ext.toUpperCase() || 'File';
+}
+
+function FileCard({ preview, onPreview }: { preview: FilePreview; onPreview: (fp: FilePreview) => void }) {
+    const { t } = useTranslation();
+    const icon = getFileTypeIcon(preview.name);
+    const typeName = getFileTypeName(preview.name);
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(
+        (preview.name.split('.').pop() || '').toLowerCase()
+    );
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+    const downloadUrl = preview.url.includes('token=') ? preview.url
+        : preview.url + (preview.url.includes('?') ? '&' : '?') + `token=${token}`;
+
+    return (
+        <div
+            className="chat-file-card"
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                padding: '12px 16px',
+                borderRadius: '12px',
+                border: '1px solid var(--border-subtle)',
+                background: 'var(--bg-secondary)',
+                maxWidth: '360px',
+                cursor: 'pointer',
+                transition: 'all 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+            }}
+            onClick={() => onPreview(preview)}
+            onMouseEnter={e => {
+                (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--accent-primary, #6366f1)';
+                (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 16px rgba(99,102,241,0.12)';
+                (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-1px)';
+            }}
+            onMouseLeave={e => {
+                (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-subtle)';
+                (e.currentTarget as HTMLDivElement).style.boxShadow = 'none';
+                (e.currentTarget as HTMLDivElement).style.transform = 'none';
+            }}
+        >
+            {/* Icon / Thumbnail */}
+            <div style={{
+                width: '42px', height: '42px', borderRadius: '10px',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'linear-gradient(135deg, rgba(99,102,241,0.12), rgba(59,130,246,0.08))',
+                fontSize: '22px', flexShrink: 0,
+            }}>
+                {icon}
+            </div>
+            {/* Info */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                    fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)',
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }} title={preview.name}>
+                    {preview.name}
+                </div>
+                <div style={{
+                    fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px',
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                }}>
+                    <span>{typeName}</span>
+                </div>
+            </div>
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                <button
+                    title={t('agent.chat.preview', 'Preview')}
+                    onClick={e => { e.stopPropagation(); onPreview(preview); }}
+                    style={{
+                        width: '30px', height: '30px', borderRadius: '8px',
+                        border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)',
+                        color: 'var(--text-secondary)', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '14px', transition: 'all 150ms ease',
+                    }}
+                    onMouseEnter={e => { (e.target as HTMLElement).style.color = 'var(--accent-primary, #6366f1)'; (e.target as HTMLElement).style.borderColor = 'var(--accent-primary, #6366f1)'; }}
+                    onMouseLeave={e => { (e.target as HTMLElement).style.color = 'var(--text-secondary)'; (e.target as HTMLElement).style.borderColor = 'var(--border-subtle)'; }}
+                >
+                    👁
+                </button>
+                <a
+                    href={downloadUrl}
+                    download={preview.name}
+                    title={t('agent.chat.download', 'Download')}
+                    onClick={e => e.stopPropagation()}
+                    style={{
+                        width: '30px', height: '30px', borderRadius: '8px',
+                        border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)',
+                        color: 'var(--text-secondary)', textDecoration: 'none',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '14px', transition: 'all 150ms ease',
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#22c55e'; (e.currentTarget as HTMLElement).style.borderColor = '#22c55e'; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-secondary)'; (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-subtle)'; }}
+                >
+                    ⬇
+                </a>
+            </div>
+        </div>
+    );
+}
+
 export default function Chat() {
     const { t } = useTranslation();
     const { id } = useParams<{ id: string }>();
@@ -278,6 +411,7 @@ export default function Chat() {
     } | null>(null);
     const [streaming, setStreaming] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
+    const [tokenSummary, setTokenSummary] = useState<{ prompt_tokens: number; context_window: number | null; ratio: number | null } | null>(null);
     const [attachedFile, setAttachedFile] = useState<{ name: string; text: string; path?: string; imageUrl?: string } | null>(null);
     const [liveState, setLiveState] = useState<LivePreviewState>({});
     const [livePanelVisible, setLivePanelVisible] = useState(false);
@@ -291,7 +425,21 @@ export default function Chat() {
         path?: string;
     }>>(new Map());
     const [canvasPanelVisible, setCanvasPanelVisible] = useState(true);
-    const wsRef = useRef<WebSocket | null>(null);
+
+    // Click handler for file links in chat messages — open canvas preview
+    const handleChatFileLink = useCallback((path: string) => {
+        const normalized = path.startsWith('workspace/') ? path : `workspace/${path}`;
+        const fileName = normalized.split('/').pop() || normalized;
+        const fileKey = `link-${normalized}`;
+        setGeneratingFiles(prev => {
+            const next = new Map(prev);
+            if (!next.has(fileKey)) {
+                next.set(fileKey, { name: fileName, status: 'done', path: normalized });
+            }
+            return next;
+        });
+        setCanvasPanelVisible(true);
+    }, []);    const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Ref to the chat textarea for direct DOM height manipulation
@@ -299,6 +447,7 @@ export default function Chat() {
     const pendingToolCalls = useRef<ToolCall[]>([]);
     const streamContent = useRef('');
     const thinkingContent = useRef('');
+    const pendingFilePreviews = useRef<FilePreview[]>([]);
 
     const { data: agent } = useQuery({
         queryKey: ['agent', id],
@@ -444,10 +593,33 @@ export default function Chat() {
 
         let cancelled = false;
 
-        const connect = () => {
+        const connect = async () => {
             if (cancelled) return;
+            // Always read fresh token from localStorage (may have been refreshed)
+            let freshToken = localStorage.getItem('token') || token;
+            // Try silent refresh if access token looks stale or missing
+            if (!freshToken) {
+                try {
+                    const rt = localStorage.getItem('refresh_token');
+                    if (rt) {
+                        const res = await fetch('/api/auth/refresh', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ refresh_token: rt }),
+                        });
+                        if (res.ok) {
+                            const data = await res.json();
+                            freshToken = data.access_token;
+                            localStorage.setItem('token', freshToken);
+                            if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
+                        }
+                    }
+                } catch { /* refresh failed — connect with what we have */ }
+            }
+            if (!freshToken) return;
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${token}`;
+            const wsUrl = `${protocol}//${window.location.host}/ws/chat/${id}?token=${freshToken}`;
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
@@ -479,6 +651,12 @@ export default function Chat() {
                 // Capture session_id from the 'connected' message for Take Control
                 if (data.type === 'connected' && data.session_id) {
                     setWsSessionId(data.session_id);
+                    return;
+                }
+
+                // Token usage summary from backend
+                if (data.type === 'token_summary') {
+                    setTokenSummary({ prompt_tokens: data.prompt_tokens, context_window: data.context_window, ratio: data.ratio });
                     return;
                 }
 
@@ -538,31 +716,54 @@ export default function Chat() {
                         const fileName = data.args?.file_path || data.args?.path || data.args?.filename ||
                                         (data.args?.command ? 'script_output' : 'untitled_file');
                         const fileKey = `${data.name}-${fileName}`;
+                        // Only pop up canvas for workspace files (not memory.md, soul.md, skills/, etc.)
+                        const isWorkspaceFile = /^workspace\//i.test(fileName);
 
                         if (data.status === 'running') {
+                            if (isWorkspaceFile) {
+                                setGeneratingFiles(prev => {
+                                    const next = new Map(prev);
+                                    next.set(fileKey, { name: fileName, status: 'generating' });
+                                    return next;
+                                });
+                                setCanvasPanelVisible(true);
+                            }
+                        } else if (data.status === 'done') {
+                            if (isWorkspaceFile) {
+                                setGeneratingFiles(prev => {
+                                    const next = new Map(prev);
+                                    next.set(fileKey, {
+                                        name: fileName,
+                                        status: 'done',
+                                        content: data.result?.substring?.(0, 2000) || data.result,
+                                        path: data.args?.file_path || data.args?.path,
+                                    });
+                                    return next;
+                                });
+                            }
+                        } else if (data.status === 'error') {
+                            if (isWorkspaceFile) {
+                                setGeneratingFiles(prev => {
+                                    const next = new Map(prev);
+                                    next.set(fileKey, { name: fileName, status: 'error' });
+                                    return next;
+                                });
+                            }
+                        }
+                    }
+
+                    // send_file_to_user completed — auto-open canvas to preview
+                    if (data.name === 'send_file_to_user' && data.status === 'done' && data.args) {
+                        const filePath = data.args.file_path || data.args.path;
+                        if (filePath && /^workspace\//i.test(filePath)) {
+                            const fileName = filePath.split('/').pop() || filePath;
+                            const fileKey = `send-${filePath}`;
                             setGeneratingFiles(prev => {
                                 const next = new Map(prev);
-                                next.set(fileKey, { name: fileName, status: 'generating' });
+                                next.set(fileKey, { name: fileName, status: 'done', path: filePath });
                                 return next;
                             });
                             setCanvasPanelVisible(true);
-                        } else if (data.status === 'done') {
-                            setGeneratingFiles(prev => {
-                                const next = new Map(prev);
-                                next.set(fileKey, {
-                                    name: fileName,
-                                    status: 'done',
-                                    content: data.result?.substring?.(0, 2000) || data.result,
-                                    path: data.args?.file_path || data.args?.path,
-                                });
-                                return next;
-                            });
-                        } else if (data.status === 'error') {
-                            setGeneratingFiles(prev => {
-                                const next = new Map(prev);
-                                next.set(fileKey, { name: fileName, status: 'error' });
-                                return next;
-                            });
                         }
                     }
 
@@ -638,6 +839,8 @@ export default function Chat() {
                                 return next;
                             });
                             setCanvasPanelVisible(true);
+                            // Collect for file card rendering in the final message
+                            pendingFilePreviews.current.push(fp);
                         }
 
                         // ── AgentBay live preview (embedded in tool_call) ──
@@ -662,18 +865,30 @@ export default function Chat() {
                     // Final response — replace streaming message with final + tool calls
                     const toolCalls = pendingToolCalls.current.length > 0 ? [...pendingToolCalls.current] : undefined;
                     const thinking = thinkingContent.current || undefined;
+                    const filePreviews = pendingFilePreviews.current.length > 0 ? [...pendingFilePreviews.current] : undefined;
                     pendingToolCalls.current = [];
+                    pendingFilePreviews.current = [];
                     streamContent.current = '';
                     thinkingContent.current = '';
                     setStreaming(false);
-                    setGeneratingFiles(new Map());
+                    // Keep channel file previews (status=done) but clear generating entries
+                    setGeneratingFiles(prev => {
+                        const kept = new Map<string, typeof prev extends Map<string, infer V> ? V : never>();
+                        prev.forEach((v, k) => { if (v.status === 'done') kept.set(k, v); });
+                        return kept;
+                    });
                     setMessages(prev => {
                         const updated = [...prev];
+                        // Strip "File ready: [...](...)" lines from content when filePreviews exist
+                        let finalContent = data.content || '';
+                        if (filePreviews && filePreviews.length > 0) {
+                            finalContent = finalContent.replace(/^File ready:\s*\[[^\]]+\]\([^)]+\)\s*\n?/gm, '').trim();
+                        }
                         // Replace the last streaming assistant message
                         if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
-                            updated[updated.length - 1] = { role: 'assistant', content: data.content, toolCalls, thinking };
+                            updated[updated.length - 1] = { role: 'assistant', content: finalContent, toolCalls, thinking, filePreviews };
                         } else {
-                            updated.push({ role: 'assistant', content: data.content, toolCalls, thinking });
+                            updated.push({ role: 'assistant', content: finalContent, toolCalls, thinking, filePreviews });
                         }
                         return updated;
                     });
@@ -957,7 +1172,7 @@ export default function Chat() {
                                             <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                                         </div>
                                     ) : (
-                                        <MarkdownRenderer content={msg.content} />
+                                        <MarkdownRenderer content={msg.content} onFileLink={handleChatFileLink} />
                                     )
                                 ) : (
                                     <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
@@ -988,6 +1203,29 @@ export default function Chat() {
                     <div ref={messagesEndRef} />
                 </div>
 
+                {tokenSummary && (
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: '8px',
+                        padding: '4px 16px', fontSize: '11px', color: 'var(--text-tertiary)',
+                        borderTop: '1px solid var(--border-default)',
+                    }}>
+                        <span>Context: {(tokenSummary.prompt_tokens / 1000).toFixed(1)}K{tokenSummary.context_window ? ` / ${(tokenSummary.context_window / 1000).toFixed(0)}K` : ''}</span>
+                        {tokenSummary.context_window && (
+                            <div style={{
+                                flex: 1, maxWidth: '100px', height: '3px', borderRadius: '2px',
+                                background: 'var(--border-default)', overflow: 'hidden',
+                            }}>
+                                <div style={{
+                                    width: `${Math.min((tokenSummary.ratio || 0) * 100, 100)}%`,
+                                    height: '100%', borderRadius: '2px',
+                                    background: (tokenSummary.ratio || 0) > 0.8
+                                        ? (tokenSummary.ratio || 0) > 0.95 ? '#ef4444' : '#f59e0b'
+                                        : 'var(--accent-primary)',
+                                }} />
+                            </div>
+                        )}
+                    </div>
+                )}
                 <div className="chat-input-area">
                     <div className="chat-composer">
                         {(uploadProgress || (attachedFile && !uploadProgress)) && (

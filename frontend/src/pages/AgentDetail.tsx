@@ -55,6 +55,10 @@ import ModelSwitcher from '../components/ModelSwitcher';
 
 const TABS = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'] as const;
 
+// Only paths under workspace/ should trigger the live panel auto-focus.
+// memory.md, soul.md, tasks.json, skills/* are internal agent files — not user-facing.
+const WORKSPACE_FILE_RE = /^workspace\//i;
+
 // Workspace tools that trigger live draft preview
 const WORKSPACE_TOOLS = new Set([
     'write_file', 'edit_file', 'delete_file',
@@ -1796,6 +1800,7 @@ function AgentDetailInner() {
         activeSessionIdRef.current = sess.id;
         setChatMessages([]);
         setHistoryMsgs([]);
+        setTokenSummary(null);
         setIsStreaming(runtimeState.isStreaming);
         setIsWaiting(runtimeState.isWaiting);
         setActiveSession(sess);
@@ -1955,12 +1960,22 @@ function AgentDetailInner() {
     useEffect(() => { workspaceLockedPathRef.current = workspaceLockedPath; }, [workspaceLockedPath]);
     const allowWorkspaceAutoSwitch = useCallback((path: string | undefined) => {
         if (workspaceEditingRef.current) return false;
+        // Only auto-switch for workspace files (not memory.md, soul.md, skills/, etc.)
+        if (path && !WORKSPACE_FILE_RE.test(path)) return false;
         if (!workspaceLockedPathRef.current) return true;
         return workspaceLockedPathRef.current === path;
     }, []);
     const allowLivePanelAutoFocus = useCallback(() => !workspaceEditingRef.current && !workspaceLockedPathRef.current, []);
 
     const handleWorkspaceSelectPath = useCallback((path: string) => { setWorkspaceActivePath(path); }, []);
+
+    // Click handler for file links inside chat messages: open workspace panel and preview the file
+    const handleChatFileLink = useCallback((path: string) => {
+        const normalized = path.startsWith('workspace/') ? path : `workspace/${path}`;
+        setWorkspaceActivePath(normalized);
+        setSidePanelTab('workspace');
+        setLivePanelVisible(true);
+    }, []);
     const handleWorkspaceToggleLock = useCallback(() => {
         setWorkspaceLockedPath((current) => current ? null : workspaceActivePath);
     }, [workspaceActivePath]);
@@ -1986,6 +2001,7 @@ function AgentDetailInner() {
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    const [tokenSummary, setTokenSummary] = useState<{ prompt_tokens: number; context_window: number | null; ratio: number | null } | null>(null);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
     const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' }[]>([]);
@@ -2232,6 +2248,11 @@ function AgentDetailInner() {
                 return;
             }
 
+            if (d.type === 'token_summary' && isActiveRuntime) {
+                setTokenSummary({ prompt_tokens: d.prompt_tokens, context_window: d.context_window, ratio: d.ratio });
+                return;
+            }
+
             if (d.type === 'thinking') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
@@ -2250,9 +2271,10 @@ function AgentDetailInner() {
                         status: 'drafting',
                         ...parsedDraft,
                     };
-                    setWorkspaceLiveDraft(draft);
+                    const isWorkspaceFile = !draft.path || WORKSPACE_FILE_RE.test(draft.path);
+                    if (isWorkspaceFile) setWorkspaceLiveDraft(draft);
                     if (allowWorkspaceAutoSwitch(draft.path)) setWorkspaceActivePath(draft.path!);
-                    if (allowLivePanelAutoFocus()) {
+                    if (isWorkspaceFile && allowLivePanelAutoFocus()) {
                         setSidePanelTab('workspace');
                         setLivePanelVisible(true);
                         setSessionListCollapsed(true);
@@ -2271,9 +2293,10 @@ function AgentDetailInner() {
                             status: 'running',
                             ...parsedDraft,
                         };
-                        setWorkspaceLiveDraft(draft);
+                        const isWorkspaceFile = !draft.path || WORKSPACE_FILE_RE.test(draft.path);
+                        if (isWorkspaceFile) setWorkspaceLiveDraft(draft);
                         if (allowWorkspaceAutoSwitch(draft.path)) setWorkspaceActivePath(draft.path!);
-                        if (allowLivePanelAutoFocus()) {
+                        if (isWorkspaceFile && allowLivePanelAutoFocus()) {
                             setSidePanelTab('workspace');
                             setLivePanelVisible(true);
                             setSessionListCollapsed(true);
@@ -2281,6 +2304,16 @@ function AgentDetailInner() {
                         }
                     } else if (d.status === 'done') {
                         setWorkspaceLiveDraft(null);
+                        // send_file_to_user completed — auto-open workspace panel to preview the file
+                        if (d.name === 'send_file_to_user' && d.args) {
+                            const filePath = d.args.file_path || d.args.path;
+                            if (filePath && WORKSPACE_FILE_RE.test(filePath) && allowLivePanelAutoFocus()) {
+                                setWorkspaceActivePath(filePath);
+                                setSidePanelTab('workspace');
+                                setLivePanelVisible(true);
+                                setSessionListCollapsed(true);
+                            }
+                        }
                     }
                 }
                 if (d.live_preview) {
@@ -2306,6 +2339,7 @@ function AgentDetailInner() {
                 }
                 if (d.workspace_activity) {
                     const activity = d.workspace_activity as WorkspaceActivity;
+                    const isWorkspaceFile = !activity.path || WORKSPACE_FILE_RE.test(activity.path);
                     setWorkspaceLiveDraft(null);
                     setWorkspaceActivities(prev => [activity, ...prev.filter(item => item.path !== activity.path)].slice(0, 20));
                     if (activity.action === 'delete' && activity.ok !== false && !activity.pendingApproval) {
@@ -2314,7 +2348,7 @@ function AgentDetailInner() {
                     if (activity.action !== 'delete' && activity.ok !== false && allowWorkspaceAutoSwitch(activity.path)) {
                         setWorkspaceActivePath(activity.path);
                     }
-                    if (allowLivePanelAutoFocus()) {
+                    if (isWorkspaceFile && allowLivePanelAutoFocus()) {
                         setSidePanelTab('workspace');
                         setLivePanelVisible(true);
                         setSessionListCollapsed(true);
@@ -2427,6 +2461,7 @@ function AgentDetailInner() {
     // Memoized component for each chat message to avoid re-renders while typing
     const ChatMessageItem = React.useMemo(() => React.memo(({
         msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false,
+        onFileLink,
     }: {
         msg: any;
         i: number;
@@ -2435,6 +2470,7 @@ function AgentDetailInner() {
         senderLabel?: string;
         avatarText?: string;
         forceSenderLabel?: boolean;
+        onFileLink?: (path: string) => void;
     }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fi = fe === 'pdf' ? '▪ PDF' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '▪ Spreadsheet' : (fe === 'docx' || fe === 'doc') ? '▪ Document' : '▪ File';
@@ -2519,7 +2555,7 @@ function AgentDetailInner() {
                                 <div className="thinking-dots"><span /><span /><span /></div>
                                 <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
                             </div>
-                        ) : <MarkdownRenderer content={displayContent} />
+                        ) : <MarkdownRenderer content={displayContent} onFileLink={onFileLink} />
                     ) : <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>}
                     {timestampHtml}
                 </div>
@@ -4747,6 +4783,7 @@ function AgentDetailInner() {
                                                             key={i} msg={msg} i={i} isLeft={isLeft} t={t}
                                                             senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
                                                             avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
+                                                            onFileLink={handleChatFileLink}
                                                             forceSenderLabel={isHumanReadonly}
                                                         />
                                                     );
@@ -4809,6 +4846,7 @@ function AgentDetailInner() {
                                                             t={t}
                                                             senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
                                                             avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
+                                                            onFileLink={handleChatFileLink}
                                                         />
                                                     );
                                                 });
@@ -4843,6 +4881,29 @@ function AgentDetailInner() {
                                                 Connecting...
                                             </div>
                                         ) : null}
+                                        {tokenSummary && (
+                                            <div style={{
+                                                display: 'flex', alignItems: 'center', gap: '8px',
+                                                padding: '4px 16px', fontSize: '11px', color: 'var(--text-tertiary)',
+                                                borderTop: '1px solid var(--border-default)',
+                                            }}>
+                                                <span>Context: {(tokenSummary.prompt_tokens / 1000).toFixed(1)}K{tokenSummary.context_window ? ` / ${(tokenSummary.context_window / 1000).toFixed(0)}K` : ''}</span>
+                                                {tokenSummary.context_window && (
+                                                    <div style={{
+                                                        flex: 1, maxWidth: '100px', height: '3px', borderRadius: '2px',
+                                                        background: 'var(--border-default)', overflow: 'hidden',
+                                                    }}>
+                                                        <div style={{
+                                                            width: `${Math.min((tokenSummary.ratio || 0) * 100, 100)}%`,
+                                                            height: '100%', borderRadius: '2px',
+                                                            background: (tokenSummary.ratio || 0) > 0.8
+                                                                ? (tokenSummary.ratio || 0) > 0.95 ? '#ef4444' : '#f59e0b'
+                                                                : 'var(--accent-primary)',
+                                                        }} />
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                         <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
                                             <div className="chat-composer">
                                             {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
