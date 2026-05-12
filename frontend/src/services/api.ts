@@ -1,8 +1,43 @@
 /** API service layer */
 
-import type { Agent, TokenResponse, User, Task, ChatMessage, DashboardSummary } from '../types';
+import type { Agent, TokenResponse, User, Task, ChatMessage, DashboardSummary, ChannelAccount } from '../types';
 
 const API_BASE = '/api';
+
+// ─── Refresh token mutex ──────────────────────────────
+let refreshPromise: Promise<boolean> | null = null;
+
+async function tryRefreshToken(): Promise<boolean> {
+    // Singleton: only one refresh at a time
+    if (refreshPromise) return refreshPromise;
+
+    refreshPromise = (async () => {
+        const rt = localStorage.getItem('refresh_token');
+        if (!rt) return false;
+
+        try {
+            const res = await fetch(`${API_BASE}/auth/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refresh_token: rt }),
+            });
+            if (!res.ok) return false;
+
+            const data: TokenResponse = await res.json();
+            localStorage.setItem('token', data.access_token);
+            if (data.refresh_token) {
+                localStorage.setItem('refresh_token', data.refresh_token);
+            }
+            return true;
+        } catch {
+            return false;
+        } finally {
+            refreshPromise = null;
+        }
+    })();
+
+    return refreshPromise;
+}
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     const token = localStorage.getItem('token');
@@ -18,14 +53,33 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
 
     if (!res.ok) {
-        // Auto-logout on expired/invalid token (but not on auth endpoints — let them show errors)
         const isAuthEndpoint = url.startsWith('/auth/login')
             || url.startsWith('/auth/register')
             || url.startsWith('/auth/forgot-password')
-            || url.startsWith('/auth/reset-password');
+            || url.startsWith('/auth/reset-password')
+            || url.startsWith('/auth/refresh');
+
         if (res.status === 401 && !isAuthEndpoint) {
+            // Try refresh before logging out
+            const refreshed = await tryRefreshToken();
+            if (refreshed) {
+                // Retry the original request with new token
+                const newToken = localStorage.getItem('token');
+                const retryHeaders = isFormData ? {
+                    ...(newToken ? { Authorization: `Bearer ${newToken}` } : {}),
+                } : {
+                    'Content-Type': 'application/json',
+                    ...(newToken ? { Authorization: `Bearer ${newToken}` } : {}),
+                };
+                const retryRes = await fetch(`${API_BASE}${url}`, { ...options, headers: retryHeaders });
+                if (retryRes.ok) {
+                    if (retryRes.status === 204) return undefined as T;
+                    return retryRes.json();
+                }
+            }
+            // Refresh failed or retry failed — logout
             localStorage.removeItem('token');
-            localStorage.removeItem('user');
+            localStorage.removeItem('refresh_token');
             window.location.href = '/login';
             throw new Error('Session expired');
         }
@@ -157,7 +211,7 @@ export function uploadFileWithProgress(
 // ─── Auth ─────────────────────────────────────────────
 export const authApi = {
     register: (data: { username?: string; email: string; password: string; display_name: string; invitation_code?: string; provider?: string; provider_code?: string }) =>
-        request<{ user_id: string; email: string; access_token: string; message: string; user?: any; needs_company_setup: boolean }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
+        request<{ user_id: string; email: string; access_token: string; refresh_token?: string; message: string; user?: any; needs_company_setup: boolean }>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
 
     login: (data: { login_identifier: string; password: string; tenant_id?: string }) =>
         request<TokenResponse | { requires_tenant_selection: boolean; login_identifier: string; tenants: any[] }>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
@@ -177,7 +231,7 @@ export const authApi = {
         request<User>('/auth/me', { method: 'PATCH', body: JSON.stringify(data) }),
 
     verifyEmail: (token: string) =>
-        request<{ ok: boolean; message: string; access_token: string; user: User; needs_company_setup: boolean }>('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
+        request<{ ok: boolean; message: string; access_token: string; refresh_token?: string; user: User; needs_company_setup: boolean }>('/auth/verify-email', { method: 'POST', body: JSON.stringify({ token }) }),
 
     resendVerification: (email: string) =>
         request<{ ok: boolean; message: string }>('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email }) }),
@@ -205,6 +259,39 @@ export const tenantApi = {
 
     me: () =>
         request<{ id: string; name: string; default_model_id: string | null; [k: string]: any }>('/tenants/me'),
+};
+
+// ─── User Management (Admin) ──────────────────────────
+export const userManagementApi = {
+    getChannelAccounts: (userId: string) =>
+        request<ChannelAccount[]>(`/users/${userId}/channel-accounts`),
+
+    getUnlinkedChannelAccounts: (channelType?: string, q?: string) => {
+        const params = new URLSearchParams();
+        if (channelType) params.set('channel_type', channelType);
+        if (q) params.set('q', q);
+        const qs = params.toString();
+        return request<ChannelAccount[]>(`/users/unlinked-channel-accounts${qs ? `?${qs}` : ''}`);
+    },
+
+
+    bindByOrgMemberId: (userId: string, orgMemberId: string) =>
+        request<ChannelAccount>(`/users/${userId}/channel-accounts/bind-by-org-member`, {
+            method: 'POST',
+            body: JSON.stringify({ org_member_id: orgMemberId }),
+        }),
+
+    unbindChannelAccount: (userId: string, orgMemberId: string) =>
+        request<{ status: string }>(`/users/${userId}/channel-accounts/unbind`, {
+            method: 'POST',
+            body: JSON.stringify({ org_member_id: orgMemberId }),
+        }),
+
+    mergeDuplicates: (data: { target_user_id: string; source_user_ids: string[] }) =>
+        request<{ status: string; merged_count: number; sessions_reassigned: number }>('/users/merge-duplicates', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        }),
 };
 
 export const adminApi = {
@@ -533,10 +620,10 @@ export const skillApi = {
     clawhub: {
         search: (q: string) => request<any[]>(`/skills/clawhub/search?q=${encodeURIComponent(q)}`),
         detail: (slug: string) => request<any>(`/skills/clawhub/detail/${slug}`),
-        install: (slug: string) => request<any>('/skills/clawhub/install', { method: 'POST', body: JSON.stringify({ slug }) }),
+        install: (slug: string, overwrite?: boolean) => request<any>(`/skills/clawhub/install${overwrite ? '?overwrite=true' : ''}`, { method: 'POST', body: JSON.stringify({ slug }) }),
     },
-    importFromUrl: (url: string) =>
-        request<any>('/skills/import-from-url', { method: 'POST', body: JSON.stringify({ url }) }),
+    importFromUrl: (url: string, overwrite?: boolean) =>
+        request<any>(`/skills/import-from-url${overwrite ? '?overwrite=true' : ''}`, { method: 'POST', body: JSON.stringify({ url }) }),
     previewUrl: (url: string) =>
         request<any>('/skills/import-from-url/preview', { method: 'POST', body: JSON.stringify({ url }) }),
     // Tenant-level settings
@@ -548,10 +635,10 @@ export const skillApi = {
             request<any>('/skills/settings/token', { method: 'PUT', body: JSON.stringify({ clawhub_key }) }),
     },
     // Import skill ZIP to global registry
-    importZip: (file: File) => {
+    importZip: (file: File, overwrite?: boolean) => {
         const formData = new FormData();
         formData.append('file', file);
-        return request<any>('/skills/import-zip', { method: 'POST', body: formData });
+        return request<any>(`/skills/import-zip${overwrite ? '?overwrite=true' : ''}`, { method: 'POST', body: formData });
     },
     // Agent-level import (writes to agent workspace)
     agentImport: {

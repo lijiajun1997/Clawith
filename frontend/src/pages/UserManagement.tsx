@@ -1,10 +1,12 @@
 /**
  * User Management — admin page to view and manage user quotas and roles.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores';
 import LinearCopyButton from '../components/LinearCopyButton';
+import { userManagementApi } from '../services/api';
+import type { ChannelAccount } from '../types';
 
 interface UserInfo {
     id: string;
@@ -22,6 +24,7 @@ interface UserInfo {
     feishu_open_id?: string;
     created_at?: string;
     source?: string;
+    channel_accounts?: ChannelAccount[];
 }
 
 const API_PREFIX = '/api';
@@ -63,6 +66,31 @@ export default function UserManagement() {
     const [toast, setToast] = useState('');
     const [changingRoleUserId, setChangingRoleUserId] = useState<string | null>(null);
 
+    // Channel accounts panel state
+    const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
+    const [channelAccounts, setChannelAccounts] = useState<ChannelAccount[]>([]);
+    const [loadingAccounts, setLoadingAccounts] = useState(false);
+    const [showBindForm, setShowBindForm] = useState(false);
+    const [selectedChannelType, setSelectedChannelType] = useState('');
+    const [unlinkedAccounts, setUnlinkedAccounts] = useState<ChannelAccount[]>([]);
+    const [loadingUnlinked, setLoadingUnlinked] = useState(false);
+    const [bindSearch, setBindSearch] = useState('');
+    const [selectedOrgMemberId, setSelectedOrgMemberId] = useState<string | null>(null);
+    const [binding, setBinding] = useState(false);
+    const isComposingRef = useRef(false);  // ref avoids React batching race with IME events
+
+    const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const CHANNEL_OPTIONS = [
+        { value: 'feishu', label: isChinese ? '飞书' : 'Feishu' },
+        { value: 'dingtalk', label: isChinese ? '钉钉' : 'DingTalk' },
+        { value: 'wecom', label: isChinese ? '企业微信' : 'WeCom' },
+        { value: 'wechat', label: isChinese ? '微信' : 'WeChat' },
+        { value: 'discord', label: 'Discord' },
+        { value: 'slack', label: 'Slack' },
+        { value: 'microsoft_teams', label: isChinese ? 'Teams' : 'Teams' },
+    ];
+
     // Invite modal state
     const [showInviteModal, setShowInviteModal] = useState(false);
     const [inviteEmails, setInviteEmails] = useState('');
@@ -80,7 +108,8 @@ export default function UserManagement() {
         try {
             const tenantId = localStorage.getItem('current_tenant_id') || '';
             const data = await fetchJson<UserInfo[]>(`/users/${tenantId ? `?tenant_id=${tenantId}` : ''}`);
-            setUsers(data.filter(u => u.source !== 'feishu' && u.source !== 'wechat'));
+            // Only show registered (web) users; channel accounts are managed via bind panel
+            setUsers(data.filter(u => !u.source || u.source === 'web' || u.source === 'registered'));
         } catch (e) {
             console.error('Failed to load users', e);
         }
@@ -172,6 +201,78 @@ export default function UserManagement() {
         return PERIOD_OPTIONS.find(p => p.value === period)?.label || period;
     };
 
+    const loadChannelAccounts = async (userId: string) => {
+        setLoadingAccounts(true);
+        try {
+            const accounts = await userManagementApi.getChannelAccounts(userId);
+            setChannelAccounts(accounts);
+        } catch {
+            setChannelAccounts([]);
+        }
+        setLoadingAccounts(false);
+    };
+
+    const loadUnlinkedAccounts = async (channelType: string, search?: string) => {
+        if (!channelType) { setUnlinkedAccounts([]); return; }
+        setLoadingUnlinked(true);
+        try {
+            const accounts = await userManagementApi.getUnlinkedChannelAccounts(channelType, search);
+            setUnlinkedAccounts(accounts);
+        } catch {
+            setUnlinkedAccounts([]);
+        }
+        setLoadingUnlinked(false);
+    };
+
+    const toggleExpand = (userId: string) => {
+        if (expandedUserId === userId) {
+            setExpandedUserId(null);
+        } else {
+            setExpandedUserId(userId);
+            setShowBindForm(false);
+            setSelectedOrgMemberId(null);
+            setBindSearch('');
+            setSelectedChannelType('');
+            setUnlinkedAccounts([]);
+            loadChannelAccounts(userId);
+        }
+    };
+
+    const handleBindByOrgMember = async () => {
+        if (!expandedUserId || !selectedOrgMemberId) return;
+        setBinding(true);
+        try {
+            await userManagementApi.bindByOrgMemberId(expandedUserId, selectedOrgMemberId);
+            setToast(isChinese ? '绑定成功' : 'Binding successful');
+            setTimeout(() => setToast(''), 2000);
+            setShowBindForm(false);
+            setSelectedOrgMemberId(null);
+            setBindSearch('');
+            setSelectedChannelType('');
+            setUnlinkedAccounts([]);
+            loadChannelAccounts(expandedUserId);
+        } catch (e: any) {
+            setToast(`${isChinese ? '绑定失败' : 'Bind failed'}: ${e.message}`);
+            setTimeout(() => setToast(''), 3000);
+        }
+        setBinding(false);
+    };
+
+    const handleUnbind = async (orgMemberId: string) => {
+        if (!expandedUserId) return;
+        const msg = isChinese ? '确认解绑此渠道账号？' : 'Unbind this channel account?';
+        if (!confirm(msg)) return;
+        try {
+            await userManagementApi.unbindChannelAccount(expandedUserId, orgMemberId);
+            setToast(isChinese ? '解绑成功' : 'Unbound');
+            setTimeout(() => setToast(''), 2000);
+            loadChannelAccounts(expandedUserId);
+        } catch (e: any) {
+            setToast(`${isChinese ? '解绑失败' : 'Unbind failed'}: ${e.message}`);
+            setTimeout(() => setToast(''), 3000);
+        }
+    };
+
     // Role label & styling helpers
     const roleBadge = (role: string) => {
         const styles: Record<string, { bg: string; color: string; label: string; labelZh: string }> = {
@@ -182,6 +283,26 @@ export default function UserManagement() {
         if (!s) return null;
         return (
             <span style={{ marginLeft: '6px', fontSize: '10px', background: s.bg, color: s.color, borderRadius: '4px', padding: '1px 6px', fontWeight: 500 }}>
+                {isChinese ? s.labelZh : s.label}
+            </span>
+        );
+    };
+
+    const SOURCE_STYLES: Record<string, { bg: string; color: string; label: string; labelZh: string }> = {
+        web:              { bg: 'rgba(0,180,120,0.12)', color: '#00b478', label: 'Reg', labelZh: '注册' },
+        feishu:           { bg: 'rgba(58,132,255,0.12)', color: '#3a84ff', label: 'Feishu', labelZh: '飞书' },
+        dingtalk:         { bg: 'rgba(0,140,255,0.12)', color: '#008cff', label: 'DingTalk', labelZh: '钉钉' },
+        wecom:            { bg: 'rgba(7,193,96,0.12)', color: '#07c160', label: 'WeCom', labelZh: '企微' },
+        wechat:           { bg: 'rgba(7,193,96,0.12)', color: '#07c160', label: 'WeChat', labelZh: '微信' },
+        discord:          { bg: 'rgba(88,101,242,0.12)', color: '#5865f2', label: 'Discord', labelZh: 'Discord' },
+        slack:            { bg: 'rgba(74,21,75,0.12)', color: '#a1045a', label: 'Slack', labelZh: 'Slack' },
+        microsoft_teams:  { bg: 'rgba(98,100,167,0.12)', color: '#6264a7', label: 'Teams', labelZh: 'Teams' },
+    };
+
+    const SourceBadge = ({ source, isChinese }: { source: string; isChinese: boolean }) => {
+        const s = SOURCE_STYLES[source] || SOURCE_STYLES.web;
+        return (
+            <span style={{ fontSize: '10px', background: s.bg, color: s.color, borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
                 {isChinese ? s.labelZh : s.label}
             </span>
         );
@@ -335,15 +456,7 @@ export default function UserManagement() {
                                     )}
                                 </div>
                                 <div>
-                                    {user.source === 'feishu' ? (
-                                        <span style={{ fontSize: '10px', background: 'rgba(58,132,255,0.12)', color: '#3a84ff', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                                            飞书
-                                        </span>
-                                    ) : (
-                                        <span style={{ fontSize: '10px', background: 'rgba(0,180,120,0.12)', color: 'var(--success)', borderRadius: '4px', padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                                            {isChinese ? '注册' : 'Reg'}
-                                        </span>
-                                    )}
+                                    <SourceBadge source={user.source || 'web'} isChinese={isChinese} />
                                 </div>
                                 <div>
                                     <span style={{ fontSize: '13px', fontWeight: 500 }}>{user.quota_messages_used}</span>
@@ -357,13 +470,21 @@ export default function UserManagement() {
                                     <span style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}> / {user.quota_max_agents}</span>
                                 </div>
                                 <div style={{ fontSize: '12px' }}>{user.quota_agent_ttl_hours}h</div>
-                                <div>
+                                <div style={{ display: 'flex', gap: '4px' }}>
                                     <button
                                         className="btn btn-secondary"
                                         style={{ padding: '4px 10px', fontSize: '11px' }}
                                         onClick={() => editingUserId === user.id ? setEditingUserId(null) : startEdit(user)}
                                     >
                                         {editingUserId === user.id ? t('common.cancel') : `✏️ ${t('common.edit')}`}
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary"
+                                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                                        onClick={() => toggleExpand(user.id)}
+                                        title={isChinese ? '渠道账号' : 'Channel Accounts'}
+                                    >
+                                        {expandedUserId === user.id ? '▲' : '🔗'}
                                     </button>
                                 </div>
                             </div>
@@ -432,6 +553,259 @@ export default function UserManagement() {
                                             {saving ? t('common.loading') : t('common.save', 'Save')}
                                         </button>
                                     </div>
+                                </div>
+                            )}
+
+                            {/* Channel accounts panel */}
+                            {expandedUserId === user.id && (
+                                <div className="card" style={{
+                                    marginTop: '4px', padding: '16px',
+                                    background: 'var(--bg-secondary)',
+                                    borderLeft: '3px solid #3a84ff',
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                                        <h4 style={{ margin: 0, fontSize: '13px', fontWeight: 600 }}>
+                                            {isChinese ? '关联渠道账号' : 'Linked Channel Accounts'}
+                                        </h4>
+                                        <button
+                                            className="btn btn-primary"
+                                            style={{ padding: '4px 12px', fontSize: '11px' }}
+                                            onClick={() => {
+                                                if (showBindForm) {
+                                                    setShowBindForm(false);
+                                                    setSelectedChannelType('');
+                                                    setSelectedOrgMemberId(null);
+                                                    setBindSearch('');
+                                                    setUnlinkedAccounts([]);
+                                                } else {
+                                                    setShowBindForm(true);
+                                                }
+                                            }}
+                                        >
+                                            {showBindForm ? (isChinese ? '取消' : 'Cancel') : (isChinese ? '+ 添加绑定' : '+ Add Binding')}
+                                        </button>
+                                    </div>
+
+                                    {/* Bind form */}
+                                    {showBindForm && (
+                                        <div style={{
+                                            marginBottom: '12px', padding: '14px',
+                                            background: 'var(--bg-primary)', borderRadius: '8px',
+                                            border: '1px solid var(--border-subtle)',
+                                        }}>
+                                            {/* Row 1: Channel type chips */}
+                                            <div style={{ marginBottom: '12px' }}>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px', fontWeight: 500 }}>
+                                                    {isChinese ? '选择渠道' : 'Channel'}
+                                                </div>
+                                                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                                    {CHANNEL_OPTIONS.map(opt => (
+                                                        <button
+                                                            key={opt.value}
+                                                            onClick={() => {
+                                                                if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                                                                setSelectedChannelType(opt.value);
+                                                                setSelectedOrgMemberId(null);
+                                                                setBindSearch('');
+                                                                setUnlinkedAccounts([]);
+                                                                loadUnlinkedAccounts(opt.value);
+                                                            }}
+                                                            style={{
+                                                                padding: '4px 12px', fontSize: '11px', borderRadius: '14px',
+                                                                border: selectedChannelType === opt.value
+                                                                    ? '1px solid var(--accent-color)'
+                                                                    : '1px solid var(--border-subtle)',
+                                                                background: selectedChannelType === opt.value
+                                                                    ? 'var(--accent-color-alpha, rgba(59,130,246,0.12))'
+                                                                    : 'var(--bg-secondary)',
+                                                                color: selectedChannelType === opt.value
+                                                                    ? 'var(--accent-color)'
+                                                                    : 'var(--text-secondary)',
+                                                                cursor: 'pointer', fontWeight: 500,
+                                                                transition: 'all 0.15s',
+                                                            }}
+                                                        >
+                                                            {opt.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* Row 2: Account select dropdown (after channel selected) */}
+                                            {selectedChannelType && (
+                                                <div style={{ marginBottom: '12px' }}>
+                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginBottom: '6px', fontWeight: 500 }}>
+                                                        {isChinese ? '选择账号' : 'Account'}
+                                                    </div>
+                                                    {loadingUnlinked ? (
+                                                        <div style={{ padding: '8px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                                            {isChinese ? '加载中...' : 'Loading...'}
+                                                        </div>
+                                                    ) : unlinkedAccounts.length === 0 ? (
+                                                        <div style={{ padding: '8px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                                            {isChinese ? '该渠道下暂无可绑定账号' : 'No unlinked accounts for this channel'}
+                                                        </div>
+                                                    ) : (
+                                                        <div style={{ position: 'relative' }}>
+                                                            <input
+                                                                className="form-input"
+                                                                type="text"
+                                                                value={bindSearch}
+                                                                onChange={e => {
+                                                                    setBindSearch(e.target.value);
+                                                                    if (!isComposingRef.current) {
+                                                                        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                                                                        searchTimerRef.current = setTimeout(() => {
+                                                                            loadUnlinkedAccounts(selectedChannelType, e.target.value);
+                                                                        }, 300);
+                                                                    }
+                                                                }}
+                                                                onCompositionStart={() => isComposingRef.current = true}
+                                                                onCompositionEnd={e => {
+                                                                    isComposingRef.current = false;
+                                                                    const val = (e.target as HTMLInputElement).value;
+                                                                    setBindSearch(val);
+                                                                    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+                                                                    searchTimerRef.current = setTimeout(() => {
+                                                                        loadUnlinkedAccounts(selectedChannelType, val);
+                                                                    }, 300);
+                                                                }}
+                                                                placeholder={isChinese ? '输入名字搜索...' : 'Search by name...'}
+                                                                style={{ fontSize: '12px', padding: '7px 10px', width: '100%' }}
+                                                            />
+                                                            {/* Dropdown */}
+                                                            <div style={{
+                                                                position: 'absolute', top: '100%', left: 0, right: 0,
+                                                                background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)',
+                                                                borderRadius: '0 0 8px 8px', maxHeight: '200px', overflowY: 'auto',
+                                                                zIndex: 100, boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+                                                            }}>
+                                                                {unlinkedAccounts.map(account => {
+                                                                    const isSelected = selectedOrgMemberId === account.id;
+                                                                    return (
+                                                                        <div
+                                                                            key={account.id}
+                                                                            onClick={() => {
+                                                                                if (isSelected) {
+                                                                                    setSelectedOrgMemberId(null);
+                                                                                    setBindSearch('');
+                                                                                } else {
+                                                                                    setSelectedOrgMemberId(account.id);
+                                                                                    setBindSearch(account.name || account.external_id || '');
+                                                                                }
+                                                                            }}
+                                                                            style={{
+                                                                                display: 'flex', alignItems: 'center', gap: '8px',
+                                                                                padding: '8px 12px', cursor: 'pointer', fontSize: '12px',
+                                                                                background: isSelected ? 'var(--accent-color-alpha, rgba(59,130,246,0.08))' : 'transparent',
+                                                                                borderBottom: '1px solid var(--border-subtle)',
+                                                                                transition: 'background 0.1s',
+                                                                            }}
+                                                                            onMouseEnter={e => {
+                                                                                if (!isSelected) e.currentTarget.style.background = 'var(--bg-secondary)';
+                                                                            }}
+                                                                            onMouseLeave={e => {
+                                                                                if (!isSelected) e.currentTarget.style.background = 'transparent';
+                                                                            }}
+                                                                        >
+                                                                            <span style={{
+                                                                                width: '14px', height: '14px', borderRadius: '3px',
+                                                                                border: isSelected ? 'none' : '1.5px solid var(--border-subtle)',
+                                                                                background: isSelected ? 'var(--accent-color)' : 'transparent',
+                                                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                                flexShrink: 0,
+                                                                            }}>
+                                                                                {isSelected && (
+                                                                                    <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                                                                                        <path d="M2 6L5 9L10 3" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                                                                                    </svg>
+                                                                                )}
+                                                                            </span>
+                                                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                                                                <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                                                                    {account.name || account.open_id || account.unionid || account.external_id || '-'}
+                                                                                    {account.linked_to_user_name && (
+                                                                                        <span style={{ fontSize: '10px', fontWeight: 400, color: 'var(--warning, #f59e0b)', background: 'rgba(245,158,11,0.1)', borderRadius: '3px', padding: '1px 5px', whiteSpace: 'nowrap' }}>
+                                                                                            {isChinese ? '已绑到渠道用户' : 'bound to channel'} «{account.linked_to_user_name}»
+                                                                                        </span>
+                                                                                    )}
+                                                                                </div>
+                                                                                <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>
+                                                                                    {[account.external_id, account.open_id, account.unionid].filter(Boolean).join(' | ') || '-'}
+                                                                                </div>
+                                                                            </div>
+                                                                            {account.email && (
+                                                                                <span style={{ fontSize: '10px', color: 'var(--text-tertiary)', flexShrink: 0 }}>
+                                                                                    {account.email}
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {/* Action buttons */}
+                                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    onClick={() => { setShowBindForm(false); setSelectedOrgMemberId(null); setBindSearch(''); setSelectedChannelType(''); setUnlinkedAccounts([]); }}
+                                                    style={{ padding: '5px 14px', fontSize: '12px' }}
+                                                >
+                                                    {isChinese ? '取消' : 'Cancel'}
+                                                </button>
+                                                <button
+                                                    className="btn btn-primary"
+                                                    onClick={handleBindByOrgMember}
+                                                    disabled={binding || !selectedOrgMemberId}
+                                                    style={{ padding: '5px 18px', fontSize: '12px' }}
+                                                >
+                                                    {binding ? (isChinese ? '绑定中...' : 'Binding...') : (isChinese ? '确认绑定' : 'Bind')}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Account list */}
+                                    {loadingAccounts ? (
+                                        <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                            {isChinese ? '加载中...' : 'Loading...'}
+                                        </div>
+                                    ) : channelAccounts.length === 0 ? (
+                                        <div style={{ textAlign: 'center', padding: '12px', color: 'var(--text-tertiary)', fontSize: '12px' }}>
+                                            {isChinese ? '暂无关联渠道账号' : 'No linked channel accounts'}
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                            {channelAccounts.map(account => (
+                                                <div key={account.id} style={{
+                                                    display: 'flex', alignItems: 'center', gap: '8px',
+                                                    padding: '6px 10px', background: 'var(--bg-primary)',
+                                                    borderRadius: '6px', fontSize: '12px',
+                                                }}>
+                                                    <SourceBadge source={account.channel_type} isChinese={isChinese} />
+                                                    <span style={{ fontWeight: 500 }}>{account.name || '-'}</span>
+                                                    <span style={{ color: 'var(--text-tertiary)', fontFamily: 'monospace', fontSize: '10px' }}>
+                                                        {account.external_id || account.open_id || account.unionid || '-'}
+                                                    </span>
+                                                    {account.email && (
+                                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '10px' }}>{account.email}</span>
+                                                    )}
+                                                    <div style={{ flex: 1 }} />
+                                                    <button
+                                                        className="btn btn-secondary"
+                                                        style={{ padding: '2px 8px', fontSize: '10px' }}
+                                                        onClick={() => handleUnbind(account.id)}
+                                                    >
+                                                        {isChinese ? '解绑' : 'Unbind'}
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>

@@ -464,6 +464,108 @@ class SSOService:
         """
         self.DOMAIN_TENANT_HINTS[domain.lower()] = tenant_id
 
+    async def admin_link_identity(
+        self,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        channel_type: str,
+        external_user_id: str,
+        tenant_id: uuid.UUID | None = None,
+        identity_data: dict[str, Any] | None = None,
+    ) -> Any:
+        """Admin-level binding: link a channel account to a user without OAuth.
+
+        Unlike link_identity(), this does NOT require an OAuth code. The admin
+        directly specifies the external_user_id for the channel.
+        """
+        from app.models.org import OrgMember
+
+        # Get or create provider
+        query = select(IdentityProvider).where(
+            IdentityProvider.provider_type == channel_type,
+        )
+        if tenant_id:
+            query = query.where(IdentityProvider.tenant_id == tenant_id)
+        result = await db.execute(query)
+        provider = result.scalar_one_or_none()
+
+        if not provider:
+            provider = IdentityProvider(
+                provider_type=channel_type,
+                name=channel_type.capitalize(),
+                is_active=True,
+                config={},
+                tenant_id=tenant_id,
+            )
+            db.add(provider)
+            await db.flush()
+
+        # Find existing OrgMember by (provider_id, external_id)
+        member_query = select(OrgMember).where(
+            OrgMember.provider_id == provider.id,
+            OrgMember.status == "active",
+            OrgMember.external_id == external_user_id,
+        )
+        member_result = await db.execute(member_query)
+        member = member_result.scalar_one_or_none()
+
+        if member:
+            if member.user_id and member.user_id != user_id:
+                raise ValueError(
+                    f"Channel account {channel_type}:{external_user_id} "
+                    f"is already linked to another user {member.user_id}"
+                )
+            # Link to target user
+            member.user_id = user_id
+            # Enrich profile from identity_data
+            if identity_data:
+                incoming_name = identity_data.get("name")
+                if incoming_name and (not member.name or member.name == member.external_id):
+                    member.name = incoming_name
+                incoming_email = identity_data.get("email")
+                if incoming_email and not member.email:
+                    member.email = incoming_email
+                incoming_phone = identity_data.get("phone")
+                if incoming_phone and not member.phone:
+                    member.phone = incoming_phone
+        else:
+            # Create shell OrgMember
+            name = (identity_data or {}).get("name") or f"{channel_type.capitalize()} User {external_user_id[:8]}"
+            member = OrgMember(
+                name=name,
+                email=(identity_data or {}).get("email"),
+                phone=(identity_data or {}).get("phone"),
+                provider_id=provider.id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                external_id=external_user_id,
+                status="active",
+            )
+            db.add(member)
+
+        await db.flush()
+        return member
+
+    async def admin_unlink_identity(
+        self,
+        db: AsyncSession,
+        org_member_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> bool:
+        """Admin-level unbinding: unlink a channel account from a user.
+
+        Verifies the OrgMember belongs to the specified user before unlinking.
+        """
+        from app.models.org import OrgMember
+
+        member = await db.get(OrgMember, org_member_id)
+        if not member or member.user_id != user_id:
+            return False
+
+        member.user_id = None
+        await db.flush()
+        return True
+
 
 # Global SSO service instance
 sso_service = SSOService()

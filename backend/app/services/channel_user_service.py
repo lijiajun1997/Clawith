@@ -42,7 +42,7 @@ class ChannelUserService:
         Args:
             db: Database session
             agent: Agent receiving the message (for tenant_id)
-            channel_type: "dingtalk" | "wecom" | "feishu"
+            channel_type: "dingtalk" | "wecom" | "feishu" | "wechat" | "discord" | "slack" | "microsoft_teams"
             external_user_id: User ID from external platform (staff_id/userid/open_id)
             extra_info: Optional name/avatar/mobile/email from platform API
 
@@ -90,56 +90,87 @@ class ChannelUserService:
                     f"[{channel_type}] Matched user by mobile: {user.id}"
                 )
 
-        # If found User by email/mobile, link OrgMember if exists (only for org-sync channels)
+        # If found User by email/mobile, link OrgMember for ALL channel types
         if user:
-            if channel_type in ("feishu", "dingtalk", "wecom"):
-                if org_member and not org_member.user_id:
-                    # Existing shell OrgMember not yet linked → link it
-                    org_member.user_id = user.id
-                elif not org_member:
-                    # No OrgMember found by external_id. Before creating a new shell,
-                    # check if this user already has an OrgMember from org sync so
-                    # we reuse it instead of creating a duplicate entry.
-                    existing_member = await self._find_existing_org_member_for_user(
-                        db, user.id, provider.id, tenant_id
-                    )
-                    if existing_member:
-                        # Reuse the org-synced record: update its channel-specific IDs
-                        # so future lookups by external_id work without a new shell.
-                        if channel_type == "feishu":
-                            if external_user_id.startswith("on_"):
-                                existing_member.unionid = existing_member.unionid or external_user_id
-                            elif external_user_id.startswith("ou_"):
-                                existing_member.open_id = existing_member.open_id or external_user_id
-                        logger.info(
-                            f"[{channel_type}] Reusing org-synced OrgMember {existing_member.id} "
-                            f"for user {user.id} instead of creating a duplicate shell"
-                        )
+            if org_member and not org_member.user_id:
+                # Existing shell OrgMember not yet linked → link it
+                org_member.user_id = user.id
+            elif not org_member:
+                # No OrgMember found by external_id. Before creating a new shell,
+                # check if this user already has an OrgMember from org sync so
+                # we reuse it instead of creating a duplicate entry.
+                existing_member = await self._find_existing_org_member_for_user(
+                    db, user.id, provider.id, tenant_id
+                )
+                if existing_member:
+                    # Reuse the org-synced record: update its channel-specific IDs
+                    # so future lookups by external_id work without a new shell.
+                    if channel_type == "feishu":
+                        if external_user_id.startswith("on_"):
+                            existing_member.unionid = existing_member.unionid or external_user_id
+                        elif external_user_id.startswith("ou_"):
+                            existing_member.open_id = existing_member.open_id or external_user_id
                     else:
-                        # Truly no OrgMember for this user → create shell
-                        await self._create_org_member_shell(
-                            db, provider, channel_type, external_user_id, extra_info,
-                            linked_user_id=user.id
-                        )
+                        # For non-enterprise channels, ensure external_id is set
+                        if not existing_member.external_id:
+                            existing_member.external_id = external_user_id
+                    logger.info(
+                        f"[{channel_type}] Reusing org-synced OrgMember {existing_member.id} "
+                        f"for user {user.id} instead of creating a duplicate shell"
+                    )
+                else:
+                    # Truly no OrgMember for this user → create shell
+                    await self._create_org_member_shell(
+                        db, provider, channel_type, external_user_id, extra_info,
+                        linked_user_id=user.id
+                    )
             await db.flush()
             return user
+
+        # Step 4.5: Auto-bind to agent creator for non-enterprise channels
+        # When an agent has a channel (wechat/discord/slack/teams) configured,
+        # channel users are automatically bound to the agent creator instead of
+        # creating duplicate anonymous users.
+        if not user and agent.creator_id:
+            creator = await db.get(User, agent.creator_id)
+            if creator and creator.is_active:
+                user = creator
+                logger.info(
+                    f"[{channel_type}] Auto-bound to agent creator: {creator.id} "
+                    f"for external_id: {external_user_id}"
+                )
+                # Link OrgMember to creator
+                if org_member and not org_member.user_id:
+                    org_member.user_id = creator.id
+                elif not org_member:
+                    existing_member = await self._find_existing_org_member_for_user(
+                        db, creator.id, provider.id, tenant_id
+                    )
+                    if existing_member:
+                        if not existing_member.external_id:
+                            existing_member.external_id = external_user_id
+                    else:
+                        await self._create_org_member_shell(
+                            db, provider, channel_type, external_user_id, extra_info,
+                            linked_user_id=creator.id
+                        )
+                await db.flush()
+                return user
 
         # Step 5: Create new User (lazy registration)
         user = await self._create_channel_user(
             db, channel_type, external_user_id, extra_info, tenant_id
         )
 
-        # Step 6: Link or create OrgMember (only for channels with org sync)
-        # Channels like Discord/Slack don't have OrgMember, skip this step
-        if channel_type in ("feishu", "dingtalk", "wecom"):
-            if org_member:
-                org_member.user_id = user.id
-            else:
-                await self._create_org_member_shell(
-                    db, provider, channel_type, external_user_id, extra_info,
-                    linked_user_id=user.id
-                )
-            await db.flush()
+        # Step 6: Link or create OrgMember for ALL channel types
+        if org_member:
+            org_member.user_id = user.id
+        else:
+            await self._create_org_member_shell(
+                db, provider, channel_type, external_user_id, extra_info,
+                linked_user_id=user.id
+            )
+        await db.flush()
         logger.info(
             f"[{channel_type}] Created new user: {user.id} for external_id: {external_user_id}"
         )
@@ -184,8 +215,9 @@ class ChannelUserService:
         For Feishu: try unionid first, then open_id, then external_id
         For DingTalk: try unionid first, then external_id
         For WeCom: try external_id (userid)
+        For other channels (wechat, discord, slack, teams): try external_id
 
-        Returns None if OrgMember not found or org sync is not enabled for this channel.
+        Returns None if OrgMember not found.
         """
         try:
             # Build OR conditions for matching
@@ -209,9 +241,9 @@ class ChannelUserService:
                 # WeCom: external_id (userid) is the primary identifier
                 conditions.append(OrgMember.external_id == external_user_id)
             else:
-                # Generic fallback (discord, slack, etc. - no org sync)
-                # These channels don't have OrgMember, return None immediately
-                return None
+                # Generic channels (wechat, discord, slack, teams, etc.)
+                # Use external_id as the primary identifier
+                conditions.append(OrgMember.external_id == external_user_id)
 
             query = select(OrgMember).where(*conditions)
             result = await db.execute(query)

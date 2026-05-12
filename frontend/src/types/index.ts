@@ -15,6 +15,20 @@ export interface User {
     created_at: string;
 }
 
+export interface ChannelAccount {
+    id: string;
+    channel_type: string;
+    external_id: string | null;
+    open_id: string | null;
+    unionid: string | null;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    avatar_url: string | null;
+    is_linked: boolean;
+    linked_to_user_name?: string | null;
+}
+
 export interface Agent {
     id: string;
     name: string;
@@ -22,6 +36,7 @@ export interface Agent {
     role_description: string;
     bio?: string;
     status: 'creating' | 'running' | 'idle' | 'stopped' | 'error';
+    display_status?: 'creating' | 'stopped' | 'error' | 'disconnected' | 'working' | 'dormant' | 'active' | 'standby';
     creator_id: string;
     creator_username?: string;
     primary_model_id?: string;
@@ -74,6 +89,7 @@ export interface ChatMessage {
 
 export interface TokenResponse {
     access_token: string;
+    refresh_token?: string;
     token_type: string;
     user: User;
     needs_company_setup?: boolean;

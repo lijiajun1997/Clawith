@@ -2,14 +2,20 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.agent import Agent
+from app.models.chat_session import ChatSession
+from app.models.identity import IdentityProvider
+from app.models.org import OrgMember
 from app.models.user import User, Identity
+from app.schemas.schemas import (
+    ChannelAccountOut, AdminUnbindRequest, MergeDuplicateRequest,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -95,6 +101,8 @@ class UserOut(BaseModel):
     # Source info
     created_at: str | None = None
     source: str = 'registered'  # 'registered' | 'feishu' | 'dingtalk' | 'wecom' | etc.
+    # Channel accounts
+    channel_accounts: list[ChannelAccountOut] = []
 
     model_config = {"from_attributes": True}
 
@@ -131,6 +139,34 @@ async def list_users(
         )
         agent_count_map = {str(r[0]): r[1] for r in acq.all()}
 
+    # Batch channel accounts per user
+    channel_accounts_map: dict[str, list[ChannelAccountOut]] = {}
+    if user_ids:
+        ca_result = await db.execute(
+            select(OrgMember, IdentityProvider.provider_type)
+            .join(IdentityProvider, OrgMember.provider_id == IdentityProvider.id, isouter=True)
+            .where(
+                OrgMember.user_id.in_(user_ids),
+                OrgMember.status == "active",
+            )
+        )
+        for member, provider_type in ca_result.all():
+            uid = str(member.user_id)
+            if uid not in channel_accounts_map:
+                channel_accounts_map[uid] = []
+            channel_accounts_map[uid].append(ChannelAccountOut(
+                id=member.id,
+                channel_type=provider_type or "unknown",
+                external_id=member.external_id,
+                open_id=member.open_id,
+                unionid=member.unionid,
+                name=member.name,
+                email=member.email,
+                phone=member.phone,
+                avatar_url=member.avatar_url,
+                is_linked=member.user_id is not None,
+            ))
+
     out = []
     for u in users:
         agents_count = agent_count_map.get(str(u.id), 0)
@@ -152,6 +188,7 @@ async def list_users(
             "agents_count": agents_count,
             "created_at": u.created_at.isoformat() if u.created_at else None,
             "source": (u.registration_source or 'registered'),
+            "channel_accounts": channel_accounts_map.get(str(u.id), []),
         }
         out.append(UserOut(**user_dict))
     return out
@@ -281,3 +318,400 @@ async def update_user_role(
     target_user.role = data.role
     await db.commit()
     return {"status": "ok", "user_id": str(user_id), "role": data.role}
+
+
+# ─── Channel Account Binding (Admin) ────────────────────
+
+
+class _BindByOrgMemberRequest(BaseModel):
+    org_member_id: uuid.UUID
+
+
+def _check_admin(current_user: User):
+    if current_user.role not in ("platform_admin", "org_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@router.get("/unlinked-channel-accounts", response_model=list[ChannelAccountOut])
+async def list_unlinked_channel_accounts(
+    channel_type: str = "",
+    q: str = "",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List channel accounts not yet linked to a registered (web) user.
+
+    "Unlinked" means: OrgMember has no user_id, OR its user_id points to a
+    channel-source auto-created user (not a web-registered user). Admins can
+    then rebind these to a real registered user.
+
+    Two data sources:
+    1. OrgMembers unlinked or linked only to channel-source users
+    2. Channel-source Users without any OrgMember (wechat/discord/slack/teams duplicates)
+    """
+    _check_admin(current_user)
+    ct = (channel_type or "").strip()
+    kw = (q or "").strip()
+    CHANNEL_SOURCES = ["feishu", "dingtalk", "wecom", "wechat", "discord", "slack", "microsoft_teams"]
+
+    # --- Source 1: OrgMembers not linked to a web-registered user ---
+    org_query = (
+        select(OrgMember, IdentityProvider.provider_type, User.display_name)
+        .join(IdentityProvider, OrgMember.provider_id == IdentityProvider.id, isouter=True)
+        .outerjoin(User, OrgMember.user_id == User.id)
+        .where(
+            OrgMember.status == "active",
+            or_(
+                OrgMember.user_id.is_(None),
+                User.registration_source.in_(CHANNEL_SOURCES),
+            ),
+        )
+    )
+    if current_user.tenant_id:
+        org_query = org_query.where(OrgMember.tenant_id == current_user.tenant_id)
+    if ct:
+        # Match by provider_type OR by channel-specific ID patterns.
+        # Catches OrgMembers whose provider_id is missing/invalid (e.g. partial org sync),
+        # identified by channel-specific ID formats (feishu: ou_/on_ prefix).
+        if ct == "feishu":
+            org_query = org_query.where(
+                or_(
+                    IdentityProvider.provider_type == "feishu",
+                    OrgMember.open_id.startswith("ou_"),
+                    OrgMember.unionid.startswith("on_"),
+                )
+            )
+        else:
+            org_query = org_query.where(IdentityProvider.provider_type == ct)
+    if kw:
+        pattern = f"%{kw}%"
+        org_query = org_query.where(
+            or_(OrgMember.name.ilike(pattern), OrgMember.external_id.ilike(pattern),
+                OrgMember.email.ilike(pattern), OrgMember.open_id.ilike(pattern))
+        )
+    org_query = org_query.order_by(OrgMember.name).limit(100)
+    org_result = await db.execute(org_query)
+
+    accounts = []
+    seen_ids: set[str] = set()
+    for member, provider_type, linked_name in org_result.all():
+        seen_ids.add(str(member.id))
+        accounts.append(ChannelAccountOut(
+            id=member.id,
+            channel_type=provider_type or "unknown",
+            external_id=member.external_id,
+            open_id=member.open_id,
+            unionid=member.unionid,
+            name=member.name,
+            email=member.email,
+            phone=member.phone,
+            avatar_url=member.avatar_url,
+            is_linked=False,
+            linked_to_user_name=linked_name,
+        ))
+
+    # --- Source 2: Channel-source Users without OrgMember (wechat/discord/slack/teams duplicates) ---
+    channel_sources = ["wechat", "discord", "slack", "microsoft_teams"]
+    if ct:
+        # Only query if channel_type matches a non-enterprise source
+        if ct not in channel_sources:
+            return accounts
+        channel_sources = [ct]
+
+    # Find channel-source users in the same tenant that have NO OrgMember
+    subq = select(OrgMember.user_id).where(OrgMember.user_id.isnot(None))
+    user_query = (
+        select(User, Identity.email)
+        .join(Identity, User.identity_id == Identity.id, isouter=True)
+        .where(
+            User.registration_source.in_(channel_sources),
+            User.is_active == True,
+            User.id.notin_(subq),
+        )
+    )
+    if current_user.tenant_id:
+        user_query = user_query.where(User.tenant_id == current_user.tenant_id)
+    if kw:
+        pattern = f"%{kw}%"
+        user_query = user_query.where(
+            or_(User.display_name.ilike(pattern), Identity.email.ilike(pattern))
+        )
+    user_query = user_query.order_by(User.display_name).limit(100)
+    user_result = await db.execute(user_query)
+
+    seen_ext_ids: set[str] = set()
+    for ch_user, identity_email in user_result.all():
+        uid = str(ch_user.id)
+        if uid in seen_ids:
+            continue
+        # Extract external_id from identity email pattern: wechat_{id}@wechat.local
+        ext_id = ""
+        if identity_email and "@" in identity_email:
+            local = identity_email.split("@")[0]
+            # Pattern: wechat_o9cq801K8_BI or wechat_o9cq801K8_BI_o9cq80
+            parts = local.split("_", 1)
+            if len(parts) > 1:
+                ext_id = parts[1]
+        # Deduplicate by external_id: same channel user creates a new User per message,
+        # but all share the same openid. Only show one entry per openid.
+        dedup_key = ext_id or uid
+        if dedup_key in seen_ext_ids:
+            continue
+        seen_ext_ids.add(dedup_key)
+        accounts.append(ChannelAccountOut(
+            id=ch_user.id,
+            channel_type=ch_user.registration_source or "unknown",
+            external_id=ext_id or None,
+            open_id=None,
+            unionid=None,
+            name=ch_user.display_name,
+            email=identity_email,
+            phone=None,
+            avatar_url=ch_user.avatar_url,
+            is_linked=False,
+        ))
+
+    return accounts
+
+
+@router.get("/{user_id}/channel-accounts", response_model=list[ChannelAccountOut])
+async def list_channel_accounts(
+    user_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List channel accounts (OrgMembers) linked to a user."""
+    _check_admin(current_user)
+
+    target = await db.get(User, user_id)
+    if not target or target.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    result = await db.execute(
+        select(OrgMember, IdentityProvider.provider_type)
+        .join(IdentityProvider, OrgMember.provider_id == IdentityProvider.id, isouter=True)
+        .where(
+            OrgMember.user_id == user_id,
+            OrgMember.status == "active",
+        )
+    )
+    rows = result.all()
+
+    accounts = []
+    for member, provider_type in rows:
+        accounts.append(ChannelAccountOut(
+            id=member.id,
+            channel_type=provider_type or "unknown",
+            external_id=member.external_id,
+            open_id=member.open_id,
+            unionid=member.unionid,
+            name=member.name,
+            email=member.email,
+            phone=member.phone,
+            avatar_url=member.avatar_url,
+            is_linked=member.user_id is not None,
+        ))
+    return accounts
+
+
+@router.post("/{user_id}/channel-accounts/bind-by-org-member", response_model=ChannelAccountOut)
+async def bind_by_org_member_id(
+    user_id: uuid.UUID,
+    data: _BindByOrgMemberRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin binds a channel account to a user.
+
+    Two cases:
+    1. org_member_id is an OrgMember → set user_id directly
+    2. org_member_id is a channel-source User (no OrgMember) → create OrgMember, then bind
+    """
+    _check_admin(current_user)
+
+    target = await db.get(User, user_id)
+    if not target or target.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Try OrgMember first
+    member = await db.get(OrgMember, data.org_member_id)
+    if member:
+        if member.user_id and member.user_id != user_id:
+            # Allow rebinding if current link is to a channel-source user (not a registered user)
+            cur_user = await db.get(User, member.user_id)
+            if cur_user and cur_user.registration_source in ("feishu", "dingtalk", "wecom", "wechat", "discord", "slack", "microsoft_teams"):
+                pass  # allow rebinding from channel user to registered user
+            else:
+                raise HTTPException(status_code=409, detail="This channel account is already linked to another user")
+        member.user_id = user_id
+        await db.flush()
+        provider = await db.get(IdentityProvider, member.provider_id)
+        provider_type = provider.provider_type if provider else "unknown"
+        return ChannelAccountOut(
+            id=member.id,
+            channel_type=provider_type,
+            external_id=member.external_id,
+            open_id=member.open_id,
+            unionid=member.unionid,
+            name=member.name,
+            email=member.email,
+            phone=member.phone,
+            avatar_url=member.avatar_url,
+            is_linked=True,
+        )
+
+    # Not an OrgMember — check if it's a channel-source User
+    ch_user = await db.get(User, data.org_member_id)
+    if not ch_user or not ch_user.registration_source or ch_user.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="Channel account not found")
+
+    # Ensure the channel user isn't already linked via an OrgMember
+    existing = await db.execute(
+        select(OrgMember).where(OrgMember.user_id == ch_user.id, OrgMember.status == "active")
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="This channel user already has an OrgMember")
+
+    # Get or create IdentityProvider for this channel type
+    provider_type = ch_user.registration_source
+    prov_result = await db.execute(
+        select(IdentityProvider).where(
+            IdentityProvider.provider_type == provider_type,
+            IdentityProvider.tenant_id == current_user.tenant_id,
+        )
+    )
+    provider = prov_result.scalar_one_or_none()
+    if not provider:
+        provider = IdentityProvider(
+            provider_type=provider_type,
+            name=provider_type.capitalize(),
+            tenant_id=current_user.tenant_id,
+        )
+        db.add(provider)
+        await db.flush()
+
+    # Extract external_id from identity email
+    ext_id = ""
+    identity = await db.get(Identity, ch_user.identity_id) if ch_user.identity_id else None
+    if identity and identity.email and "@" in identity.email:
+        local = identity.email.split("@")[0]
+        parts = local.split("_", 1)
+        if len(parts) > 1:
+            ext_id = parts[1]
+
+    # Create OrgMember linking this channel user to the target registered user
+    new_member = OrgMember(
+        external_id=ext_id or None,
+        name=ch_user.display_name,
+        avatar_url=ch_user.avatar_url,
+        user_id=user_id,
+        provider_id=provider.id,
+        tenant_id=current_user.tenant_id,
+        status="active",
+    )
+    db.add(new_member)
+    await db.flush()
+
+    return ChannelAccountOut(
+        id=new_member.id,
+        channel_type=provider_type,
+        external_id=new_member.external_id,
+        open_id=None,
+        unionid=None,
+        name=new_member.name,
+        email=identity.email if identity else None,
+        phone=None,
+        avatar_url=new_member.avatar_url,
+        is_linked=True,
+    )
+
+@router.post("/{user_id}/channel-accounts/unbind")
+async def unbind_channel_account(
+    user_id: uuid.UUID,
+    data: AdminUnbindRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin unbinds a channel account from a user."""
+    _check_admin(current_user)
+
+    target = await db.get(User, user_id)
+    if not target or target.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from app.services.sso_service import sso_service
+
+    success = await sso_service.admin_unlink_identity(db, data.org_member_id, user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Channel account not found or not linked to this user")
+
+    return {"status": "ok"}
+
+
+@router.post("/merge-duplicates")
+async def merge_duplicate_users(
+    data: MergeDuplicateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Merge duplicate channel users into a target registered user.
+
+    Reassigns ChatSessions from source users to the target user,
+    then soft-deletes source users (is_active=False).
+    """
+    _check_admin(current_user)
+
+    # Validate target user
+    target = await db.get(User, data.target_user_id)
+    if not target or target.tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=404, detail="Target user not found")
+
+    # Validate source users
+    if not data.source_user_ids:
+        raise HTTPException(status_code=400, detail="No source users provided")
+
+    source_users_result = await db.execute(
+        select(User).where(User.id.in_(data.source_user_ids))
+    )
+    source_users = source_users_result.scalars().all()
+
+    if len(source_users) != len(data.source_user_ids):
+        raise HTTPException(status_code=400, detail="Some source users not found")
+
+    # Ensure all source users are in the same tenant
+    for su in source_users:
+        if su.tenant_id != current_user.tenant_id:
+            raise HTTPException(status_code=403, detail="Cannot merge users from different tenants")
+
+    # Reassign ChatSessions
+    reassigned = 0
+    for source_id in data.source_user_ids:
+        result = await db.execute(
+            update(ChatSession)
+            .where(ChatSession.user_id == source_id)
+            .values(user_id=data.target_user_id)
+        )
+        reassigned += result.rowcount
+
+    # Reassign OrgMembers from source users to target
+    for source_id in data.source_user_ids:
+        await db.execute(
+            update(OrgMember)
+            .where(OrgMember.user_id == source_id)
+            .values(user_id=data.target_user_id)
+        )
+
+    # Soft-delete source users
+    await db.execute(
+        update(User)
+        .where(User.id.in_(data.source_user_ids))
+        .values(is_active=False)
+    )
+
+    await db.commit()
+
+    return {
+        "status": "ok",
+        "merged_count": len(source_users),
+        "sessions_reassigned": reassigned,
+    }
