@@ -21,6 +21,11 @@ from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
 from app.services.channel_session import find_or_create_channel_session
+from app.services.channel_commands import (
+    detect_and_handle_command,
+    register_running_task,
+    unregister_running_task,
+)
 
 router = APIRouter(tags=["feishu"])
 
@@ -778,6 +783,24 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             if not user_text:
                 return {"code": 0, "msg": "empty message after stripping mentions"}
 
+            # ── Magic command detection (/model, /stop, /skill) ──
+            cmd_handled, cmd_reply, cmd_rewritten = await detect_and_handle_command(
+                db, agent_id, user_text, conv_id,
+                tenant_id=agent_obj.tenant_id if agent_obj else None,
+                current_model_id=agent_obj.primary_model_id if agent_obj else None,
+            )
+            if cmd_handled:
+                if cmd_reply is not None:
+                    _reply_target = chat_id if chat_type == "group" and chat_id else sender_open_id
+                    _rid_type = "chat_id" if chat_type == "group" and chat_id else "open_id"
+                    await feishu_service.send_message(
+                        config.app_id, config.app_secret, _reply_target, "text",
+                        json.dumps({"text": cmd_reply}), receive_id_type=_rid_type,
+                    )
+                    return {"code": 0, "msg": "command handled"}
+                elif cmd_rewritten is not None:
+                    user_text = cmd_rewritten
+
             # Detect task creation intent
             task_match = re.search(
                 r'(?:创建|新建|添加|建一个|帮我建)(?:一个)?(?:任务|待办|todo)[，,：:\s]*(.+)',
@@ -1254,17 +1277,24 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 _heartbeat_task = asyncio.create_task(_heartbeat())
 
             # Call LLM with history and streaming callback
+            # Wrapped in asyncio.Task so /stop can cancel it via task registry
+            llm_task = asyncio.ensure_future(_call_agent_llm(
+                db,
+                agent_id,
+                llm_user_text,
+                history=history,
+                user_id=platform_user_id,
+                on_chunk=_ws_on_chunk,
+                on_thinking=_ws_on_thinking,
+                on_tool_call=_ws_on_tool_call,
+            ))
+            register_running_task(conv_id, llm_task)
             try:
-                reply_text = await _call_agent_llm(
-                    db,
-                    agent_id,
-                    llm_user_text,
-                    history=history,
-                    user_id=platform_user_id,
-                    on_chunk=_ws_on_chunk,
-                    on_thinking=_ws_on_thinking,
-                    on_tool_call=_ws_on_tool_call,
-                )
+                try:
+                    reply_text = await llm_task
+                except asyncio.CancelledError:
+                    reply_text = "*[Generation stopped by user]*"
+                    logger.info(f"[Feishu] LLM task cancelled via /stop for conv_id={conv_id}")
             finally:
                 _llm_done = True
                 if _heartbeat_task:
@@ -1275,6 +1305,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         pass
                 _cfs.reset(_cfs_token)
                 _cfso.reset(_cfso_token)
+                unregister_running_task(conv_id)
             logger.info(f"[Feishu] LLM reply: {reply_text[:100]}")
 
             # Send final card update or fallback text

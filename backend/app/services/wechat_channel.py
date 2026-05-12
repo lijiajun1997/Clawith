@@ -24,6 +24,11 @@ from app.models.audit import ChatMessage
 from app.models.channel_config import ChannelConfig
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import channel_user_service
+from app.services.channel_commands import (
+    detect_and_handle_command,
+    register_running_task,
+    unregister_running_task,
+)
 from app.services.wechat_crypto import (
     decrypt_aes_ecb,
     decode_aes_key,
@@ -476,6 +481,25 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
         conv_key = str(msg.get("session_id") or from_user_id).strip()
         conv_id = f"wechat_{conv_key}"
 
+        # ── Magic command detection (/model, /stop, /skill) ──
+        cmd_handled, cmd_reply, cmd_rewritten = await detect_and_handle_command(
+            db, agent_id, user_text, conv_id,
+            tenant_id=agent_obj.tenant_id if agent_obj else None,
+            current_model_id=agent_obj.primary_model_id if agent_obj else None,
+        )
+        if cmd_handled:
+            if cmd_reply is not None:
+                _cmd_token = str((config.extra_config or {}).get("bot_token") or "").strip()
+                _cmd_base_url = str((config.extra_config or {}).get("baseurl") or WECHAT_ILINK_BASE_URL).strip()
+                _cmd_route_tag = str((config.extra_config or {}).get("route_tag") or "").strip() or None
+                await send_wechat_text_message(
+                    token=_cmd_token, base_url=_cmd_base_url, to_user_id=from_user_id,
+                    context_token=context_token, text=cmd_reply, route_tag=_cmd_route_tag,
+                )
+                return
+            elif cmd_rewritten is not None:
+                user_text = cmd_rewritten
+
         sess = await find_or_create_channel_session(
             db=db, agent_id=agent_id, user_id=platform_user_id,
             external_conv_id=conv_id, source_channel="wechat",
@@ -528,14 +552,21 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
 
         _cfs_token = _cfs.set(_wechat_file_sender)
 
+        llm_task = asyncio.ensure_future(_call_agent_llm(
+            db=db, agent_id=agent_id, user_text=user_text,
+            history=history, user_id=platform_user_id,
+            session_id=session_conv_id,
+        ))
+        register_running_task(conv_id, llm_task)
         try:
-            reply_text = await _call_agent_llm(
-                db=db, agent_id=agent_id, user_text=user_text,
-                history=history, user_id=platform_user_id,
-                session_id=session_conv_id,
-            )
+            try:
+                reply_text = await llm_task
+            except asyncio.CancelledError:
+                reply_text = "*[Generation stopped by user]*"
+                logger.info(f"[WeChat] LLM task cancelled via /stop for conv_id={conv_id}")
         finally:
             _cfs.reset(_cfs_token)
+            unregister_running_task(conv_id)
 
         await send_wechat_text_message(
             token=_token, base_url=_base_url, to_user_id=from_user_id,
