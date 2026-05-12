@@ -64,6 +64,23 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
 
             duration = time.time() - start_time
             response.headers["X-Trace-Id"] = trace_id
+
+            # Security headers
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-XSS-Protection"] = "1; mode=block"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+            # CSP: allow inline styles and images from same origin; block inline scripts
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: blob:; "
+                "connect-src 'self' ws: wss:; "
+                "frame-ancestors 'none'"
+            )
+
             logger.info(f"<-- {request.method} {request.url.path} {response.status_code} {duration:.3f}s")
             return response
 

@@ -13,6 +13,14 @@ function escapeHtml(str: string): string {
         .replace(/"/g, '&quot;');
 }
 
+const DANGEROUS_URL_SCHEMES = /^(javascript:|vbscript:|data:text\/html|blob:)/i;
+
+function sanitizeUrl(url: string): string {
+    const trimmed = url.trim();
+    if (DANGEROUS_URL_SCHEMES.test(trimmed)) return '#';
+    return trimmed;
+}
+
 function injectToken(url: string): string {
     if (url.startsWith('/api/agents/')) {
         const token = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
@@ -37,7 +45,7 @@ function renderFileReadyBlock(line: string): string | null {
     const match = line.match(/^File ready:\s*\[([^\]]+)\]\(([^)]+)\)(.*)$/);
     if (!match) return null;
     const [, fileName, rawUrl, restContent] = match;
-    const url = injectToken(rawUrl);
+    const url = sanitizeUrl(injectToken(rawUrl));
     const safeName = escapeHtml(fileName);
     const icon = getFileIcon(fileName);
     const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes((fileName.split('.').pop() || '').toLowerCase());
@@ -210,8 +218,9 @@ function isFileLink(url: string): boolean {
  *
  * Order of operations:
  * 1. Capture all links/images and protect their text with placeholders
- * 2. Apply bold, italic, code, strikethrough on the remaining text
- * 3. Restore link/image HTML with original text (unescaped — browser will escape on render)
+ * 2. Detect bare workspace file paths and convert to clickable links
+ * 3. Apply bold, italic, code, strikethrough on the remaining text
+ * 4. Restore link/image HTML with original text (unescaped — browser will escape on render)
  */
 function renderInline(text: string): string {
     const protectedSegments: string[] = [];
@@ -221,21 +230,7 @@ function renderInline(text: string): string {
     let step1 = text
         .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
             const safeAlt = escapeHtml(alt);
-            let finalUrl = url;
-            if (finalUrl.startsWith('/api/agents/')) {
-                const token = localStorage.getItem('token');
-                if (token && !finalUrl.includes('token=')) {
-                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
-                }
-            }
-            const idx = protectedSegments.length;
-            const fileAttr = isFileLink(url) ? ` data-file-link="${escapeHtml(url)}}"` : '';
-            protectedSegments.push(`<a href="${finalUrl}" target="_blank"${fileAttr}><img src="${finalUrl}" alt="${safeAlt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
-            return `\x00IMG${idx}\x00`;
-        })
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
-            if (match.startsWith('!')) return match; // already handled above
-            let finalUrl = url;
+            let finalUrl = sanitizeUrl(url);
             if (finalUrl.startsWith('/api/agents/')) {
                 const token = localStorage.getItem('token');
                 if (token && !finalUrl.includes('token=')) {
@@ -244,9 +239,50 @@ function renderInline(text: string): string {
             }
             const idx = protectedSegments.length;
             const fileAttr = isFileLink(url) ? ` data-file-link="${escapeHtml(url)}"` : '';
-            protectedSegments.push(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;text-underline-offset:2px"${fileAttr}>${linkText}</a>`);
+            protectedSegments.push(`<a href="${finalUrl}" target="_blank"${fileAttr}><img src="${finalUrl}" alt="${safeAlt}" style="max-width:100%;max-height:400px;border-radius:4px;margin:8px 0;object-fit:contain;cursor:pointer" /></a>`);
+            return `\x00IMG${idx}\x00`;
+        })
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+            if (match.startsWith('!')) return match; // already handled above
+            const safeLinkText = escapeHtml(linkText);
+            let finalUrl = sanitizeUrl(url);
+            if (finalUrl.startsWith('/api/agents/')) {
+                const token = localStorage.getItem('token');
+                if (token && !finalUrl.includes('token=')) {
+                    finalUrl += (finalUrl.includes('?') ? '&' : '?') + `token=${token}`;
+                }
+            }
+            const idx = protectedSegments.length;
+            const fileAttr = isFileLink(url) ? ` data-file-link="${escapeHtml(url)}"` : '';
+            protectedSegments.push(`<a href="${finalUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;text-underline-offset:2px"${fileAttr}>${safeLinkText}</a>`);
             return `\x00LINK${idx}\x00`;
         });
+
+    // Step 2a: detect workspace paths wrapped in backticks: `workspace/...`
+    step1 = step1.replace(
+        /`(workspace\/[^\s<>"')\]\x00`，。；：！？、]+(?:\.[a-zA-Z0-9]+)?)`/g,
+        (_match, filePath) => {
+            const idx = protectedSegments.length;
+            const safePath = escapeHtml(filePath);
+            protectedSegments.push(
+                `<span data-file-link="${safePath}" style="color:#2563eb;background:rgba(37,99,235,0.08);padding:1px 5px;border-radius:3px;cursor:pointer;font-family:monospace;font-size:0.9em;text-decoration:underline;text-underline-offset:2px">${safePath}</span>`
+            );
+            return `\x00LINK${idx}\x00`;
+        }
+    );
+
+    // Step 2b: detect bare workspace file paths like workspace/deliverables/report.md
+    step1 = step1.replace(
+        /(workspace\/[^\s<>"')\]\x00`，。；：！？、]+(?:\.[a-zA-Z0-9]+)?)/g,
+        (filePath) => {
+            const idx = protectedSegments.length;
+            const safePath = escapeHtml(filePath);
+            protectedSegments.push(
+                `<span data-file-link="${safePath}" style="color:#2563eb;background:rgba(37,99,235,0.08);padding:1px 5px;border-radius:3px;cursor:pointer;font-family:monospace;font-size:0.9em;text-decoration:underline;text-underline-offset:2px">${safePath}</span>`
+            );
+            return `\x00LINK${idx}\x00`;
+        }
+    );
 
     // Step 2: apply all inline formatting to the remaining text
     let step2 = step1
@@ -285,9 +321,10 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content, 
     const handleClick = onFileLink
         ? (e: React.MouseEvent<HTMLDivElement>) => {
               const target = e.target as HTMLElement;
-              const anchor = target.closest('a[data-file-link]') as HTMLAnchorElement | null;
-              if (!anchor) return;
-              const filePath = anchor.getAttribute('data-file-link');
+              // Handle both <a data-file-link> and <span data-file-link> clicks
+              const el = target.closest('[data-file-link]') as HTMLElement | null;
+              if (!el) return;
+              const filePath = el.getAttribute('data-file-link');
               if (filePath) {
                   e.preventDefault();
                   e.stopPropagation();

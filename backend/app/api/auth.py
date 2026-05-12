@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.core.rate_limit import auth_rate_limit
+
 from app.core.background import spawn_background_fn
 from loguru import logger
 from sqlalchemy import select
@@ -60,16 +62,16 @@ async def get_registration_config(db: AsyncSession = Depends(get_db)):
 
 @router.get("/check-duplicate")
 async def check_duplicate(
+    current_user: User = Depends(get_current_user),
     email: str | None = Query(None, description="Email to check"),
     username: str | None = Query(None, description="Username to check"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Check if email or username already exists."""
+    """Check if email or username already exists. Requires authentication."""
     from app.models.user import Identity, User
     result = {"email_exists": False, "username_exists": False, "conflicts": []}
 
     if email:
-        # Check Identity email
         existing = await db.execute(
             select(Identity).where(Identity.email == email)
         )
@@ -128,7 +130,7 @@ async def _send_verification_email_task(
         logger.warning(f"Failed to send verification email for {user.email}: {exc}")
 
 
-@router.post("/register", response_model=Any, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=Any, status_code=status.HTTP_201_CREATED, dependencies=[Depends(auth_rate_limit(5, 300))])
 async def register(
     data: UserRegister,
     db: AsyncSession = Depends(get_db),
@@ -149,7 +151,7 @@ async def register(
 
     # Regular username/password registration - delegate to new flow
     return await _handle_normal_register(data, db, settings)
-@router.post("/register/init", response_model=RegisterInitResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register/init", response_model=RegisterInitResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(auth_rate_limit(5, 300))])
 async def register_init(
     data: RegisterInitRequest,
     db: AsyncSession = Depends(get_db),
@@ -431,7 +433,7 @@ async def _handle_sso_register(data: UserRegister, db: AsyncSession):
 
 
 
-@router.post("/login", response_model=Any)
+@router.post("/login", response_model=Any, dependencies=[Depends(auth_rate_limit(5, 300))])
 async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     """Login with email/phone/username and password. Supports multi-tenant selection."""
     from app.models.tenant import Tenant
@@ -588,7 +590,7 @@ async def get_email_hint(username: str, db: AsyncSession = Depends(get_db)):
     return {"hint": hint}
 
 
-@router.post("/forgot-password")
+@router.post("/forgot-password", dependencies=[Depends(auth_rate_limit(3, 3600))])
 async def forgot_password(
     data: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
