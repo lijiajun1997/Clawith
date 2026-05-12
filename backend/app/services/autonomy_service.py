@@ -216,57 +216,63 @@ class AutonomyService:
             link=f"/agents/{agent.id}#activityLog",
         )
 
-        # Try Feishu notification if channel is configured
-        channel_result = await db.execute(
-            select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
-        )
-        channel = channel_result.scalars().first()
-
-        if channel and channel.app_id and channel.app_secret:
-            creator_result = await db.execute(
-                select(User).where(User.id == agent.creator_id)
+        # Try Feishu notification if channel is configured (best-effort)
+        try:
+            channel_result = await db.execute(
+                select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
             )
-            creator = creator_result.scalar_one_or_none()
-            if creator:
-                from app.models.identity import IdentityProvider
-                from app.models.org import OrgMember
+            channel = channel_result.scalars().first()
 
-                provider_r = await db.execute(
-                    select(IdentityProvider).where(
-                        IdentityProvider.provider_type == "feishu",
-                        IdentityProvider.tenant_id == creator.tenant_id,
-                    )
+            if channel and channel.app_id and channel.app_secret:
+                creator_result = await db.execute(
+                    select(User).where(User.id == agent.creator_id)
                 )
-                provider = provider_r.scalar_one_or_none()
-                if provider:
-                    member_r = await db.execute(
-                        select(OrgMember).where(
-                            OrgMember.user_id == creator.id,
-                            OrgMember.provider_id == provider.id,
+                creator = creator_result.scalar_one_or_none()
+                if creator:
+                    from app.models.identity import IdentityProvider
+                    from app.models.org import OrgMember
+
+                    provider_r = await db.execute(
+                        select(IdentityProvider).where(
+                            IdentityProvider.provider_type == "feishu",
+                            IdentityProvider.tenant_id == creator.tenant_id,
                         )
                     )
-                    member = member_r.scalar_one_or_none()
-                    if member and (member.external_id or member.open_id):
-                        receive_id = member.external_id or member.open_id
-                        id_type = "user_id" if member.external_id else "open_id"
-                        msg_text = json.dumps({"text": f"[{agent.name}] executed: {action_type}"})
-                        resp = await feishu_service.send_message(
-                            channel.app_id, channel.app_secret,
-                            receive_id, "text", msg_text,
-                            receive_id_type=id_type,
-                        )
-                        # Fallback: resolve open_id via email/mobile if direct send fails
-                        if resp.get("code") != 0 and member.email or member.phone:
-                            resolved = await feishu_service.resolve_open_id(
-                                channel.app_id, channel.app_secret,
-                                email=member.email, mobile=member.phone,
+                    provider = provider_r.scalar_one_or_none()
+                    if provider:
+                        member_r = await db.execute(
+                            select(OrgMember).where(
+                                OrgMember.user_id == creator.id,
+                                OrgMember.provider_id == provider.id,
                             )
-                            if resolved:
-                                await feishu_service.send_message(
+                        )
+                        member = member_r.scalar_one_or_none()
+                        if member and (member.external_id or member.open_id):
+                            receive_id = member.external_id or member.open_id
+                            id_type = "user_id" if member.external_id else "open_id"
+                            msg_text = json.dumps({"text": f"[{agent.name}] executed: {action_type}"})
+                            try:
+                                resp = await feishu_service.send_message(
                                     channel.app_id, channel.app_secret,
-                                    resolved, "text", msg_text,
-                                    receive_id_type="open_id",
+                                    receive_id, "text", msg_text,
+                                    receive_id_type=id_type,
                                 )
+                                # Fallback: resolve open_id via email/mobile if direct send fails
+                                if resp.get("code") != 0 and (member.email or member.phone):
+                                    resolved = await feishu_service.resolve_open_id(
+                                        channel.app_id, channel.app_secret,
+                                        email=member.email, mobile=member.phone,
+                                    )
+                                    if resolved:
+                                        await feishu_service.send_message(
+                                            channel.app_id, channel.app_secret,
+                                            resolved, "text", msg_text,
+                                            receive_id_type="open_id",
+                                        )
+                            except Exception as feishu_err:
+                                logger.warning(f"Feishu L2 notification failed for agent {agent.name}: {feishu_err}")
+        except Exception as e:
+            logger.warning(f"Feishu L2 notification setup failed for agent {agent.name}: {e}")
 
     async def _request_approval(self, db: AsyncSession, agent: Agent,
                                  approval: ApprovalRequest) -> None:
@@ -283,61 +289,64 @@ class AutonomyService:
             ref_id=approval.id,
         )
 
-        # Try Feishu notification
-        channel_result = await db.execute(
-            select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
-        )
-        channel = channel_result.scalars().first()
-
-        if channel and channel.app_id and channel.app_secret:
-            creator_result = await db.execute(
-                select(User).where(User.id == agent.creator_id)
+        # Try Feishu notification (best-effort)
+        try:
+            channel_result = await db.execute(
+                select(ChannelConfig).where(ChannelConfig.agent_id == agent.id)
             )
-            creator = creator_result.scalar_one_or_none()
-            if creator:
-                from app.models.identity import IdentityProvider
-                from app.models.org import OrgMember
+            channel = channel_result.scalars().first()
 
-                provider_r = await db.execute(
-                    select(IdentityProvider).where(
-                        IdentityProvider.provider_type == "feishu",
-                        IdentityProvider.tenant_id == creator.tenant_id,
-                    )
+            if channel and channel.app_id and channel.app_secret:
+                creator_result = await db.execute(
+                    select(User).where(User.id == agent.creator_id)
                 )
-                provider = provider_r.scalar_one_or_none()
-                if provider:
-                    member_r = await db.execute(
-                        select(OrgMember).where(
-                            OrgMember.user_id == creator.id,
-                            OrgMember.provider_id == provider.id,
+                creator = creator_result.scalar_one_or_none()
+                if creator:
+                    from app.models.identity import IdentityProvider
+                    from app.models.org import OrgMember
+
+                    provider_r = await db.execute(
+                        select(IdentityProvider).where(
+                            IdentityProvider.provider_type == "feishu",
+                            IdentityProvider.tenant_id == creator.tenant_id,
                         )
                     )
-                    member = member_r.scalar_one_or_none()
-                    if member and (member.external_id or member.open_id):
-                        receive_id = member.external_id or member.open_id
-                        try:
-                            await feishu_service.send_approval_card(
-                                channel.app_id, channel.app_secret,
-                                receive_id,
-                                agent.name, approval.action_type,
-                                json.dumps(approval.details, ensure_ascii=False),
-                                str(approval.id),
+                    provider = provider_r.scalar_one_or_none()
+                    if provider:
+                        member_r = await db.execute(
+                            select(OrgMember).where(
+                                OrgMember.user_id == creator.id,
+                                OrgMember.provider_id == provider.id,
                             )
-                        except Exception:
-                            # Fallback: resolve open_id via email/mobile
-                            if member.email or member.phone:
-                                resolved = await feishu_service.resolve_open_id(
+                        )
+                        member = member_r.scalar_one_or_none()
+                        if member and (member.external_id or member.open_id):
+                            receive_id = member.external_id or member.open_id
+                            try:
+                                await feishu_service.send_approval_card(
                                     channel.app_id, channel.app_secret,
-                                    email=member.email, mobile=member.phone,
+                                    receive_id,
+                                    agent.name, approval.action_type,
+                                    json.dumps(approval.details, ensure_ascii=False),
+                                    str(approval.id),
                                 )
-                                if resolved:
-                                    await feishu_service.send_approval_card(
+                            except Exception:
+                                # Fallback: resolve open_id via email/mobile
+                                if member.email or member.phone:
+                                    resolved = await feishu_service.resolve_open_id(
                                         channel.app_id, channel.app_secret,
-                                        resolved,
-                                        agent.name, approval.action_type,
-                                        json.dumps(approval.details, ensure_ascii=False),
-                                        str(approval.id),
+                                        email=member.email, mobile=member.phone,
                                     )
+                                    if resolved:
+                                        await feishu_service.send_approval_card(
+                                            channel.app_id, channel.app_secret,
+                                            resolved,
+                                            agent.name, approval.action_type,
+                                            json.dumps(approval.details, ensure_ascii=False),
+                                            str(approval.id),
+                                        )
+        except Exception as e:
+            logger.warning(f"Feishu L3 approval notification failed for agent {agent.name}: {e}")
 
 
 autonomy_service = AutonomyService()

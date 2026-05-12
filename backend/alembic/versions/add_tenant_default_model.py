@@ -14,7 +14,7 @@ from alembic import op
 
 
 revision: str = 'add_tenant_default_model'
-down_revision: Union[str, None] = 'merge_heads_20260427'
+down_revision: Union[str, None] = 'set_context_window_50'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

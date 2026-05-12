@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from app.config import get_settings
+from app.config import get_settings, _running_in_container
 from app.core.events import close_redis
 from app.core.logging_config import configure_logging, intercept_standard_logging
 from app.core.middleware import TraceIdMiddleware
@@ -72,12 +72,43 @@ async def lifespan(app: FastAPI):
     intercept_standard_logging()
     logger.info("[startup] Logging configured")
 
-    # Warn about default JWT secrets in production
+    # Auto-generate secure secrets if defaults detected (first run in container)
     if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():
-        logger.warning(
-            "[startup] WARNING: SECRET_KEY or JWT_SECRET_KEY contains default 'change-me' value. "
-            "This is insecure for production. Set unique secrets in your .env file."
-        )
+        import secrets as _secrets
+        _env_paths = [".env", "../.env"]
+        _env_path = None
+        for _p in _env_paths:
+            if os.path.isfile(_p):
+                _env_path = _p
+                break
+        if _env_path:
+            _new_secret = _secrets.token_urlsafe(32)
+            _new_jwt = _secrets.token_urlsafe(32)
+            with open(_env_path, "r", encoding="utf-8") as f:
+                _content = f.read()
+            if "change-me-in-production" in _content:
+                _content = _content.replace("change-me-in-production", _new_secret)
+            if "change-me-jwt-secret" in _content:
+                _content = _content.replace("change-me-jwt-secret", _new_jwt)
+            with open(_env_path, "w", encoding="utf-8") as f:
+                f.write(_content)
+            # Reload settings with new values
+            settings.__class__.model_config["env_file"] = [".env", "../.env"]
+            import importlib
+            import app.config as _cfg
+            _cfg.get_settings.cache_clear()
+            _new_settings = _cfg.get_settings()
+            settings.SECRET_KEY = _new_settings.SECRET_KEY
+            settings.JWT_SECRET_KEY = _new_settings.JWT_SECRET_KEY
+            logger.warning(
+                "[startup] Auto-generated secure SECRET_KEY and JWT_SECRET_KEY (saved to .env). "
+                "Existing sessions will be invalidated."
+            )
+        else:
+            logger.warning(
+                "[startup] WARNING: Default secrets detected but no .env file found. "
+                "Set SECRET_KEY and JWT_SECRET_KEY in environment variables for production."
+            )
 
     import asyncio
     import sys
@@ -258,6 +289,8 @@ app.add_middleware(TraceIdMiddleware)
 
 # CORS
 _cors_origins = settings.CORS_ORIGINS
+if "*" in _cors_origins:
+    logger.warning("[startup] CORS allows all origins ('*'). This is insecure for production.")
 _allow_creds = "*" not in _cors_origins  # CORS spec forbids credentials with wildcard
 app.add_middleware(
     CORSMiddleware,

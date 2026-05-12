@@ -11,7 +11,7 @@ from alembic import op
 
 
 revision = '20260507_activity_composite_idx'
-down_revision = None  # Will be auto-resolved by Alembic
+down_revision = '20260512_llm_ctx_window'
 branch_labels = None
 depends_on = None
 
