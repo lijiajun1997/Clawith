@@ -439,7 +439,20 @@ export default function Chat() {
             return next;
         });
         setCanvasPanelVisible(true);
-    }, []);    const wsRef = useRef<WebSocket | null>(null);
+    }, []);
+
+    const handleFilePreview = useCallback((fp: FilePreview) => {
+        const normalized = fp.path.startsWith('workspace/') ? fp.path : `workspace/${fp.path}`;
+        const fileKey = `card-${fp.name}-${Date.now()}`;
+        setGeneratingFiles(prev => {
+            const next = new Map(prev);
+            next.set(fileKey, { name: fp.name, status: 'done', path: normalized });
+            return next;
+        });
+        setCanvasPanelVisible(true);
+    }, []);
+
+    const wsRef = useRef<WebSocket | null>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Ref to the chat textarea for direct DOM height manipulation
@@ -1176,6 +1189,13 @@ export default function Chat() {
                                     )
                                 ) : (
                                     <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                                )}
+                                {msg.role === 'assistant' && msg.filePreviews && msg.filePreviews.length > 0 && (
+                                    <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                        {msg.filePreviews.map((fp, fi) => (
+                                            <FileCard key={fi} preview={fp} onPreview={handleFilePreview} />
+                                        ))}
+                                    </div>
                                 )}
                                 {msg.timestamp && (
                                     <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.7 }}>
