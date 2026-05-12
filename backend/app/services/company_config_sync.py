@@ -78,6 +78,14 @@ async def sync_company_config_to_agent(agent_id: uuid.UUID, config: dict) -> boo
             except Exception as e:
                 logger.warning(f"[CompanyConfigSync] Failed to remove {FILE_HEARTBEAT_INSTRUCTION} for agent {agent_id}: {e}")
 
+    # Invalidate company context cache if anything was written
+    if written:
+        try:
+            from app.services.agent_context import invalidate_agent_cache
+            await invalidate_agent_cache(agent_id, "company")
+        except Exception:
+            pass
+
     return written
 
 

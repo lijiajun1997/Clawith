@@ -154,6 +154,13 @@ class AgentManager:
 
         logger.info(f"Initialized agent files at {agent_dir}")
 
+        # Invalidate all context caches for this new agent
+        try:
+            from app.services.agent_context import invalidate_agent_cache
+            await invalidate_agent_cache(agent.id)
+        except Exception:
+            pass
+
     def _generate_openclaw_config(self, agent: Agent, model: LLMModel | None) -> dict:
         """Generate openclaw.json config for the agent container."""
         config = {

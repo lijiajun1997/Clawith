@@ -63,6 +63,11 @@ async def configure_atlassian_channel(
         existing.is_configured = True
         existing.extra_config = {**(existing.extra_config or {}), "cloud_id": cloud_id}
         await db.commit()
+        try:
+            from app.services.agent_context import invalidate_agent_cache
+            await invalidate_agent_cache(agent_id, "channels")
+        except Exception:
+            pass
         # Sync tools for this agent in background
         import asyncio
         asyncio.create_task(_sync_atlassian_tools_for_agent(agent_id, api_key))
@@ -124,6 +129,11 @@ async def delete_atlassian_channel(
         raise HTTPException(status_code=404, detail="Atlassian not configured")
     await db.delete(config)
     await db.commit()
+    try:
+        from app.services.agent_context import invalidate_agent_cache
+        await invalidate_agent_cache(agent_id, "channels")
+    except Exception:
+        pass
 
 
 @router.post("/agents/{agent_id}/atlassian-channel/test")

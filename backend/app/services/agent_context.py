@@ -2,16 +2,33 @@
 
 Loads soul, memory, skills summary, and relationships from the agent's
 workspace files and composes a comprehensive system prompt.
+
+Static parts (soul, skills, relationships, company info, channel tools, timezone)
+are cached in Redis with per-key invalidation on write operations.
+Dynamic parts (memory, focus, triggers, time, current user) are always fresh.
 """
 
+import json
 import uuid
 from pathlib import Path
+
+from loguru import logger
 
 from app.config import get_settings
 
 settings = get_settings()
 
 PERSISTENT_DATA = Path(settings.AGENT_DATA_DIR)
+
+# Redis cache key patterns
+_CTX_BASE_KEY = "agent:ctx:base:{agent_id}"
+_CTX_SOUL_KEY = "agent:ctx:soul:{agent_id}"
+_CTX_SKILLS_KEY = "agent:ctx:skills:{agent_id}"
+_CTX_RELS_KEY = "agent:ctx:rels:{agent_id}"
+_CTX_COMPANY_KEY = "agent:ctx:company:{agent_id}"
+_CTX_CHANNELS_KEY = "agent:ctx:channels:{agent_id}"
+_CTX_TZ_KEY = "agent:ctx:tz:{agent_id}"
+_CTX_TTL = 3600  # 1 hour safety net; active invalidation on write
 
 
 def _agent_workspace(agent_id: uuid.UUID) -> Path:
@@ -30,6 +47,12 @@ def _read_file_safe(path: Path, max_chars: int = 3000) -> str:
         return content
     except Exception:
         return ""
+
+
+async def _read_file_safe_async(path: Path, max_chars: int = 3000) -> str:
+    """Async wrapper for _read_file_safe using thread pool."""
+    from app.core.async_utils import run_sync
+    return await run_sync(_read_file_safe, path, max_chars)
 
 
 def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
@@ -62,7 +85,6 @@ def _parse_skill_frontmatter(content: str, filename: str) -> tuple[str, str]:
     # Fallback: use first non-empty, non-heading line as description
     for line in stripped.split("\n"):
         line = line.strip()
-        # Skip frontmatter delimiters and YAML lines
         if line in ("---",) or line.startswith("name:") or line.startswith("description:"):
             continue
         if line and not line.startswith("#"):
@@ -99,7 +121,6 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
             if entry.is_dir():
                 skill_md = entry / "SKILL.md"
                 if not skill_md.exists():
-                    # Also try lowercase skill.md
                     skill_md = entry / "skill.md"
                 if skill_md.exists():
                     try:
@@ -149,70 +170,77 @@ def _load_skills_index(agent_id: uuid.UUID) -> str:
     return "\n".join(lines)
 
 
-async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
-    """Build a rich system prompt incorporating agent's full context.
-
-    Reads from workspace files:
-    - soul.md → personality
-    - memory.md → long-term memory
-    - skills/ → skill names + summaries
-    - relationships.md → relationship descriptions
-    """
-    ws_root = _agent_workspace(agent_id)
-
-    # --- Soul ---
-    soul = _read_file_safe(ws_root / "soul.md", 2000)
-    # Strip markdown heading if present
-    if soul.startswith("# "):
-        soul = "\n".join(soul.split("\n")[1:]).strip()
-
-    # --- Memory ---
-    memory = _read_file_safe(ws_root / "memory" / "memory.md", 2000) or _read_file_safe(ws_root / "memory.md", 2000)
-    if memory.startswith("# "):
-        memory = "\n".join(memory.split("\n")[1:]).strip()
-
-    # --- Skills index (progressive disclosure) ---
-    skills_text = _load_skills_index(agent_id)
-
-    # --- Relationships ---
-    relationships = _read_file_safe(ws_root / "relationships.md", 2000)
-    if relationships.startswith("# "):
-        relationships = "\n".join(relationships.split("\n")[1:]).strip()
-
-    # --- Compose static and dynamic system prompt blocks ---
-    from datetime import datetime, timezone as _tz
-    from app.services.timezone_utils import get_agent_timezone, now_in_timezone
-    agent_tz_name = await get_agent_timezone(agent_id)
-    agent_local_now = now_in_timezone(agent_tz_name)
-    now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({agent_tz_name})")
-    
-    static_parts = [f"You are {agent_name}, an enterprise digital employee."]
+async def _load_skills_index_async(agent_id: uuid.UUID) -> str:
+    """Async wrapper for _load_skills_index using thread pool."""
+    from app.core.async_utils import run_sync
+    return await run_sync(_load_skills_index, agent_id)
 
 
-    if role_description:
-        static_parts.append(f"\n## Role\n{role_description}")
+# ── Redis cache helpers ──────────────────────────────────────
 
-    dynamic_parts = []
 
-    # --- Feishu Built-in Tools (only injected when agent has Feishu configured) ---
-    _has_feishu = False
+async def _get_cached(key: str) -> str | None:
+    """Try to get a cached value from Redis. Returns None on miss or error."""
     try:
-        from app.models.channel_config import ChannelConfig
-        from app.database import async_session as _ctx_session
-        async with _ctx_session() as _ctx_db:
-            _cfg_r = await _ctx_db.execute(
-                select(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "feishu",
-                    ChannelConfig.is_configured == True,
-                )
-            )
-            _has_feishu = _cfg_r.scalar_one_or_none() is not None
+        from app.core.events import get_redis
+        r = await get_redis()
+        return await r.get(key)
+    except Exception:
+        return None
+
+
+async def _set_cached(key: str, value: str, ttl: int = _CTX_TTL) -> None:
+    """Store a value in Redis with TTL. Silent on failure."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        await r.setex(key, ttl, value)
     except Exception:
         pass
 
-    if _has_feishu:
-        static_parts.append("""
+
+async def invalidate_agent_cache(agent_id: uuid.UUID, *sub_keys: str) -> None:
+    """Invalidate one or more context cache keys for an agent.
+
+    Args:
+        agent_id: Agent UUID
+        *sub_keys: Specific suffixes to invalidate (e.g. "soul", "skills", "company").
+                   If empty, invalidates ALL context caches.
+    """
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        aid = str(agent_id)
+        if sub_keys:
+            mapping = {
+                "base": _CTX_BASE_KEY.format(agent_id=aid),
+                "soul": _CTX_SOUL_KEY.format(agent_id=aid),
+                "skills": _CTX_SKILLS_KEY.format(agent_id=aid),
+                "rels": _CTX_RELS_KEY.format(agent_id=aid),
+                "company": _CTX_COMPANY_KEY.format(agent_id=aid),
+                "channels": _CTX_CHANNELS_KEY.format(agent_id=aid),
+                "tz": _CTX_TZ_KEY.format(agent_id=aid),
+            }
+            keys = [mapping[k] for k in sub_keys if k in mapping]
+        else:
+            keys = [
+                _CTX_BASE_KEY.format(agent_id=aid),
+                _CTX_SOUL_KEY.format(agent_id=aid),
+                _CTX_SKILLS_KEY.format(agent_id=aid),
+                _CTX_RELS_KEY.format(agent_id=aid),
+                _CTX_COMPANY_KEY.format(agent_id=aid),
+                _CTX_CHANNELS_KEY.format(agent_id=aid),
+                _CTX_TZ_KEY.format(agent_id=aid),
+            ]
+        if keys:
+            await r.delete(*keys)
+    except Exception:
+        pass
+
+
+# ── Static sub-cache builders ────────────────────────────────
+
+_FEISHU_TOOLS_DESC = """
 ## ⚡ Pre-installed Feishu Tools
 
 The following tools are available in your toolset. **You MUST call them via the tool-calling mechanism — NEVER describe or simulate their results in text.**
@@ -265,33 +293,9 @@ When user asks to create a Feishu document (summarize PDF, write an article, etc
 
 ✅ **When user asks to invite a colleague to a calendar event:**
 → Use `attendee_names=["John"]` in `feishu_calendar_create` — names are resolved automatically.
-→ Or use `attendee_open_ids=["ou_xxx"]` if you already have the open_id.""")
+→ Or use `attendee_open_ids=["ou_xxx"]` if you already have the open_id."""
 
-    # --- DingTalk Built-in Tools (only injected when agent has DingTalk configured) ---
-    try:
-        from app.services.agent.context.dingtalk import get_dingtalk_context
-        dingtalk_context = await get_dingtalk_context(agent_id)
-        if dingtalk_context:
-            static_parts.append(dingtalk_context)
-    except Exception:
-        pass
-
-    # --- Atlassian Rovo Tools (injected when Atlassian channel is configured) ---
-    try:
-        from app.database import async_session
-        from app.models.channel_config import ChannelConfig
-        from sqlalchemy import select as sa_select
-        async with async_session() as db:
-            result = await db.execute(
-                sa_select(ChannelConfig).where(
-                    ChannelConfig.agent_id == agent_id,
-                    ChannelConfig.channel_type == "atlassian",
-                    ChannelConfig.is_configured == True,
-                )
-            )
-            atlassian_config = result.scalar_one_or_none()
-            if atlassian_config:
-                static_parts.append("""
+_ATLASSIAN_TOOLS_DESC = """
 ## ⚡ Atlassian Rovo Tools (Jira / Confluence / Compass)
 
 You have access to Atlassian tools via the Rovo MCP server. **Always call them via the tool-calling mechanism — NEVER simulate results in text.**
@@ -326,24 +330,79 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
 🚫 **NEVER**:
 - Make up Jira issue IDs, Confluence page URLs, or component names
 - Report success without a tool result
-- Ask the user for their Atlassian credentials — they are pre-configured""")
+- Ask the user for their Atlassian credentials — they are pre-configured"""
+
+
+async def _build_channels_cache(agent_id: uuid.UUID) -> str:
+    """Build channels description list (Feishu/DingTalk/Atlassian) and return as JSON."""
+    import json as _json
+    from sqlalchemy import select
+
+    channels = []
+
+    # Check Feishu
+    try:
+        from app.models.channel_config import ChannelConfig
+        from app.database import async_session as _ctx_session
+        async with _ctx_session() as db:
+            result = await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "feishu",
+                    ChannelConfig.is_configured == True,
+                )
+            )
+            if result.scalar_one_or_none() is not None:
+                channels.append({"type": "feishu", "desc": _FEISHU_TOOLS_DESC})
     except Exception:
         pass
 
-    # --- Company Intro (from system settings) ---
+    # Check DingTalk
+    try:
+        from app.services.agent.context.dingtalk import get_dingtalk_context
+        dingtalk_ctx = await get_dingtalk_context(agent_id)
+        if dingtalk_ctx:
+            channels.append({"type": "dingtalk", "desc": dingtalk_ctx})
+    except Exception:
+        pass
+
+    # Check Atlassian
+    try:
+        from app.models.channel_config import ChannelConfig
+        from app.database import async_session
+        from sqlalchemy import select as sa_select
+        async with async_session() as db:
+            result = await db.execute(
+                sa_select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "atlassian",
+                    ChannelConfig.is_configured == True,
+                )
+            )
+            if result.scalar_one_or_none() is not None:
+                channels.append({"type": "atlassian", "desc": _ATLASSIAN_TOOLS_DESC})
+    except Exception:
+        pass
+
+    return _json.dumps(channels, ensure_ascii=False)
+
+
+async def _build_company_cache(agent_id: uuid.UUID, ws_root: Path) -> str:
+    """Build company intro + system prompt section. Returns pre-formatted string."""
+    parts = []
+
+    # Company intro from DB (3-tier priority)
     try:
         from app.database import async_session
         from app.models.system_settings import SystemSetting
         from app.models.agent import Agent as _AgentModel
         from sqlalchemy import select as sa_select
         async with async_session() as db:
-            # Resolve agent's tenant_id
             _ag_r = await db.execute(sa_select(_AgentModel.tenant_id).where(_AgentModel.id == agent_id))
             _agent_tenant_id = _ag_r.scalar_one_or_none()
 
             company_intro = ""
 
-            # Priority 1: tenant_settings table (new)
             if _agent_tenant_id:
                 try:
                     from app.models.tenant_setting import TenantSetting
@@ -359,7 +418,6 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
                 except Exception:
                     pass
 
-            # Priority 2: system_settings with tenant-scoped key (backward compat)
             if not company_intro and _agent_tenant_id:
                 tenant_key = f"company_intro_{_agent_tenant_id}"
                 result = await db.execute(
@@ -369,7 +427,6 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
                 if setting and setting.value and setting.value.get("content"):
                     company_intro = setting.value["content"].strip()
 
-            # Priority 3: global system_settings fallback
             if not company_intro:
                 result = await db.execute(
                     sa_select(SystemSetting).where(SystemSetting.key == "company_intro")
@@ -379,42 +436,134 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
                     company_intro = setting.value["content"].strip()
 
             if company_intro:
-                static_parts.append(f"\n## Company Information\n{company_intro}")
+                parts.append(f"\n## Company Information\n{company_intro}")
     except Exception:
-        pass  # Don't break agent if DB is unavailable
+        pass
 
-    # --- Company System Prompt (from COMPANY_SYSTEM_PROMPT.md) ---
-    company_system_prompt = _read_file_safe(ws_root / "COMPANY_SYSTEM_PROMPT.md", 20000)
+    # Company system prompt from file
+    company_system_prompt = await _read_file_safe_async(ws_root / "COMPANY_SYSTEM_PROMPT.md", 20000)
     if company_system_prompt and company_system_prompt.strip():
-        # Strip markdown heading if present
         if company_system_prompt.startswith("# "):
             company_system_prompt = "\n".join(company_system_prompt.split("\n")[1:]).strip()
-        static_parts.append(f"\n## Company System Configuration\n{company_system_prompt}")
+        parts.append(f"\n## Company System Configuration\n{company_system_prompt}")
 
-    if soul and soul not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
-        static_parts.append(f"\n## Personality\n{soul}")
+    return "\n".join(parts)
 
-    if skills_text:
-        static_parts.append(f"\n## Skills\n{skills_text}")
 
-    if relationships and "暂无" not in relationships and "None yet" not in relationships:
-        static_parts.append(f"\n## Relationships\n{relationships}")
+# ── Main entry point ─────────────────────────────────────────
 
+
+async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_description: str = "", current_user_name: str = None) -> tuple[str, str]:
+    """Build a rich system prompt incorporating agent's full context.
+
+    Static parts are cached in Redis per sub-key with active invalidation.
+    Dynamic parts are always computed fresh.
+    Falls back to uncached behavior if Redis is unavailable.
+    """
+    ws_root = _agent_workspace(agent_id)
+    aid = str(agent_id)
+    static_parts = []
+    dynamic_parts = []
+
+    # ── Static 1: Base identity + role ──
+    base_key = _CTX_BASE_KEY.format(agent_id=aid)
+    base_val = await _get_cached(base_key)
+    if base_val is None:
+        parts = [f"You are {agent_name}, an enterprise digital employee."]
+        if role_description:
+            parts.append(f"\n## Role\n{role_description}")
+        base_val = "\n".join(parts)
+        await _set_cached(base_key, base_val)
+    static_parts.append(base_val)
+
+    # ── Static 2: Channels (Feishu/DingTalk/Atlassian) ──
+    channels_key = _CTX_CHANNELS_KEY.format(agent_id=aid)
+    channels_val = await _get_cached(channels_key)
+    if channels_val is None:
+        channels_val = await _build_channels_cache(agent_id)
+        await _set_cached(channels_key, channels_val)
+    if channels_val:
+        try:
+            for ch in json.loads(channels_val):
+                static_parts.append(ch["desc"])
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # ── Static 3: Company intro + system prompt ──
+    company_key = _CTX_COMPANY_KEY.format(agent_id=aid)
+    company_val = await _get_cached(company_key)
+    if company_val is None:
+        company_val = await _build_company_cache(agent_id, ws_root)
+        await _set_cached(company_key, company_val)
+    if company_val:
+        static_parts.append(company_val)
+
+    # ── Static 4: Soul ──
+    soul_key = _CTX_SOUL_KEY.format(agent_id=aid)
+    soul_val = await _get_cached(soul_key)
+    if soul_val is None:
+        raw = await _read_file_safe_async(ws_root / "soul.md", 2000)
+        if raw.startswith("# "):
+            raw = "\n".join(raw.split("\n")[1:]).strip()
+        if raw and raw not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
+            soul_val = f"\n## Personality\n{raw}"
+        else:
+            soul_val = ""
+        await _set_cached(soul_key, soul_val)
+    if soul_val:
+        static_parts.append(soul_val)
+
+    # ── Static 5: Skills index ──
+    skills_key = _CTX_SKILLS_KEY.format(agent_id=aid)
+    skills_val = await _get_cached(skills_key)
+    if skills_val is None:
+        raw = await _load_skills_index_async(agent_id)
+        skills_val = f"\n## Skills\n{raw}" if raw else ""
+        await _set_cached(skills_key, skills_val)
+    if skills_val:
+        static_parts.append(skills_val)
+
+    # ── Static 6: Relationships ──
+    rels_key = _CTX_RELS_KEY.format(agent_id=aid)
+    rels_val = await _get_cached(rels_key)
+    if rels_val is None:
+        raw = await _read_file_safe_async(ws_root / "relationships.md", 2000)
+        if raw.startswith("# "):
+            raw = "\n".join(raw.split("\n")[1:]).strip()
+        if raw and "暂无" not in raw and "None yet" not in raw:
+            rels_val = f"\n## Relationships\n{raw}"
+        else:
+            rels_val = ""
+        await _set_cached(rels_key, rels_val)
+    if rels_val:
+        static_parts.append(rels_val)
+
+    # ── Static 7: Timezone (cached for reuse) ──
+    tz_key = _CTX_TZ_KEY.format(agent_id=aid)
+    tz_val = await _get_cached(tz_key)
+    if tz_val is None:
+        from app.services.timezone_utils import get_agent_timezone
+        tz_val = await get_agent_timezone(agent_id)
+        await _set_cached(tz_key, tz_val)
+
+    # ── Dynamic 1: Memory ──
+    memory = await _read_file_safe_async(ws_root / "memory" / "memory.md", 2000) or await _read_file_safe_async(ws_root / "memory.md", 2000)
+    if memory.startswith("# "):
+        memory = "\n".join(memory.split("\n")[1:]).strip()
     if memory and memory not in ("_这里记录重要的信息和学到的知识。_", "_Record important information and knowledge here._"):
         dynamic_parts.append(f"\n## Memory\n{memory}")
 
-    # --- Focus (working memory) ---
+    # ── Dynamic 2: Focus ──
     focus = (
-        _read_file_safe(ws_root / "focus.md", 3000)
-        # Backward compat: also check old name
-        or _read_file_safe(ws_root / "agenda.md", 3000)
+        await _read_file_safe_async(ws_root / "focus.md", 3000)
+        or await _read_file_safe_async(ws_root / "agenda.md", 3000)
     )
     if focus and focus.strip() not in ("# Focus", "# Agenda", "（暂无）"):
         if focus.startswith("# "):
             focus = "\n".join(focus.split("\n")[1:]).strip()
         dynamic_parts.append(f"\n## Focus\n{focus}")
 
-    # --- Active Triggers ---
+    # ── Dynamic 3: Active Triggers ──
     try:
         from app.database import async_session
         from app.models.trigger import AgentTrigger
@@ -438,14 +587,14 @@ You have access to Atlassian tools via the Rovo MCP server. **Always call them v
     except Exception:
         pass
 
-    # --- Time Info ---
-
+    # ── Dynamic 4: Current Time ──
+    from app.services.timezone_utils import now_in_timezone
+    agent_local_now = now_in_timezone(tz_val)
+    now_str = agent_local_now.strftime(f"%Y-%m-%d %H:%M:%S ({tz_val})")
     dynamic_parts.append(f"\n## Current Time\n{now_str}")
-    dynamic_parts.append(f"Your timezone is **{agent_tz_name}**. When setting cron triggers, use this timezone for time references.")
+    dynamic_parts.append(f"Your timezone is **{tz_val}**. When setting cron triggers, use this timezone for time references.")
 
-    # Append dynamic parts (Time, Focus, Triggers) at the very end to maximize cache hits
-
-    # Inject current user identity
+    # ── Dynamic 5: Current user ──
     if current_user_name:
         dynamic_parts.append(f"\n## Current Conversation\nYou are currently chatting with **{current_user_name}**. Address them by name when appropriate.")
 

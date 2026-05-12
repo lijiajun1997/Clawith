@@ -57,6 +57,11 @@ async def configure_dingtalk_channel(
         existing.is_configured = True
         existing.extra_config = {**existing.extra_config, "connection_mode": conn_mode, "agent_id": dingtalk_agent_id}
         await db.flush()
+        try:
+            from app.services.agent_context import invalidate_agent_cache
+            await invalidate_agent_cache(agent_id, "channels")
+        except Exception:
+            pass
         
         # Restart Stream client if in websocket mode
         if conn_mode == "websocket":
@@ -81,6 +86,11 @@ async def configure_dingtalk_channel(
     )
     db.add(config)
     await db.flush()
+    try:
+        from app.services.agent_context import invalidate_agent_cache
+        await invalidate_agent_cache(agent_id, "channels")
+    except Exception:
+        pass
 
     # Start Stream client if in websocket mode
     if conn_mode == "websocket":
@@ -129,6 +139,11 @@ async def delete_dingtalk_channel(
     if not config:
         raise HTTPException(status_code=404, detail="DingTalk not configured")
     await db.delete(config)
+    try:
+        from app.services.agent_context import invalidate_agent_cache
+        await invalidate_agent_cache(agent_id, "channels")
+    except Exception:
+        pass
 
     # Stop Stream client
     from app.services.dingtalk_stream import dingtalk_stream_manager

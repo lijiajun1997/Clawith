@@ -216,6 +216,11 @@ async def configure_channel(
         existing.extra_config = extra
         existing.is_configured = True
         await db.flush()
+        try:
+            from app.services.agent_context import invalidate_agent_cache
+            await invalidate_agent_cache(agent_id, "channels")
+        except Exception:
+            pass
 
         # Start/Stop WS client in background
         from app.services.feishu_ws import feishu_ws_manager
@@ -240,6 +245,11 @@ async def configure_channel(
     )
     db.add(config)
     await db.flush()
+    try:
+        from app.services.agent_context import invalidate_agent_cache
+        await invalidate_agent_cache(agent_id, "channels")
+    except Exception:
+        pass
 
     # Start WS client in background
     from app.services.feishu_ws import feishu_ws_manager
@@ -439,6 +449,11 @@ async def delete_channel_config(
     if not config:
         raise HTTPException(status_code=404, detail="Channel not configured")
     await db.delete(config)
+    try:
+        from app.services.agent_context import invalidate_agent_cache
+        await invalidate_agent_cache(agent_id, "channels")
+    except Exception:
+        pass
 
 
 
