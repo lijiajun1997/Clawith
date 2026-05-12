@@ -6,7 +6,8 @@ import type { User, Agent } from '../types';
 interface AuthStore {
     user: User | null;
     token: string | null;
-    setAuth: (user: User, token: string) => void;
+    refreshToken: string | null;
+    setAuth: (user: User, token: string, refreshToken?: string | null) => void;
     setUser: (user: User) => void;
     logout: () => void;
     isAuthenticated: () => boolean;
@@ -15,10 +16,14 @@ interface AuthStore {
 export const useAuthStore = create<AuthStore>((set, get) => ({
     user: null,
     token: localStorage.getItem('token'),
+    refreshToken: localStorage.getItem('refresh_token'),
 
-    setAuth: (user, token) => {
+    setAuth: (user, token, refreshToken) => {
         localStorage.setItem('token', token);
-        set({ user, token });
+        if (refreshToken != null) {
+            localStorage.setItem('refresh_token', refreshToken);
+        }
+        set({ user, token, refreshToken: refreshToken ?? get().refreshToken });
     },
 
     setUser: (user) => {
@@ -27,7 +32,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
     logout: () => {
         localStorage.removeItem('token');
-        set({ user: null, token: null });
+        localStorage.removeItem('refresh_token');
+        set({ user: null, token: null, refreshToken: null });
     },
 
     isAuthenticated: () => !!get().token,

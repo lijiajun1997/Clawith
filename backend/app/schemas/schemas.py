@@ -34,6 +34,7 @@ class RegisterInitResponse(BaseModel):
     user_id: uuid.UUID
     email: str
     access_token: str
+    refresh_token: str | None = None
     message: str = "Registration initiated. Please verify your email."
     user: "UserOut" # Include full user info
     needs_company_setup: bool = True
@@ -92,11 +93,16 @@ class NeedsVerificationResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user: "UserOut"
     identity: "IdentityOut | None" = None
     needs_company_setup: bool = False
     tenant_name: str | None = None
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
 class TenantChoice(BaseModel):
@@ -119,6 +125,7 @@ class TenantSwitchRequest(BaseModel):
 
 class TenantSwitchResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     redirect_url: str | None = None
     message: str | None = None
@@ -189,6 +196,45 @@ class IdentityBindRequest(BaseModel):
 
 class IdentityUnbindRequest(BaseModel):
     provider_type: str
+
+
+# ─── Channel Account Binding (Admin) ──────────────────
+
+class ChannelAccountOut(BaseModel):
+    """A channel account (OrgMember or channel-source User) summary."""
+    id: uuid.UUID
+    channel_type: str
+    external_id: str | None = None
+    open_id: str | None = None
+    unionid: str | None = None
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    avatar_url: str | None = None
+    is_linked: bool = True  # True = linked to a registered (web) user
+    linked_to_user_name: str | None = None  # If linked only to a channel-source user, show who
+
+    model_config = {"from_attributes": True}
+
+
+class AdminBindRequest(BaseModel):
+    """Admin request to bind a channel account to a user."""
+    channel_type: str = Field(description="Channel type: wechat, feishu, dingtalk, wecom, discord, slack, teams")
+    external_user_id: str = Field(description="External user ID on the channel platform")
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+
+class AdminUnbindRequest(BaseModel):
+    """Admin request to unbind a channel account from a user."""
+    org_member_id: uuid.UUID = Field(description="OrgMember ID to unbind")
+
+
+class MergeDuplicateRequest(BaseModel):
+    """Admin request to merge duplicate channel users into a target user."""
+    target_user_id: uuid.UUID = Field(description="Registered user to merge into")
+    source_user_ids: list[uuid.UUID] = Field(description="Duplicate channel-created user IDs to merge")
 
 
 class UserUpdate(BaseModel):
@@ -270,6 +316,7 @@ class AgentOut(BaseModel):
     api_key_hash: str | None = None
     created_at: datetime
     last_active_at: datetime | None = None
+    display_status: str = "standby"  # Computed runtime status (working/active/standby/dormant/disconnected)
 
     model_config = {"from_attributes": True}
 

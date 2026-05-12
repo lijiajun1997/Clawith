@@ -36,10 +36,11 @@ export default function Login() {
     const [tenantSelection, setTenantSelection] = useState<any[] | null>(null);
 
     const [form, setForm] = useState({
-        login_identifier: invitedEmail,  // Pre-fill invited email if present
+        login_identifier: invitedEmail || localStorage.getItem('remembered_login') || '',
         password: '',
         tenant_id: '',
     });
+    const [rememberMe, setRememberMe] = useState(true);
 
     useEffect(() => {
         // Login page always uses light theme for the financial-tech design
@@ -140,7 +141,7 @@ export default function Login() {
                 });
                 // Save authentication state for company selection (user not active yet)
                 if (regRes.access_token && regRes.user) {
-                    setAuth(regRes.user, regRes.access_token);
+                    setAuth(regRes.user, regRes.access_token, regRes.refresh_token);
                 }
                 // Redirect based on whether company setup is needed
                 if (regRes.needs_company_setup === false) {
@@ -170,7 +171,14 @@ export default function Login() {
                 }
 
                 const tokenRes = res as TokenResponse;
-                setAuth(tokenRes.user, tokenRes.access_token);
+                setAuth(tokenRes.user, tokenRes.access_token, tokenRes.refresh_token);
+
+                // Remember login identifier
+                if (rememberMe) {
+                    localStorage.setItem('remembered_login', form.login_identifier);
+                } else {
+                    localStorage.removeItem('remembered_login');
+                }
 
                 // If the user arrived via an invitation link, join the invited company
                 // before redirecting. The /tenants/join endpoint handles:
@@ -184,8 +192,11 @@ export default function Login() {
                             // Store the new tenant-scoped token first so that
                             // the subsequent /auth/me call uses the correct context.
                             localStorage.setItem('token', joinRes.access_token);
+                            if (joinRes.refresh_token) {
+                                localStorage.setItem('refresh_token', joinRes.refresh_token);
+                            }
                             const meRes = await authApi.me();
-                            setAuth(meRes, joinRes.access_token);
+                            setAuth(meRes, joinRes.access_token, joinRes.refresh_token);
                         }
                         navigate('/');
                         return;
@@ -260,7 +271,12 @@ export default function Login() {
             }
 
             const tokenRes = res as TokenResponse;
-            setAuth(tokenRes.user, tokenRes.access_token);
+            setAuth(tokenRes.user, tokenRes.access_token, tokenRes.refresh_token);
+            if (rememberMe) {
+                localStorage.setItem('remembered_login', form.login_identifier);
+            } else {
+                localStorage.removeItem('remembered_login');
+            }
             if (tokenRes.user && !tokenRes.user.tenant_id) {
                 navigate('/setup-company');
             } else {
@@ -496,7 +512,16 @@ export default function Login() {
                         </div>
 
                         {!isRegister && (
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '-4px', marginBottom: '8px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '-4px', marginBottom: '8px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={rememberMe}
+                                        onChange={(e) => setRememberMe(e.target.checked)}
+                                        style={{ width: '15px', height: '15px', accentColor: 'var(--accent-primary)', cursor: 'pointer' }}
+                                    />
+                                    {t('auth.rememberMe', '记住账号')}
+                                </label>
                                 <Link
                                     to="/forgot-password"
                                     style={{ fontSize: '13px', color: 'var(--accent-primary)', textDecoration: 'none' }}
@@ -588,7 +613,7 @@ export default function Login() {
                                                     tenant_id: firstTenant.tenant_id,
                                                 });
                                                 const tokenRes = res as TokenResponse;
-                                                setAuth(tokenRes.user, tokenRes.access_token);
+                                                setAuth(tokenRes.user, tokenRes.access_token, tokenRes.refresh_token);
                                                 setTenantSelection(null);
                                                 navigate('/setup-company?from=tenant-selection');
                                             } catch (err: any) {

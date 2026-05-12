@@ -11,7 +11,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, get_authenticated_user, get_current_user, hash_password, verify_password
+from app.core.security import create_access_token, create_refresh_token, decode_refresh_token, get_authenticated_user, get_current_user, hash_password, verify_password
 from app.database import get_db
 from app.models.user import Identity, User
 from app.schemas.schemas import (
@@ -39,6 +39,7 @@ from app.schemas.schemas import (
     IdentityOut,
     TenantSwitchRequest,
     TenantSwitchResponse,
+    RefreshTokenRequest,
 )
 from sqlalchemy.orm import selectinload
 
@@ -251,6 +252,7 @@ async def register_init(
         user_id=user.id,
         email=identity.email,
         access_token=token,
+        refresh_token=create_refresh_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
         message="Registration initiated. Please verify your email." if not identity.email_verified else "Registration successful.",
         needs_company_setup=user.tenant_id is None,
@@ -301,6 +303,7 @@ async def register_sso(
 
     return TokenResponse(
         access_token=token,
+        refresh_token=create_refresh_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
         needs_company_setup=user.tenant_id is None,
     )
@@ -410,6 +413,7 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
         user_id=user.id,
         email=user.email,
         access_token=create_access_token(str(user.id), user.role),
+        refresh_token=create_refresh_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
         message="Registration successful. Please verify your email.",
         needs_company_setup=user.tenant_id is None,
@@ -539,6 +543,7 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
     token = create_access_token(str(user.id), user.role)
     return TokenResponse(
         access_token=token,
+        refresh_token=create_refresh_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
         identity=IdentityOut.model_validate(identity),
         needs_company_setup=user.tenant_id is None,
@@ -659,6 +664,32 @@ async def reset_password(data: ResetPasswordRequest, db: AsyncSession = Depends(
     await db.flush()
     await db.commit()
     return {"ok": True}
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(data: RefreshTokenRequest, db: AsyncSession = Depends(get_db)):
+    """Exchange a valid refresh token for new access + refresh tokens."""
+    payload = decode_refresh_token(data.refresh_token)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+
+    result = await db.execute(
+        select(User).where(User.id == uuid.UUID(user_id)).options(selectinload(User.identity))
+    )
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+
+    new_access = create_access_token(str(user.id), user.role)
+    new_refresh = create_refresh_token(str(user.id), user.role)
+
+    return TokenResponse(
+        access_token=new_access,
+        refresh_token=new_refresh,
+        user=UserOut.model_validate(user),
+        needs_company_setup=user.tenant_id is None,
+    )
 
 
 @router.get("/me", response_model=UserOut)
@@ -817,6 +848,7 @@ async def switch_tenant(
 
     return TenantSwitchResponse(
         access_token=token,
+        refresh_token=create_refresh_token(str(target_user.id), target_user.role),
         redirect_url=redirect_url,
         message="Switching organization..."
     )
@@ -941,6 +973,7 @@ async def oauth_callback(
 
     return TokenResponse(
         access_token=jwt_token,
+        refresh_token=create_refresh_token(str(user.id), user.role),
         user=UserOut.model_validate(user),
         needs_company_setup=user.tenant_id is None,
     )
@@ -1075,6 +1108,7 @@ async def verify_email(data: VerifyEmailRequest, db: AsyncSession = Depends(get_
 
     return TokenResponse(
         access_token=token,
+        refresh_token=create_refresh_token(effective_id, effective_role),
         user=UserOut.model_validate(user) if user else None,
         identity=IdentityOut.model_validate(identity),
         needs_company_setup=user.tenant_id is None if user else True,
