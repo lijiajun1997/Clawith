@@ -139,8 +139,34 @@ async def call_llm(
     from app.services.agent_tools import AGENT_TOOLS, execute_tool, get_agent_tools_for_llm
     from app.services.llm_utils import create_llm_client, get_max_tokens, LLMMessage, LLMError, get_model_api_key
 
+    # ── Mark agent as "working" for display_status ──
+    _was_marked_working = False
+    if agent_id:
+        try:
+            from app.core.events import get_redis as _get_redis_working
+            _rw = await _get_redis_working()
+            _aid_str = str(agent_id)
+            await _rw.sadd("working_agents", _aid_str)
+            await _rw.set(f"working:{_aid_str}", "1", ex=600)
+            _was_marked_working = True
+        except Exception:
+            pass
+
     # ── Token limit check & config ──
     _max_tool_rounds = 50  # default
+
+    async def _clear_working():
+        """Clear working_agents marker for this agent."""
+        if _was_marked_working and agent_id:
+            try:
+                from app.core.events import get_redis as _get_redis_clr
+                _rc = await _get_redis_clr()
+                _aid_str = str(agent_id)
+                await _rc.srem("working_agents", _aid_str)
+                await _rc.delete(f"working:{_aid_str}")
+            except Exception:
+                pass
+
     if agent_id:
         try:
             from app.models.agent import Agent as AgentModel
@@ -152,8 +178,10 @@ async def call_llm(
                     if max_tool_rounds_override and max_tool_rounds_override < _max_tool_rounds:
                         _max_tool_rounds = max_tool_rounds_override
                     if _agent.max_tokens_per_day and _agent.tokens_used_today >= _agent.max_tokens_per_day:
+                        await _clear_working()
                         return f"⚠️ Daily token usage has reached the limit ({_agent.tokens_used_today:,}/{_agent.max_tokens_per_day:,}). Please try again tomorrow or ask admin to increase the limit."
                     if _agent.max_tokens_per_month and _agent.tokens_used_month >= _agent.max_tokens_per_month:
+                        await _clear_working()
                         return f"⚠️ Monthly token usage has reached the limit ({_agent.tokens_used_month:,}/{_agent.max_tokens_per_month:,}). Please ask admin to increase the limit."
         except Exception:
             pass
@@ -382,11 +410,13 @@ async def call_llm(
                 if _attempt >= _max_retries - 1:
                     if agent_id and _accumulated_tokens > 0:
                         await record_token_usage(agent_id, _accumulated_tokens)
+                    await _clear_working()
                     return f"[LLM Error] {e}"
 
         if response is None:
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
+            await _clear_working()
             return f"[LLM Error] {_last_err}"
 
         # ── Track tokens for this round ──
@@ -411,6 +441,7 @@ async def call_llm(
                 if agent_id and _accumulated_tokens > 0:
                     await record_token_usage(agent_id, _accumulated_tokens)
                 await client.close()
+                await _clear_working()
                 return error_msg
 
             # Add retry message to prompt LLM to respond properly
@@ -437,6 +468,7 @@ async def call_llm(
             if agent_id and _accumulated_tokens > 0:
                 await record_token_usage(agent_id, _accumulated_tokens)
             await client.close()
+            await _clear_working()
             return response.content
 
         # Execute tool calls
@@ -543,6 +575,7 @@ async def call_llm(
     if agent_id and _accumulated_tokens > 0:
         await record_token_usage(agent_id, _accumulated_tokens)
     await client.close()
+    await _clear_working()
     return "[Error] Too many tool call rounds"
 
 
@@ -1116,10 +1149,9 @@ async def websocket_chat(
                         # We embed live preview data directly in the tool_call payload
                         # because separate WebSocket messages get silently dropped by nginx.
                         if data.get("status") == "done":
+                            tool_name = data.get("name", "")
                             try:
                                 from app.services.agentbay_live import detect_agentbay_env, get_desktop_screenshot, get_browser_snapshot
-                                import re as _re_live
-                                tool_name = data.get("name", "")
                                 env = detect_agentbay_env(tool_name)
                                 if env:
                                     tool_result = data.get("result", "") or ""
@@ -1137,6 +1169,25 @@ async def websocket_chat(
                                         data["live_preview"] = {"env": "code", "output": tool_result[:5000]}
                             except Exception as _lp_err:
                                 logger.warning(f"[WS][LivePreview] Embed failed: {_lp_err}")
+
+                            # ── send_channel_file: embed file_preview for workspace auto-open ──
+                            if tool_name == "send_channel_file":
+                                import re as _re_fp
+                                tool_result = data.get("result", "") or ""
+                                _fm = _re_fp.match(r"File ready:\s*\[([^\]]+)\]\(([^)]+)\)", tool_result)
+                                if _fm:
+                                    file_name = _fm.group(1)
+                                    download_url = _fm.group(2)
+                                    # Extract relative path from download URL query string
+                                    try:
+                                        from urllib.parse import urlparse, parse_qs
+                                        _parsed = urlparse(download_url)
+                                        _qs = parse_qs(_parsed.query)
+                                        file_rel = _qs.get("path", [""])[0]
+                                    except Exception:
+                                        file_rel = ""
+                                    data["file_preview"] = {"name": file_name, "path": file_rel, "url": download_url}
+                                    logger.info(f"[WS][FilePreview] Embedded for send_channel_file: {file_name}")
 
                         try:
                             await websocket.send_json({"type": "tool_call", **data})
@@ -1234,6 +1285,30 @@ async def websocket_chat(
                             continue
                         except WebSocketDisconnect:
                             if llm_task.done():
+                                # Task completed but WS disconnected — save result before raising
+                                try:
+                                    _done_result = llm_task.result()
+                                    if _done_result and isinstance(_done_result, str):
+                                        async with async_session() as _save_db:
+                                            _save_db.add(ChatMessage(
+                                                agent_id=agent_id,
+                                                user_id=user_id,
+                                                role="assistant",
+                                                content=_done_result,
+                                                thinking=''.join(thinking_content) if thinking_content else None,
+                                                conversation_id=conv_id,
+                                            ))
+                                            await _save_db.commit()
+                                        logger.info(f"[WS] Saved completed LLM result on disconnect")
+                                except Exception as _save_err:
+                                    logger.warning(f"[WS] Failed to save result on disconnect: {_save_err}")
+                                # Clear inflight marker
+                                try:
+                                    from app.core.events import get_redis as _get_redis_clr
+                                    _r_clr = await _get_redis_clr()
+                                    await _r_clr.delete(f"inflight:{agent_id_str}:{conv_id}")
+                                except Exception:
+                                    pass
                                 raise
                             # Task still running — let it complete in background
                             logger.info(f"[WS] Disconnect while LLM running, continuing in background")

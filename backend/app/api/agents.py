@@ -4,7 +4,7 @@ import hashlib
 import json
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -19,6 +19,78 @@ from app.models.user import User
 from app.schemas.schemas import AgentCreate, AgentOut, AgentUpdate
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+# ── Display status thresholds ──
+_ACTIVE_THRESHOLD = timedelta(hours=1)
+_DORMANT_THRESHOLD = timedelta(hours=48)
+
+
+def _compute_display_status(
+    agent: Agent,
+    last_active_at: datetime | None,
+    is_working: bool,
+    now: datetime,
+) -> str:
+    """Compute display_status with priority: creating > stopped > error > disconnected > working > dormant > active > standby."""
+    # Container lifecycle states override everything
+    if agent.status == "creating":
+        return "creating"
+    if agent.status == "stopped":
+        return "stopped"
+    if agent.status == "error":
+        return "error"
+
+    # OpenClaw disconnected detection
+    if agent.agent_type == "openclaw" and agent.status == "running" and agent.openclaw_last_seen:
+        seen = agent.openclaw_last_seen
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        if now - seen > timedelta(hours=1):
+            return "disconnected"
+
+    # Only running/idle agents reach here
+    if agent.status not in ("running", "idle"):
+        return "standby"
+
+    # Currently processing LLM
+    if is_working:
+        return "working"
+
+    # Dormant: no activity or > 48h
+    if last_active_at is None:
+        return "dormant"
+    active_at = last_active_at
+    if active_at.tzinfo is None:
+        active_at = active_at.replace(tzinfo=timezone.utc)
+    if now - active_at > _DORMANT_THRESHOLD:
+        return "dormant"
+
+    # Active: within 1 hour
+    if now - active_at <= _ACTIVE_THRESHOLD:
+        return "active"
+
+    # Default
+    return "standby"
+
+
+async def _get_working_agent_ids() -> set[str]:
+    """Fetch set of currently working agent IDs from Redis, cleaning stale entries."""
+    working_ids: set[str] = set()
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        members = await r.smembers("working_agents")
+        if members:
+            ttl_keys = [f"working:{aid}" for aid in members]
+            ttl_vals = await r.mget(ttl_keys)
+            working_ids = {aid for aid, val in zip(members, ttl_vals) if val}
+            # Clean up stale members (TTL key expired but still in SET)
+            stale = {aid for aid, val in zip(members, ttl_vals) if not val}
+            if stale:
+                await r.srem("working_agents", *stale)
+    except Exception:
+        pass
+    return working_ids
 
 
 def _serialize_dt(value: datetime | None) -> str | None:
@@ -140,7 +212,10 @@ async def _enrich_agents_with_creator(agents: list[Agent], db: AsyncSession) -> 
     active_result = await db.execute(active_q)
     real_active_map: dict = {aid: ts for aid, ts in active_result.all()}
 
-    # Build response with creator_username and corrected last_active_at
+    # Build response with creator_username, corrected last_active_at, and display_status
+    working_ids = await _get_working_agent_ids()
+    now = datetime.now(timezone.utc)
+
     result = []
     for a in agents:
         agent_out = AgentOut.model_validate(a)
@@ -150,6 +225,8 @@ async def _enrich_agents_with_creator(agents: list[Agent], db: AsyncSession) -> 
         real_active = real_active_map.get(a.id)
         if real_active:
             agent_out.last_active_at = real_active
+        # Compute display_status
+        agent_out.display_status = _compute_display_status(a, agent_out.last_active_at, str(a.id) in working_ids, now)
         result.append(agent_out)
     return result
 
@@ -444,6 +521,31 @@ async def get_agent(
         if tenant:
             effective_tz = tenant.timezone or "UTC"
     out["effective_timezone"] = effective_tz or "UTC"
+
+    # Compute display_status
+    is_working = False
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        _aid_str = str(agent_id)
+        if await r.sismember("working_agents", _aid_str) and await r.get(f"working:{_aid_str}"):
+            is_working = True
+    except Exception:
+        pass
+    # Resolve last_active_at from user messages for accurate display_status
+    _last_active = out.get("last_active_at")
+    from sqlalchemy import func as _func
+    from app.models.audit import ChatMessage as _ChatMsg
+    from app.models.chat_session import ChatSession as _ChatSess
+    _excl = await db.execute(select(_ChatSess.id).where(_ChatSess.source_channel.in_(["trigger", "agent"])))
+    _excl_ids = {str(sid) for (sid,) in _excl.all()}
+    _aq = select(_func.max(_ChatMsg.created_at)).where(_ChatMsg.agent_id == agent_id, _ChatMsg.role == "user")
+    if _excl_ids:
+        _aq = _aq.where(_ChatMsg.conversation_id.notin_(_excl_ids))
+    _real_active = (await db.execute(_aq)).scalar()
+    if _real_active:
+        _last_active = _real_active
+    out["display_status"] = _compute_display_status(agent, _last_active, is_working, datetime.now(timezone.utc))
 
     return out
 

@@ -3036,8 +3036,9 @@ function AgentDetailInner() {
         return <div style={{ padding: '40px', color: 'var(--text-tertiary)' }}>{t('common.loading')}</div>;
     }
 
-    // Compute display status (including OpenClaw disconnected detection)
+    // Compute display status (prefer display_status from API, fallback to local computation)
     const computeStatusKey = () => {
+        if ((agent as any).display_status) return (agent as any).display_status;
         if (agent.status === 'error') return 'error';
         if (agent.status === 'creating') return 'creating';
         if (agent.status === 'stopped') return 'stopped';

@@ -458,8 +458,8 @@ async def _heartbeat_tick():
                     agent.status = "stopped"
                     continue
 
-                # Skip dormant agents (no activity for 48 hours)
-                if agent.last_active_at and (now - agent.last_active_at) > DORMANT_THRESHOLD:
+                # Skip dormant agents (no activity for 48 hours, or never had activity)
+                if agent.last_active_at is None or (now - agent.last_active_at) > DORMANT_THRESHOLD:
                     continue
 
                 # Resolve timezone

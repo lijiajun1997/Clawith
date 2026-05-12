@@ -12,8 +12,10 @@ import type { Agent, DashboardSummary } from '../types';
 
 /* ────── Color Palette ────── */
 const STATUS_COLORS: Record<string, string> = {
-    running: '#22c55e', idle: '#f59e0b', stopped: '#64748b',
-    error: '#ef4444', creating: '#3b82f6',
+    working: '#3b82f6', active: '#22c55e', standby: '#8b8b9e',
+    dormant: '#5c5c70', running: '#22c55e', idle: '#8b8b9e',
+    stopped: '#64748b', error: '#ef4444', creating: '#3b82f6',
+    disconnected: '#f59e0b',
 };
 const ACTIVITY_COLORS: Record<string, string> = {
     chat_reply: '#3b82f6', tool_call: '#8b5cf6', file_written: '#f59e0b',
@@ -45,21 +47,31 @@ const formatTokens = (n: number) => {
 
 const statusLabel = (s: string, t: any) => {
     switch (s) {
+        case 'working': return t('dashboard.status.working');
+        case 'active': return t('dashboard.status.active');
+        case 'standby': return t('dashboard.status.standby');
+        case 'dormant': return t('dashboard.status.dormant');
         case 'running': return t('dashboard.status.running');
         case 'idle': return t('dashboard.status.idle');
         case 'stopped': return t('dashboard.status.stopped');
         case 'error': return t('dashboard.status.error');
         case 'creating': return t('dashboard.status.creating');
+        case 'disconnected': return t('dashboard.status.disconnected');
         default: return s;
     }
 };
 
 const statusColor = (s: string) => {
     switch (s) {
+        case 'working': return 'var(--status-working)';
+        case 'active': return 'var(--status-active)';
+        case 'standby': return 'var(--status-standby)';
+        case 'dormant': return 'var(--status-dormant)';
         case 'running': return 'var(--status-running)';
         case 'idle': return 'var(--status-idle)';
         case 'error': return 'var(--status-error)';
         case 'stopped': return 'var(--status-stopped)';
+        case 'disconnected': return 'var(--status-idle)';
         default: return 'var(--text-tertiary)';
     }
 };
@@ -242,7 +254,10 @@ function StatusDonut({ agents }: { agents: Agent[] }) {
     const { t } = useTranslation();
     const data = useMemo(() => {
         const counts: Record<string, number> = {};
-        agents.forEach(a => { counts[a.status] = (counts[a.status] || 0) + 1; });
+        agents.forEach(a => {
+            const s = (a as any).display_status || a.status;
+            counts[s] = (counts[s] || 0) + 1;
+        });
         return Object.entries(counts).map(([status, count]) => ({
             name: statusLabel(status, t), value: count, status,
         }));
@@ -917,9 +932,9 @@ function AgentRow({ agent, pendingTasks, recentActivity }: {
                 <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 500, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-primary)' }}>
                         {agent.name}
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 400, color: statusColor(agent.status) }}>
-                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: statusColor(agent.status), display: 'inline-block' }} />
-                            {statusLabel(agent.status, t)}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 400, color: statusColor((agent as any).display_status || agent.status) }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: statusColor((agent as any).display_status || agent.status), display: 'inline-block' }} />
+                            {statusLabel((agent as any).display_status || agent.status, t)}
                         </span>
                     </div>
                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1185,7 +1200,10 @@ export default function Dashboard() {
 
     // Metrics (from server-side aggregation)
     const totalAgents = agents.length;
-    const activeAgents = agents.filter(a => a.status === 'running' || a.status === 'idle').length;
+    const activeAgents = agents.filter(a => {
+        const ds = (a as any).display_status;
+        return ds ? ['working', 'active', 'standby'].includes(ds) : (a.status === 'running' || a.status === 'idle');
+    }).length;
     const errorAgents = agents.filter(a => a.status === 'error').length;
     const pendingTasks = (taskSummary?.by_status.pending || 0) + (taskSummary?.by_status.doing || 0);
     const completedToday = taskSummary?.completed_today || 0;
@@ -1273,8 +1291,10 @@ export default function Dashboard() {
                                 </div>
                                 <div style={{ maxHeight: '350px', overflowY: 'auto' }}>
                                     {agents.sort((a, b) => {
-                                        const aa = a.status === 'running' || a.status === 'idle' ? 1 : 0;
-                                        const bb = b.status === 'running' || b.status === 'idle' ? 1 : 0;
+                                        const dsA = (a as any).display_status || a.status;
+                                        const dsB = (b as any).display_status || b.status;
+                                        const aa = ['working', 'active', 'standby', 'running', 'idle'].includes(dsA) ? 1 : 0;
+                                        const bb = ['working', 'active', 'standby', 'running', 'idle'].includes(dsB) ? 1 : 0;
                                         if (aa !== bb) return bb - aa;
                                         return (b.last_active_at ? new Date(b.last_active_at).getTime() : 0) - (a.last_active_at ? new Date(a.last_active_at).getTime() : 0);
                                     }).map(agent => (

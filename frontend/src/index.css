@@ -45,6 +45,10 @@
   --status-idle: #8b8b9e;
   --status-stopped: #5c5c70;
   --status-error: #ef4444;
+  --status-working: #3b82f6;
+  --status-active: #22c55e;
+  --status-standby: #8b8b9e;
+  --status-dormant: #5c5c70;
 
   /* Spacing */
   --space-1: 4px;
@@ -133,6 +137,10 @@
   --status-idle: #94a3b8;
   --status-stopped: #cbd5e1;
   --status-error: #dc2626;
+  --status-working: #2563eb;
+  --status-active: #16a34a;
+  --status-standby: #94a3b8;
+  --status-dormant: #cbd5e1;
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(99, 102, 241, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(99, 102, 241, 0.08);
@@ -632,6 +640,10 @@
   --status-stopped: #CBD5E1;
   --status-error: #EF4444;
   --status-creating: #3B82F6;
+  --status-working: #2563EB;
+  --status-active: #10B981;
+  --status-standby: #94A3B8;
+  --status-dormant: #CBD5E1;
 
   /* ═══════════════════════════════════════════════════════════
      阴影系统 - 4层层次结构
@@ -1445,6 +1457,30 @@ select:focus {
 
 .status-dot.disconnected {
   background: var(--warning);
+}
+
+.status-dot.working {
+  background: var(--status-working);
+  box-shadow: 0 0 6px var(--status-working);
+  animation: statusWorkingPulse 1.5s ease-in-out infinite;
+}
+
+.status-dot.active {
+  background: var(--status-active);
+  box-shadow: 0 0 6px var(--status-active);
+}
+
+.status-dot.standby {
+  background: var(--status-standby);
+}
+
+.status-dot.dormant {
+  background: var(--status-dormant);
+}
+
+@keyframes statusWorkingPulse {
+  0%, 100% { box-shadow: 0 0 6px var(--status-working); }
+  50% { box-shadow: 0 0 12px var(--status-working), 0 0 20px rgba(59, 130, 246, 0.3); }
 }
 
 /* Agent avatar — sidebar letter icon */
