@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 from croniter import croniter
 from loguru import logger
+
+from app.utils.text import truncate_head_tail
 from sqlalchemy import select
 
 from app.database import async_session
@@ -499,7 +501,7 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                             participant_id=agent_participant_id,
                         ))
                     elif data["status"] == "done":
-                        result_str = str(data.get("result", ""))[:2000]
+                        result_str = truncate_head_tail(str(data.get("result", "")), 2000, tail_chars=500)
                         _tc_db.add(ChatMessage(
                             agent_id=agent_id,
                             conversation_id=str(session_id),

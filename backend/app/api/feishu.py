@@ -20,6 +20,7 @@ from app.models.user import User
 from app.models.identity import IdentityProvider
 from app.schemas.schemas import ChannelConfigCreate, ChannelConfigOut, TokenResponse, UserOut
 from app.services.feishu_service import feishu_service
+from app.utils.text import truncate_head_tail
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_commands import (
     detect_and_handle_command,
@@ -1255,7 +1256,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                                         "name": tool_name,
                                         "args": evt.get("args"),
                                         "status": "done",
-                                        "result": (evt.get("result") or "")[:500],
+                                        "result": truncate_head_tail(evt.get("result") or "", 500, tail_chars=200),
                                     }),
                                     conversation_id=session_conv_id,
                                 ))

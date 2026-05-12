@@ -6,7 +6,9 @@ import uuid
 
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from app.core.background import spawn_background_fn
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,11 +89,10 @@ async def check_duplicate(
 
 async def _send_verification_email_task(
     user: User,
-    background_tasks: BackgroundTasks,
     settings: Any,
     db: AsyncSession,
 ) -> None:
-    """Helper to create verification token and add email task to background tasks."""
+    """Helper to create verification token and send email in background."""
     # Check if email is configured — either via DB (platform settings UI) or env vars.
     # We must check the DB config too, since most users configure SMTP via the UI.
     from app.services.system_email_service import resolve_email_config_async
@@ -114,13 +115,13 @@ async def _send_verification_email_task(
         raw_code, expires_at = await email_verification_service.create_email_verification_token(identity.id, identity.email)
         expiry_minutes = int((expires_at - datetime.now(timezone.utc)).total_seconds() // 60)
 
-        background_tasks.add_task(
+        spawn_background_fn(
             email_verification_service.send_verification_email,
             identity.email,
             user.display_name or identity.username or "User",
             raw_code,
             expiry_minutes,
-            db,  # 传递db参数以在后台任务中使用
+            None,
         )
     except Exception as exc:
         logger.error(f"Failed to create verification token for {user.email}: {exc}")
@@ -130,7 +131,6 @@ async def _send_verification_email_task(
 @router.post("/register", response_model=Any, status_code=status.HTTP_201_CREATED)
 async def register(
     data: UserRegister,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Legacy registration endpoint - kept for backward compatibility.
@@ -148,11 +148,10 @@ async def register(
         return await _handle_sso_register(data, db)
 
     # Regular username/password registration - delegate to new flow
-    return await _handle_normal_register(data, background_tasks, db, settings)
+    return await _handle_normal_register(data, db, settings)
 @router.post("/register/init", response_model=RegisterInitResponse, status_code=status.HTTP_201_CREATED)
 async def register_init(
     data: RegisterInitRequest,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Step 1: Initialize registration with account credentials.
@@ -246,7 +245,7 @@ async def register_init(
 
     # Send verification email if not verified
     if not identity.email_verified:
-        await _send_verification_email_task(user, background_tasks, settings, db)
+        await _send_verification_email_task(user, settings, db)
 
     return RegisterInitResponse(
         user_id=user.id,
@@ -309,7 +308,7 @@ async def register_sso(
     )
 
 
-async def _handle_normal_register(data: UserRegister, background_tasks: BackgroundTasks, db: AsyncSession, settings):
+async def _handle_normal_register(data: UserRegister, db: AsyncSession, settings):
     """Legacy normal registration handler."""
     logger.info(f"[REGISTER_LEGACY] email={data.email}")
 
@@ -407,7 +406,7 @@ async def _handle_normal_register(data: UserRegister, background_tasks: Backgrou
             logger.warning(f"Failed to seed default agents: {e}")
 
     # Send verification email
-    await _send_verification_email_task(user, background_tasks, settings, db)
+    await _send_verification_email_task(user, settings, db)
 
     return RegisterInitResponse(
         user_id=user.id,
@@ -433,7 +432,7 @@ async def _handle_sso_register(data: UserRegister, db: AsyncSession):
 
 
 @router.post("/login", response_model=Any)
-async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     """Login with email/phone/username and password. Supports multi-tenant selection."""
     from app.models.tenant import Tenant
     from app.models.user import Identity, User
@@ -463,7 +462,7 @@ async def login(data: UserLogin, background_tasks: BackgroundTasks, db: AsyncSes
         
         # Trigger email delivery in background
         if user:
-            await _send_verification_email_task(user, background_tasks, get_settings(), db)
+            await _send_verification_email_task(user, get_settings(), db)
         
         # Consistent with identity-first flow: Return 403 Forbidden with verification intent
         raise HTTPException(
@@ -592,7 +591,6 @@ async def get_email_hint(username: str, db: AsyncSession = Depends(get_db)):
 @router.post("/forgot-password")
 async def forgot_password(
     data: ForgotPasswordRequest,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Request a password reset link for a global Identity."""
@@ -614,7 +612,7 @@ async def forgot_password(
     identity_query = select(Identity).where(Identity.email == data.email)
     identity_result = await db.execute(identity_query)
     identity = identity_result.scalar_one_or_none()
-    
+
     if not identity or not identity.is_active:
         return generic_response
 
@@ -628,13 +626,13 @@ async def forgot_password(
 
         reset_url = await build_password_reset_url(db, raw_token)
         expiry_minutes = int((expires_at - datetime.now(timezone.utc)).total_seconds() // 60)
-        background_tasks.add_task(
+        spawn_background_fn(
             send_password_reset_email,
             identity.email,
             identity.username or "User",
             reset_url,
             expiry_minutes,
-            db,  # 传递db参数
+            None,
         )
     except Exception as exc:
         logger.warning(f"Failed to process password reset email for {data.email}: {exc}")
@@ -1118,7 +1116,6 @@ async def verify_email(data: VerifyEmailRequest, db: AsyncSession = Depends(get_
 @router.post("/resend-verification")
 async def resend_verification(
     data: ResendVerificationRequest,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Resend email verification link."""
@@ -1150,6 +1147,6 @@ async def resend_verification(
     user = u_result.scalar_one_or_none()
     
     if user:
-        await _send_verification_email_task(user, background_tasks, settings, db)
+        await _send_verification_email_task(user, settings, db)
 
     return generic_response

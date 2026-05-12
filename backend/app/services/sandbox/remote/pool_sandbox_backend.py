@@ -56,15 +56,19 @@ class PoolSandboxBackend(BaseSandboxBackend):
         language: str,
         timeout: int = 30,
         work_dir: str | None = None,
+        allow_network: bool | None = None,
         **kwargs
     ) -> ExecutionResult:
         start_time = time.time()
+
+        # Use caller-provided allow_network if specified, else fall back to config
+        effective_allow_network = allow_network if allow_network is not None else self.config.allow_network
 
         payload = {
             "code": code,
             "language": language,
             "timeout": min(timeout, self.config.max_timeout),
-            "allow_network": self.config.allow_network,
+            "allow_network": effective_allow_network,
         }
         if work_dir:
             payload["work_dir"] = work_dir

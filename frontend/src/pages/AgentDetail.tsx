@@ -14,6 +14,8 @@ import type { LivePreviewState } from '../components/AgentBayLivePanel';
 import AgentSidePanel, { SidePanelTab } from '../components/AgentSidePanel';
 import type { WorkspaceActivity, WorkspaceLiveDraft } from '../components/WorkspaceOperationPanel';
 import AgentCredentials from '../components/AgentCredentials';
+import { SkillCardGrid } from '../components/SkillCardGrid';
+import { SkillMarketplace } from '../components/SkillMarketplace';
 import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress, tenantApi } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
@@ -32,8 +34,6 @@ import {
     IconChartBar,
     IconRobot,
     IconBrain,
-    IconHourglass,
-    IconDownload,
     IconBolt,
     IconMessage,
     IconSend as IconSendMsg,
@@ -2809,11 +2809,15 @@ function AgentDetailInner() {
 
     // Import skill from presets
     const [showImportSkillModal, setShowImportSkillModal] = useState(false);
-    const [importingSkillId, setImportingSkillId] = useState<string | null>(null);
     const { data: globalSkillsForImport } = useQuery({
         queryKey: ['global-skills-for-import'],
         queryFn: () => skillApi.list(),
         enabled: showImportSkillModal,
+    });
+    const { data: installedSkills } = useQuery({
+        queryKey: ['agent-skills', id],
+        queryFn: () => fileApi.agentSkills.list(id!),
+        enabled: !!id,
     });
     // Import skill from ZIP
     const [showImportSkillZip, setShowImportSkillZip] = useState(false);
@@ -4179,7 +4183,6 @@ function AgentDetailInner() {
                         const adapter: FileBrowserApi = {
                             list: (path, params) => {
                                 if (params && typeof params === 'object') {
-                                    // Include path in the params object
                                     return fileApi.list(id!, { ...params, _path: path });
                                 }
                                 return fileApi.list(id!, path);
@@ -4193,49 +4196,30 @@ function AgentDetailInner() {
                         };
                         return (
                             <div>
-                                <div style={{ marginBottom: '16px' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <div>
-                                            <h3 style={{ marginBottom: '4px' }}>{t('agent.skills.title')}</h3>
-                                            <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.skills.description')}</p>
-                                        </div>
-                                        <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                                            <button
-                                                className="btn btn-secondary"
-                                                style={{ fontSize: '13px' }}
-                                                onClick={() => { setShowAgentUrlImport(true); setAgentUrlInput(''); }}
-                                            >
-                                                Import from URL
-                                            </button>
-                                            <button
-                                                className="btn btn-secondary"
-                                                style={{ fontSize: '13px' }}
-                                                onClick={() => { setShowAgentClawhub(true); setAgentClawhubQuery(''); setAgentClawhubResults([]); }}
-                                            >
-                                                Browse ClawHub
-                                            </button>
-                                            <button
-                                                className="btn btn-secondary"
-                                                style={{ fontSize: '13px' }}
-                                                onClick={() => { setShowImportSkillZip(true); setZipError(null); setZipSuccess(null); }}
-                                            >
-                                                Import ZIP
-                                            </button>
-                                            <button
-                                                className="btn btn-primary"
-                                                style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
-                                                onClick={() => setShowImportSkillModal(true)}
-                                            >
-                                                Import from Presets
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div style={{ marginTop: '8px', padding: '10px 14px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                                        <strong>Skill Format:</strong><br />
-                                        • <code>skills/my-skill/SKILL.md</code> — {t('agent.skills.folderFormat', 'Each skill is a folder with a SKILL.md file and optional auxiliary files (scripts/, examples/)')}
-                                    </div>
+                                <div style={{ marginBottom: '12px' }}>
+                                    <h3 style={{ marginBottom: '4px' }}>{t('agent.skills.title')}</h3>
+                                    <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>{t('agent.skills.description')}</p>
                                 </div>
-                                <FileBrowser api={adapter} rootPath="skills" features={{ newFile: true, edit: true, delete: true, newFolder: true, upload: true, directoryNavigation: true }} title={t('agent.skills.skillFiles')} />
+                                <SkillCardGrid
+                                    agentId={id!}
+                                    fileBrowserApi={adapter}
+                                    onOpenMarketplace={() => setShowImportSkillModal(true)}
+                                    onOpenUrlImport={() => { setShowAgentUrlImport(true); setAgentUrlInput(''); }}
+                                    onOpenClawhub={() => { setShowAgentClawhub(true); setAgentClawhubQuery(''); setAgentClawhubResults([]); }}
+                                    onOpenZipImport={() => { setShowImportSkillZip(true); setZipError(null); setZipSuccess(null); }}
+                                />
+
+                                {/* Skill Marketplace Modal */}
+                                <SkillMarketplace
+                                    agentId={id!}
+                                    open={showImportSkillModal}
+                                    onClose={() => setShowImportSkillModal(false)}
+                                    installedFolderNames={new Set((installedSkills || []).map(s => s.folder_name))}
+                                    onImported={() => {
+                                        queryClient.invalidateQueries({ queryKey: ['agent-skills', id] });
+                                        queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
+                                    }}
+                                />
 
                                 {/* Browse ClawHub Modal */}
                                 {showAgentClawhub && (
@@ -4286,7 +4270,6 @@ function AgentDetailInner() {
                                                                 {r.version && <span style={{ fontSize: '10px', color: 'var(--accent-text)', background: 'var(--accent-subtle)', padding: '1px 5px', borderRadius: '4px' }}>v{r.version}</span>}
                                                             </div>
                                                             <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{r.summary?.substring(0, 100)}{r.summary?.length > 100 ? '...' : ''}</div>
-                                                            {r.updatedAt && <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px', opacity: 0.7 }}>Updated {new Date(r.updatedAt).toLocaleDateString()}</div>}
                                                         </div>
                                                         <button
                                                             className="btn btn-secondary"
@@ -4297,6 +4280,7 @@ function AgentDetailInner() {
                                                                 try {
                                                                     const res = await skillApi.agentImport.fromClawhub(id!, r.slug);
                                                                     alert(`Installed "${r.displayName || r.slug}" (${res.files_written} files)`);
+                                                                    queryClient.invalidateQueries({ queryKey: ['agent-skills', id] });
                                                                     queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                                 } catch (err: any) {
                                                                     alert(`Import failed: ${err?.message || err}`);
@@ -4342,6 +4326,7 @@ function AgentDetailInner() {
                                                         try {
                                                             const res = await skillApi.agentImport.fromUrl(id!, agentUrlInput.trim());
                                                             alert(`Imported ${res.files_written} files`);
+                                                            queryClient.invalidateQueries({ queryKey: ['agent-skills', id] });
                                                             queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                             setShowAgentUrlImport(false);
                                                         } catch (err: any) {
@@ -4358,76 +4343,6 @@ function AgentDetailInner() {
                                     </div>
                                 )}
 
-                                {/* Import from Presets Modal */}
-                                {showImportSkillModal && (
-                                    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillModal(false)}>
-                                        <div onClick={e => e.stopPropagation()} style={{ background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', maxWidth: '600px', width: '90%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                                <h3>{t('agent.skills.importPreset', 'Import from Presets')}</h3>
-                                                <button onClick={() => setShowImportSkillModal(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
-                                            </div>
-                                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
-                                                {t('agent.skills.importDesc', 'Select a preset skill to import into this agent. All skill files will be copied to the agent\'s skills folder.')}
-                                            </p>
-                                            <div style={{ flex: 1, overflowY: 'auto' }}>
-                                                {!globalSkillsForImport ? (
-                                                    <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>Loading...</div>
-                                                ) : globalSkillsForImport.length === 0 ? (
-                                                    <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-tertiary)' }}>No preset skills available</div>
-                                                ) : (
-                                                    globalSkillsForImport.map((skill: any) => (
-                                                        <div
-                                                            key={skill.id}
-                                                            style={{
-                                                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                                                padding: '12px 14px', borderRadius: '8px', marginBottom: '8px',
-                                                                border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)',
-                                                                transition: 'border-color 0.15s',
-                                                            }}
-                                                            onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--accent-primary)')}
-                                                            onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border-subtle)')}
-                                                        >
-                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1 }}>
-                                                                <span style={{ fontSize: '20px' }}>{skill.icon || <IconClipboardCheck size={20} />}</span>
-                                                                <div>
-                                                                    <div style={{ fontWeight: 600, fontSize: '14px' }}>{skill.name}</div>
-                                                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                                        {skill.description?.substring(0, 100)}{skill.description?.length > 100 ? '...' : ''}
-                                                                    </div>
-                                                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                                                                        <IconFolder size={12} style={{ marginRight: '4px', verticalAlign: 'middle' }} />{skill.folder_name}
-                                                                        {skill.is_default && <span style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontWeight: 600 }}>✓ Default</span>}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                            <button
-                                                                className="btn btn-secondary"
-                                                                style={{ whiteSpace: 'nowrap', fontSize: '12px', padding: '6px 14px' }}
-                                                                disabled={importingSkillId === skill.id}
-                                                                onClick={async () => {
-                                                                    setImportingSkillId(skill.id);
-                                                                    try {
-                                                                        const res = await fileApi.importSkill(id!, skill.id);
-                                                                        alert(`✓ Imported "${skill.name}" (${res.files_written} files)`);
-                                                                        queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
-                                                                        setShowImportSkillModal(false);
-                                                                    } catch (err: any) {
-                                                                        alert(`✗ Import failed: ${err?.message || err}`);
-                                                                    } finally {
-                                                                        setImportingSkillId(null);
-                                                                    }
-                                                                }}
-                                                            >
-                                                                {importingSkillId === skill.id ? <><IconHourglass size={12} style={{ animation: 'spin 1s linear infinite' }} /> ...</> : <><IconDownload size={12} style={{ marginRight: '4px' }} />Import</>}
-                                                            </button>
-                                                        </div>
-                                                    ))
-                                                )}
-                                            </div>
-                                        </div>
-                                    </div>
-                                )}
-
                                 {/* Import from ZIP Modal */}
                                 {showImportSkillZip && (
                                     <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowImportSkillZip(false)}>
@@ -4436,15 +4351,10 @@ function AgentDetailInner() {
                                                 <h3>{t('agent.skills.importZip', 'Import from ZIP')}</h3>
                                                 <button onClick={() => setShowImportSkillZip(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                                             </div>
-
                                             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 16px' }}>
                                                 {t('agent.skills.importZipDesc', 'Upload a ZIP file containing a skill. The ZIP must include SKILL.md with name and description in the frontmatter.')}
                                             </p>
-
                                             <div style={{ marginBottom: '16px' }}>
-                                                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                                                    {t('agent.skills.zipFile', 'ZIP File')} (max 30MB)
-                                                </label>
                                                 <input
                                                     type="file"
                                                     accept=".zip"
@@ -4452,42 +4362,26 @@ function AgentDetailInner() {
                                                     onChange={async (e) => {
                                                         const file = e.target.files?.[0];
                                                         if (!file) return;
-                                                        if (!file.name.toLowerCase().endsWith('.zip')) {
-                                                            setZipError('只支持 ZIP 格式文件');
-                                                            return;
-                                                        }
-                                                        if (file.size > 30 * 1024 * 1024) {
-                                                            setZipError('ZIP 文件大小不能超过 30MB');
-                                                            return;
-                                                        }
-                                                        setZipError(null);
-                                                        setImportingZip(true);
+                                                        if (!file.name.toLowerCase().endsWith('.zip')) { setZipError('只支持 ZIP 格式文件'); return; }
+                                                        if (file.size > 30 * 1024 * 1024) { setZipError('ZIP 文件大小不能超过 30MB'); return; }
+                                                        setZipError(null); setImportingZip(true);
                                                         try {
                                                             const res = await fileApi.importSkillZip(id!, file);
                                                             setZipSuccess(`✓ 成功导入 "${res.skill_name}" (${res.files_written} 个文件)`);
+                                                            queryClient.invalidateQueries({ queryKey: ['agent-skills', id] });
                                                             queryClient.invalidateQueries({ queryKey: ['files', id, 'skills'] });
                                                             setTimeout(() => setShowImportSkillZip(false), 1500);
-                                                        } catch (err: any) {
-                                                            setZipError(err?.data?.detail || err?.message || '导入失败');
-                                                        } finally {
-                                                            setImportingZip(false);
-                                                        }
+                                                        } catch (err: any) { setZipError(err?.data?.detail || err?.message || '导入失败'); }
+                                                        finally { setImportingZip(false); }
                                                     }}
                                                 />
                                             </div>
-
                                             {zipError && (
-                                                <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: 'var(--error)', fontSize: '13px', marginBottom: '12px' }}>
-                                                    {zipError}
-                                                </div>
+                                                <div style={{ padding: '10px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '6px', color: 'var(--error)', fontSize: '13px', marginBottom: '12px' }}>{zipError}</div>
                                             )}
-
                                             {zipSuccess && (
-                                                <div style={{ padding: '10px 12px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '6px', color: '#10b981', fontSize: '13px', marginBottom: '12px' }}>
-                                                    {zipSuccess}
-                                                </div>
+                                                <div style={{ padding: '10px 12px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: '6px', color: '#10b981', fontSize: '13px', marginBottom: '12px' }}>{zipSuccess}</div>
                                             )}
-
                                             <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '8px', fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
                                                 <strong>{t('agent.skills.zipFormat', 'ZIP Format Requirements:')}</strong><br />
                                                 • ZIP must contain a folder with SKILL.md at root<br />

@@ -5,7 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from sqlalchemy import select, func, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -1698,7 +1698,6 @@ async def create_invitation_codes(
 async def invite_users(
     request: Request,
     data: UserInviteRequest,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1711,6 +1710,7 @@ async def invite_users(
     import string
     from app.services.system_email_service import send_company_invitation_email
     from app.services.platform_service import platform_service
+    from app.core.background import spawn_background_fn
     from app.models.tenant import Tenant
     
     tenant_result = await db.execute(select(Tenant).where(Tenant.id == current_user.tenant_id))
@@ -1743,7 +1743,7 @@ async def invite_users(
         inviter_name = current_user.display_name or current_user.username
         
         # Use background task to send email
-        background_tasks.add_task(
+        spawn_background_fn(
             send_company_invitation_email,
             to=email,
             inviter_name=inviter_name,

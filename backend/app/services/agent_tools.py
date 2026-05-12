@@ -38,6 +38,7 @@ from app.models.chat_session import ChatSession
 from app.models.channel_config import ChannelConfig
 from app.models.user import User as UserModel
 from app.services.auth_registry import auth_provider_registry
+from app.utils.text import truncate_head_tail
 from app.services.channel_session import find_or_create_channel_session
 from app.services.channel_user_service import get_platform_user_by_org_member
 from app.services.document_conversion import (
@@ -681,7 +682,7 @@ AGENT_TOOLS = [
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Max execution time in seconds (default 30, max 60)",
+                        "description": "Max execution time in seconds (default 60, max 300)",
                     },
                 },
                 "required": ["language", "code"],
@@ -707,7 +708,7 @@ AGENT_TOOLS = [
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Max execution time in seconds (default 30, max 60)",
+                        "description": "Max execution time in seconds (default 60, max 300)",
                     },
                 },
                 "required": ["language", "code"],
@@ -5905,7 +5906,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                                             "name": tool_name,
                                             "args": tool_args,
                                             "status": "done",
-                                            "result": str(tool_result)[:500],
+                                            "result": truncate_head_tail(str(tool_result), 500, tail_chars=200),
                                         }, ensure_ascii=False),
                                         conversation_id=session_id,
                                         participant_id=tgt_participant.id if tgt_participant else None,
@@ -6374,6 +6375,7 @@ async def _execute_code(
             language=language,
             timeout=timeout,
             work_dir=str(work_dir),
+            allow_network=sandbox_config.allow_network,
         )
 
         # Format result for user display (with smart truncation + file save)

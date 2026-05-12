@@ -900,6 +900,102 @@ async def delete_file(
     return {"status": "ok", "path": path}
 
 
+@router.get("/skills")
+async def list_agent_skills(
+    agent_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List skills installed in this agent's workspace, enriched with global registry metadata.
+
+    Returns each skill's name, description, icon, category, SKILL.md content, etc.
+    Matches folder_name against the global Skill table for rich metadata.
+    Falls back to parsing SKILL.md frontmatter for custom/orphan skills.
+    """
+    await check_agent_access(db, current_user, agent_id)
+
+    from sqlalchemy import or_ as _or
+    from sqlalchemy.orm import selectinload
+    from app.models.skill import Skill, SkillFile
+    from app.api.skills import _parse_skill_md_frontmatter, _apply_skill_scope
+
+    base = _agent_base_dir(agent_id)
+    skills_dir = base / "skills"
+    if not skills_dir.exists():
+        return []
+
+    # Load all global skills visible to this tenant in one query
+    all_global_q = _apply_skill_scope(select(Skill), current_user)
+    all_global_result = await db.execute(all_global_q)
+    global_skills_map = {s.folder_name: s for s in all_global_result.scalars().all()}
+
+    # Load SKILL.md files for matched global skills in one query
+    matched_folder_names = [
+        s.folder_name for entry in skills_dir.iterdir()
+        if entry.is_dir() and not entry.name.startswith('.')
+        for s in [global_skills_map.get(entry.name)]
+        if s
+    ]
+    if matched_folder_names:
+        skill_files_q = (
+            select(SkillFile)
+            .join(Skill)
+            .where(Skill.folder_name.in_(matched_folder_names), SkillFile.path == "SKILL.md")
+        )
+        sf_result = await db.execute(skill_files_q)
+        skill_md_map = {sf.skill.folder_name: sf.content for sf in sf_result.scalars().all() if sf.skill}
+    else:
+        skill_md_map = {}
+
+    result = []
+    for entry in sorted(skills_dir.iterdir()):
+        if not entry.is_dir() or entry.name.startswith('.'):
+            continue
+
+        folder_name = entry.name
+        global_skill = global_skills_map.get(folder_name)
+
+        name = folder_name
+        description = ""
+        icon = "--"
+        category = "custom"
+        skill_md_content = ""
+        is_global = False
+
+        if global_skill:
+            is_global = True
+            name = global_skill.name
+            description = global_skill.description or ""
+            icon = global_skill.icon or "--"
+            category = global_skill.category or "custom"
+            skill_md_content = skill_md_map.get(folder_name, "")
+        else:
+            skill_md_path = entry / "SKILL.md"
+            if skill_md_path.exists():
+                try:
+                    skill_md_content = skill_md_path.read_text(encoding="utf-8")
+                except Exception:
+                    skill_md_content = ""
+                frontmatter = _parse_skill_md_frontmatter(skill_md_content)
+                name = frontmatter.get("name", folder_name)
+                description = frontmatter.get("description", "")
+
+        file_count = sum(1 for f in entry.iterdir() if f.is_file())
+
+        result.append({
+            "folder_name": folder_name,
+            "name": name,
+            "description": description,
+            "icon": icon,
+            "category": category,
+            "is_global": is_global,
+            "file_count": file_count,
+            "skill_md_content": skill_md_content,
+        })
+
+    return result
+
+
 class ImportSkillBody(BaseModel):
     skill_id: str
 

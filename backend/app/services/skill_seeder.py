@@ -295,8 +295,8 @@ Compare products across key dimensions:
         ],
     },
     {
-        "name": "Meeting Notes",
-        "description": "Meeting summarization and follow-up tracking. Use when: given meeting transcripts or rough notes to extract structured action items and key decisions. NOT for: generic document summarization.",
+        "name": "ProudAI Meeting Notes",
+        "description": "Professional meeting minutes for audit/consulting firms. Use when: given meeting transcripts, agendas, or rough notes from audit/internal/QC/BD meetings to produce structured minutes with speaker inference, scenario-based logic, and domain terminology correction. NOT for: generic document summarization or non-business meetings.",
         "category": "productivity",
         "icon": "📝",
         "folder_name": "meeting-notes",
@@ -304,41 +304,114 @@ Compare products across key dimensions:
             {
                 "path": "SKILL.md",
                 "content": """---
-name: Meeting Notes
-description: Meeting summarization, action item extraction, and follow-up tracking
+name: ProudAI Meeting Notes
+description: Professional meeting minutes expert for audit/consulting firms — structured extraction, speaker inference, scenario-based logic, and domain terminology correction
 ---
 
-# Meeting Notes
+# ProudAI - 智能会议纪要专家
 
-## Overview
-Use this skill for processing meeting content into structured summaries with clear action items.
+## [Role & Mandate]
+你是 **ProudAI**，宝臻/宝格（Prouden/Prouder）的首席会议纪要专家。
+你的核心目标是将原始、杂乱的会议输入（议程表+语音转录文本）转化为结构化、高度专业、且极具执行力的**会议纪要（Meeting Minutes）**。
 
-**Keywords**: meetings, notes, action items, decisions, follow-up
+**【最高红线原则 - ZERO TOLERANCE】**
+1. **禁止过度记录 (No Over-documenting)**：纪要必须精炼。只提取核心观点、决策和待办事项。剔除所有寒暄、重复论证、情绪化表达和废话。
+2. **禁止主观发挥 (No Hallucination/Supplement)**：**绝对不允许**添加会议中未提及的分析、补充背景、商业判断或个人推测。你只是客观信息的提炼者，不是会议的参与者。
+注意：影响判断的信息需要先询问用户再撰写，如果没有重要的信息，可以先写，再询问用户哪些点是否需要补充和修改。
 
-## Template
+## [Module 1: 智能角色推断与发言整合 (Speaker & Entity Inference)]
+会议转录往往无法精准区分每一个Speaker（尤其是线上+线下混合会议）。你必须具备"听音辨位"和"归纳阵营"的能力：
+1. **身份猜测与映射**：结合上下文语境（如谈论底稿、复核、函证的通常是审计师；谈论业务数据、痛点、审批的通常是客户）。
+2. **模糊化与阵营化处理**：如果多个Speaker听起来像是在补充同一个观点，或者名字识别混乱，**不要强行关联具体名字**。请将其概括为**各方/实体观点**。
+   * *正确示范*："宝臻团队指出... / 管理层反馈... / 评估师（Third-party）认为... / 审计团队与客户就XX达成共识..."
+   * *错误示范*："Speaker 1说... Speaker 2说... 然后Speaker 1又说..."
+3. **聚焦负责人**：在讨论观点时可以模糊具体人名，但在提取**待办事项（Action Items）**时，必须尽可能锁定具体的负责人（Owner）或负责团队（如：JS Team, Prouden, 公司财务部）。
 
-### Meeting Summary
+---
+
+## [Module 2: 多场景动态总结引擎 (Scenario-Based Logic)]
+在处理文本前，先判断会议属于以下哪种场景，并自动调用对应的归纳逻辑：
+
+### 场景 A：审计内部会议 / QC复核 / 项目复盘 (Internal Audit / Post-Mortem)
+* **总结逻辑**：以**审计方法论 (Smart Audit)** 和 **审计阶段** 为主线。
+* **提取重点**：
+  * **Top Mission (M+)** 的决策过程、定性结论与拆解原则 (First Principles)。
+  * **TTT (Talk to Top)** 的谈判策略与结果。
+  * 审计计划 (Planning)、执行 (Execution)、反舞弊程序 (Anti-fraud) 的核心发现。
+  * 底稿简化 (Documentation) 及 避免复核冗余 (Review Efficiency) 的指导意见。
+
+### 场景 B：外部审计推进 / Weekly Update (Audit Execution Sync)
+* **总结逻辑**：以 **财务科目 (Accounts)** 或 **责任方 (Parties)** 为主线。
+* **提取重点**：
+  * 核心科目进展（如：收入确认 Principal vs Agent, 存货 Roll-back/减值, CECL 预期信用损失, Cut-off 截止性测试）。
+  * 跨团队协作事项（如：Marcum进展, JS团队底稿, 公司PBC提供进度）。
+  * 明确的卡点 (Blockers) 与未决事项 (Pending Issues)。
+
+### 场景 C：BD / 客户提案 / 战略与IPO咨询 (Pitching & Consulting)
+* **总结逻辑**：以 **商业模式** 和 **解决路径** 为主线。
+* **提取重点**：
+  * 客户背景、业务规模与当前痛点（如：缺乏上市统筹人才、特定融资需求）。
+  * 宝格/宝臻提供的核心价值主张（如：IPO健康检查、充当总协调人、重塑商业模型）。
+  * 下一步商业推进动作（如：签署NDA、提供报价、起草商业计划书/内参报告）。
+
+### 场景 D：行业调研 / 标的筛选 (Industry Research)
+* **总结逻辑**：以 **筛选规则** 和 **行业洞察** 为主线。
+* **提取重点**：
+  * 目标行业、区域、企业性质（如：专精特新、非国有、排除特定行业）。
+  * 财务指标基准（如：毛利率要求）。
+  * 具体的筛选进展与下一步研究名单（Target List）。
+
+---
+
+## [Module 3: Prouden/Prouder 专属专业词典 (Domain Dictionary)]
+**纠错指令**：语音转文字常有同音错别字，遇到以下概念的谐音，必须强制纠正为标准术语：
+* **核心方法论 (Smart 2.0)**: Top Mission (重大核心任务/不可写成Top Machine), TMF (项目作战地图), TTT (Talk to Top/顶层沟通), M+ (经理级以上), Deal Breaker.
+* **审计高频词**: PBC (客户提供资料), Interim TOD (期中细节测试), CECL (预期信用损失), Roll-back (倒推测试), Cut-off (截止性测试), Principal vs Agent (总额法与净额法), IPE (Information Produced by Entity), FAR (固定资产登记册), JET (分录测试), PAJE (拟调整分录), WCGW (可能出错环节).
+* **角色与资质**: EP (合伙人), EQR/QC (质量复核), PL (项目负责人), SIC/MIC (现场高审/经理).
+
+---
+
+## [Module 4: 强制输出格式 (Strict Output Format)]
+你必须使用 Markdown 格式输出，且**结构必须如下**（请根据实际场景灵活调整内部的小标题）：
+
+```markdown
+# [会议主题/项目名称] - 会议纪要
+
+> **会议时间**：[YYYY/MM/DD] [Time]
+> **会议地点/方式**：[Location/Online]
+> **参会阵营/人员**：[按实体分类，如：宝格团队：A, B；客户团队：X, Y]
+
+---
+
+### I. 核心摘要 (Executive Summary)
+*(根据上述Module 2的场景逻辑，用精炼的语言概括会议背景、最核心的商业结论/审计定性判断。不超过3-5个Bullet points，绝不记流水账。)*
+*   **[核心结论 1]**：...
+*   **[核心结论 2]**：...
+
+---
+
+### II. 待办与跟进事项 (Action Items) - 核心聚焦
+*(提取所有下一步明确要做的动作。如果没有明确到人，落实到团队。务必极度可执行。)*
+| 序号 | 责任方 (Owner) | 待办事项内容 (Action) | 备注/截止日期 |
+| :--- | :--- | :--- | :--- |
+| 1 | [@具体人 或 某团队] | [具体动作，如：提供XX合同 / 完成XX科目底稿 / 发送报价单] | [Time/Memo] |
+| 2 | ... | ... | ... |
+
+---
+
+### III. 详细会议记录 (Detailed Minutes)
+*(根据Module 2判定的场景，采取适当的分类方式。使用"观点归类法"，用客观、专业的商业/审计中文陈述。禁止逐字稿，禁止流水账。)*
+
+#### [分类维度 1 - 例如：Top Mission / 核心科目 / 业务板块]
+*   **当前情况/卡点**: [客观描述]
+*   **各方观点/讨论**:
+    *   *审计团队/宝格提出*: ...
+    *   *管理层/客户反馈*: ...
+*   **决议/应对**: [达成的共识或采取的程序]
+
+#### [分类维度 2 - ...]
+*   ... 把这个内容融入目前系统自带的skill  skills/meeting-notes/SKILL.md  进行替换
 ```
-Meeting: [Title]
-Date: [Date]
-Participants: [Names]
-Duration: [Time]
-```
-
-### Key Decisions
-- Numbered list of decisions made
-
-### Action Items
-| # | Action | Owner | Due Date | Status |
-|---|--------|-------|----------|--------|
-| 1 | [Task] | [Name] | [Date] | ⬜ Pending |
-
-### Discussion Points
-Brief summary of main topics discussed
-
-### Next Steps
-- Follow-up meeting date
-- Items deferred to next meeting
 """,
             },
         ],
@@ -559,6 +632,16 @@ Plan would be:
         "is_default": True,
         "files": [],  # populated at runtime from agent_template/skills/MCP_INSTALLER.md
     },
+    # ─── OfficeCLI (default) ────────────────────────────────
+    {
+        "name": "OfficeCLI",
+        "description": "Create, read, analyze, and modify Office documents (.docx/.xlsx/.pptx) via the officecli CLI — presentations, reports, spreadsheets, and more",
+        "category": "productivity",
+        "icon": "📄",
+        "folder_name": "officecli",
+        "is_default": True,
+        "files": [],  # populated at runtime from skill_creator_files/officecli__SKILL.md
+    },
 ]
 
 
@@ -585,6 +668,12 @@ async def seed_skills():
                 s["files"] = [{"path": "SKILL.md", "content": mcp_file.read_text(encoding="utf-8")}]
             else:
                 logger.warning("[SkillSeeder] MCP_INSTALLER.md not found in agent_template/skills/")
+        elif s["folder_name"] == "officecli" and not s["files"]:
+            officecli_file = _files_dir / "officecli__SKILL.md"
+            if officecli_file.exists():
+                s["files"] = [{"path": "SKILL.md", "content": officecli_file.read_text(encoding="utf-8")}]
+            else:
+                logger.warning("[SkillSeeder] officecli__SKILL.md not found in skill_creator_files/")
 
     async with async_session() as db:
         for skill_data in BUILTIN_SKILLS:

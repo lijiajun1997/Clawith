@@ -2,6 +2,17 @@
 
 import type { Agent, TokenResponse, User, Task, ChatMessage, DashboardSummary, ChannelAccount } from '../types';
 
+export interface AgentSkillItem {
+    folder_name: string;
+    name: string;
+    description: string;
+    icon: string;
+    category: string;
+    is_global: boolean;
+    file_count: number;
+    skill_md_content: string;
+}
+
 const API_BASE = '/api';
 
 // ─── Refresh token mutex ──────────────────────────────
@@ -483,6 +494,11 @@ export const fileApi = {
             method: 'POST',
             body: JSON.stringify({ revision_id: revisionId }),
         }),
+
+    agentSkills: {
+        list: (agentId: string) =>
+            request<AgentSkillItem[]>(`/agents/${agentId}/files/skills`),
+    },
 };
 
 // ─── Channel Config ───────────────────────────────────

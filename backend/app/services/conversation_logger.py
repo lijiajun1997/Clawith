@@ -39,6 +39,9 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + f"...[truncated, {len(text)} total chars]"
 
 
+from app.utils.text import truncate_head_tail  # noqa: E402
+
+
 async def resolve_user_name(user_id: uuid.UUID) -> str:
     if user_id in _user_name_cache:
         return _user_name_cache[user_id]
@@ -121,7 +124,7 @@ class ConversationLogger:
                 "role": "tool_call",
                 "tool_name": tool_name,
                 "args_summary": _truncate(json.dumps(args or {}, ensure_ascii=False), MAX_ARGS_CHARS),
-                "result_summary": _truncate(result or "", MAX_TOOL_RESULT_CHARS),
+                "result_summary": truncate_head_tail(result or "", MAX_TOOL_RESULT_CHARS, tail_chars=80),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             self._buffer.append(entry)

@@ -88,6 +88,7 @@ Content-Type: application/json
 | Web 框架 | fastapi, uvicorn, loguru |
 | 数据分析 | pandas, numpy, scipy, matplotlib |
 | 办公文档 | python-docx, python-pptx, openpyxl, xlrd, fpdf2, reportlab |
+| Office CLI | officecli (AI 原生 .docx/.xlsx/.pptx 操作 CLI，预装二进制) |
 | 图像处理 | Pillow, pdfplumber |
 | 通用 | tqdm, chardet, beautifulsoup4, lxml |
 | HTTP | requests, httpx |
@@ -136,4 +137,5 @@ sandbox/
 
 | 时间 | 操作 | 说明 |
 |------|------|------|
+| 2026-05-12T09:56:51 | 增量更新 | 无结构性变化，文档审查确认与代码一致 |
 | 2026-05-07T13:40:31 | 初始化 | 首次生成模块文档 |

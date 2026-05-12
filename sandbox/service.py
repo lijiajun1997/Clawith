@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import BaseModel, Field
+from contextlib import asynccontextmanager
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -214,6 +215,7 @@ async def _run_code(req: ExecuteRequest) -> ExecuteResponse:
     env = dict(os.environ)
     env["HOME"] = str(cwd)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["OFFICECLI_SKIP_UPDATE"] = "1"  # 跳过 OfficeCLI 自动更新检查
     pip_path = str(SHARED_DEPS_DIR / "pip")
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{pip_path}:{existing}" if existing else pip_path
@@ -287,9 +289,68 @@ async def _run_code(req: ExecuteRequest) -> ExecuteResponse:
 
 
 # ---------------------------------------------------------------------------
+# OfficeCLI resident 进程清理
+# ---------------------------------------------------------------------------
+_RESIDENT_IDLE_SECONDS = 300  # resident 进程空闲超过 5 分钟则关闭
+
+
+async def _cleanup_stale_officecli_residents():
+    """定期关闭空闲的 OfficeCLI resident 进程，防止内存堆积。"""
+    import signal as _signal
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            proc_dir = Path("/proc")
+            if not proc_dir.exists():
+                continue
+            now = time.time()
+            for pid_dir in proc_dir.iterdir():
+                try:
+                    pid = int(pid_dir.name)
+                except ValueError:
+                    continue
+                cmdline_path = pid_dir / "cmdline"
+                try:
+                    cmdline = cmdline_path.read_bytes().decode("utf-8", errors="replace")
+                except (FileNotFoundError, PermissionError):
+                    continue
+                if "__resident-serve__" not in cmdline:
+                    continue
+                # 检查进程空闲时间（通过 /proc/pid/stat 的第 22 字段 start_time）
+                try:
+                    stat = (pid_dir / "stat").read_text().split()
+                    start_ticks = int(stat[21])
+                    # Linux boot time
+                    boot_secs = float(Path("/proc/uptime").read_text().split()[0])
+                    ticks_per_sec = os.sysconf("SC_CLK_TCK")
+                    proc_start = boot_secs - (now - (start_ticks / ticks_per_sec))
+                    idle_seconds = now - proc_start
+                except Exception:
+                    idle_seconds = 0
+
+                if idle_seconds > _RESIDENT_IDLE_SECONDS:
+                    try:
+                        os.kill(pid, _signal.SIGTERM)
+                        logger.info(f"[OfficeCLI] Killed stale resident PID {pid} (idle {idle_seconds:.0f}s)")
+                    except ProcessLookupError:
+                        pass
+        except Exception as e:
+            logger.warning(f"[OfficeCLI] Cleanup error: {e}")
+
+
+# ---------------------------------------------------------------------------
 # FastAPI 应用
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Clawith Sandbox", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(app):
+    # 启动 OfficeCLI resident 清理任务
+    task = asyncio.create_task(_cleanup_stale_officecli_residents())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="Clawith Sandbox", version="1.0.0", lifespan=_lifespan)
 
 
 @app.get("/health")

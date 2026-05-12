@@ -18,6 +18,7 @@ from app.models.audit import ChatMessage
 from app.models.llm import LLMModel
 from app.models.user import User
 from app.services.conversation_logger import ConversationLogger, resolve_user_name
+from app.utils.text import truncate_head_tail
 
 router = APIRouter(tags=["websocket"])
 
@@ -608,7 +609,7 @@ def _build_tool_call_summary(tool_calls: list[dict]) -> str:
             )
         else:
             args_str = str(args)
-        result_preview = (result[:300] + "...") if len(result or "") > 300 else (result or "")
+        result_preview = truncate_head_tail(result or "", 300, tail_chars=120)
         if status == "done":
             parts.append(f"  - Called {name}({args_str}) => {result_preview}")
         else:
@@ -1207,7 +1208,7 @@ async def websocket_chat(
                                             "name": data.get("name", ""),
                                             "args": data.get("args"),
                                             "status": "done",
-                                            "result": (data.get("result") or "")[:500],
+                                            "result": truncate_head_tail(data.get("result") or "", 500, tail_chars=200),
                                             "reasoning_content": data.get("reasoning_content"),
                                         }),
                                         conversation_id=conv_id,
