@@ -18,7 +18,13 @@ from app.database import get_db
 from app.models.channel_config import ChannelConfig
 from app.models.user import User
 from app.schemas.schemas import ChannelConfigOut
-from app.services.wechat_channel import WECHAT_CHANNEL_VERSION, WECHAT_ILINK_BASE_URL, wechat_poll_manager
+from app.services.wechat_channel import (
+    ILINK_APP_ID,
+    ILINK_APP_CLIENT_VERSION,
+    WECHAT_CHANNEL_VERSION,
+    WECHAT_ILINK_BASE_URL,
+    wechat_poll_manager,
+)
 
 
 router = APIRouter(tags=["wechat"])
@@ -30,7 +36,11 @@ def _route_tag(data: dict | None = None) -> str | None:
 
 
 def _build_qrcode_headers(route_tag: str | None = None) -> dict[str, str]:
-    headers: dict[str, str] = {}
+    """Build QR code endpoint headers matching SDK's _common_headers."""
+    headers: dict[str, str] = {
+        "iLink-App-Id": ILINK_APP_ID,
+        "iLink-App-ClientVersion": ILINK_APP_CLIENT_VERSION,
+    }
     if route_tag:
         headers["SKRouteTag"] = route_tag
     return headers

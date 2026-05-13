@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import hashlib
 import os
 import time
@@ -43,8 +44,27 @@ WECHAT_CHANNEL_VERSION = "1.0.0"
 WECHAT_TEXT_LIMIT = 2000
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 
+# iLink required headers (per SDK)
+ILINK_APP_ID = "bot"
+
+def _build_client_version() -> str:
+    """Encode WECHAT_CHANNEL_VERSION as uint32 MMNNPP."""
+    parts = WECHAT_CHANNEL_VERSION.split(".")
+    try:
+        major = int(parts[0]) & 0xFF if len(parts) > 0 else 0
+        minor = int(parts[1]) & 0xFF if len(parts) > 1 else 0
+        patch = int(parts[2]) & 0xFF if len(parts) > 2 else 0
+    except (ValueError, IndexError):
+        major = minor = patch = 0
+    return str((major << 16) | (minor << 8) | patch)
+
+ILINK_APP_CLIENT_VERSION = _build_client_version()
+
 # Cache context_token per (agent_id, user_id) for proactive sends
-_context_token_cache: dict[tuple[str, str], str] = {}
+# Dual-layer: in-memory dict (fast) + Redis (persistent across restarts)
+_context_token_cache: dict[tuple[str, str], dict[str, str]] = {}
+_WECHAT_CTX_TOKEN_TTL = 86400 * 7  # 7 days in Redis
+_WECHAT_CTX_TOKEN_KEY = "wechat:ctx_token:{agent_id}:{user_id}"
 
 # MessageItemType
 ITEM_TEXT = 1
@@ -68,13 +88,19 @@ def random_wechat_uin() -> str:
     return base64.b64encode(str(value).encode("utf-8")).decode("utf-8")
 
 
-def build_wechat_headers(token: str, route_tag: str | None = None) -> dict[str, str]:
+def build_wechat_headers(token: str, route_tag: str | None = None, *, skip_auth: bool = False) -> dict[str, str]:
+    """Build iLink API request headers, matching SDK's auth_headers + _common_headers."""
     headers = {
-        "Content-Type": "application/json",
-        "AuthorizationType": "ilink_bot_token",
-        "Authorization": f"Bearer {token}",
-        "X-WECHAT-UIN": random_wechat_uin(),
+        "iLink-App-Id": ILINK_APP_ID,
+        "iLink-App-ClientVersion": ILINK_APP_CLIENT_VERSION,
     }
+    if not skip_auth:
+        headers.update({
+            "Content-Type": "application/json",
+            "AuthorizationType": "ilink_bot_token",
+            "Authorization": f"Bearer {token}",
+            "X-WECHAT-UIN": random_wechat_uin(),
+        })
     if route_tag:
         headers["SKRouteTag"] = route_tag
     return headers
@@ -100,8 +126,59 @@ def split_wechat_text(text: str, limit: int = WECHAT_TEXT_LIMIT) -> list[str]:
 
 
 def get_cached_context_token(agent_id: str, user_id: str) -> str | None:
-    """Return cached context_token for proactive sends, or None."""
-    return _context_token_cache.get((str(agent_id), user_id))
+    """Return cached context_token for proactive sends (memory layer only).
+
+    For full lookup with Redis fallback, use `load_context_token()`.
+    """
+    entry = _context_token_cache.get((str(agent_id), user_id))
+    if entry:
+        return entry.get("token")
+    return None
+
+
+async def save_context_token(agent_id: str | uuid.UUID, user_id: str, token: str) -> None:
+    """Persist context_token to both memory cache and Redis."""
+    aid = str(agent_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    entry = {"token": token, "saved_at": now_iso}
+    _context_token_cache[(aid, user_id)] = entry
+
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        key = _WECHAT_CTX_TOKEN_KEY.format(agent_id=aid, user_id=user_id)
+        await r.hset(key, mapping={"token": token, "saved_at": now_iso})
+        await r.expire(key, _WECHAT_CTX_TOKEN_TTL)
+    except Exception as exc:
+        logger.debug(f"[WeChat] Failed to persist context_token to Redis: {exc}")
+
+
+async def load_context_token(agent_id: str | uuid.UUID, user_id: str) -> str | None:
+    """Load context_token with memory → Redis fallback. Returns token or None."""
+    aid = str(agent_id)
+
+    # Memory first
+    entry = _context_token_cache.get((aid, user_id))
+    if entry:
+        return entry.get("token")
+
+    # Redis fallback
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        key = _WECHAT_CTX_TOKEN_KEY.format(agent_id=aid, user_id=user_id)
+        data = await r.hgetall(key)
+        if data and data.get("token"):
+            token = data["token"]
+            _context_token_cache[(aid, user_id)] = {
+                "token": token,
+                "saved_at": data.get("saved_at", ""),
+            }
+            return token
+    except Exception as exc:
+        logger.debug(f"[WeChat] Failed to load context_token from Redis: {exc}")
+
+    return None
 
 
 async def cdn_download(encrypt_query_param: str, aes_key_encoded: str | None = None) -> bytes:
@@ -303,6 +380,136 @@ async def send_wechat_image_message(
             raise RuntimeError(f"WeChat image sendmessage failed: {resp.text[:300]}")
 
 
+async def get_wechat_config(
+    *,
+    token: str,
+    base_url: str,
+    ilink_user_id: str,
+    context_token: str,
+    route_tag: str | None = None,
+) -> dict[str, Any] | None:
+    """Call /ilink/bot/getconfig to retrieve config including typing_ticket.
+
+    Per SDK: POST with {ilink_user_id, context_token, base_info}.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/ilink/bot/getconfig",
+                headers=build_wechat_headers(token, route_tag=route_tag),
+                json={
+                    "ilink_user_id": ilink_user_id,
+                    "context_token": context_token,
+                    "base_info": {"channel_version": WECHAT_CHANNEL_VERSION},
+                },
+            )
+            if resp.status_code >= 400:
+                logger.debug(f"[WeChat] getconfig failed: HTTP {resp.status_code}")
+                return None
+            data = resp.json()
+            ret = data.get("ret", 0)
+            errcode = data.get("errcode", 0)
+            if (isinstance(ret, int) and ret != 0) or (isinstance(errcode, int) and errcode != 0):
+                logger.debug(f"[WeChat] getconfig error: ret={ret}, errcode={errcode}")
+                return None
+            return data
+    except Exception as exc:
+        logger.debug(f"[WeChat] getconfig failed (non-critical): {exc}")
+        return None
+
+
+async def send_wechat_typing(
+    *,
+    token: str,
+    base_url: str,
+    ilink_user_id: str,
+    context_token: str,
+    route_tag: str | None = None,
+) -> bool:
+    """Show 'typing...' indicator via /ilink/bot/sendtyping (status=1).
+
+    Calls getconfig first to obtain the typing_ticket.
+    Returns True on success, False on failure (best-effort).
+    """
+    try:
+        config = await get_wechat_config(
+            token=token, base_url=base_url,
+            ilink_user_id=ilink_user_id, context_token=context_token,
+            route_tag=route_tag,
+        )
+        if not config:
+            return False
+        typing_ticket = config.get("typing_ticket")
+        if not typing_ticket:
+            return False
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/ilink/bot/sendtyping",
+                headers=build_wechat_headers(token, route_tag=route_tag),
+                json={
+                    "ilink_user_id": ilink_user_id,
+                    "typing_ticket": typing_ticket,
+                    "status": 1,
+                    "base_info": {"channel_version": WECHAT_CHANNEL_VERSION},
+                },
+            )
+            return resp.status_code < 400
+    except Exception as exc:
+        logger.debug(f"[WeChat] send_typing failed (non-critical): {exc}")
+        return False
+
+
+async def _stop_typing_bg(token: str, base_url: str, ilink_user_id: str, context_token: str, route_tag: str | None) -> None:
+    """Fire-and-forget wrapper: stop typing without blocking the reply."""
+    try:
+        await stop_wechat_typing(
+            token=token, base_url=base_url,
+            ilink_user_id=ilink_user_id, context_token=context_token,
+            route_tag=route_tag,
+        )
+    except Exception:
+        pass
+
+
+async def stop_wechat_typing(
+    *,
+    token: str,
+    base_url: str,
+    ilink_user_id: str,
+    context_token: str,
+    route_tag: str | None = None,
+) -> bool:
+    """Cancel 'typing...' indicator via /ilink/bot/sendtyping (status=2)."""
+    try:
+        config = await get_wechat_config(
+            token=token, base_url=base_url,
+            ilink_user_id=ilink_user_id, context_token=context_token,
+            route_tag=route_tag,
+        )
+        if not config:
+            return False
+        typing_ticket = config.get("typing_ticket")
+        if not typing_ticket:
+            return False
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{base_url.rstrip('/')}/ilink/bot/sendtyping",
+                headers=build_wechat_headers(token, route_tag=route_tag),
+                json={
+                    "ilink_user_id": ilink_user_id,
+                    "typing_ticket": typing_ticket,
+                    "status": 2,
+                    "base_info": {"channel_version": WECHAT_CHANNEL_VERSION},
+                },
+            )
+            return resp.status_code < 400
+    except Exception as exc:
+        logger.debug(f"[WeChat] stop_typing failed (non-critical): {exc}")
+        return False
+
+
 # ─── Message Parsing ──────────────────────────────────────────────
 
 
@@ -461,7 +668,7 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
         return
 
     # Cache context_token for proactive file sending via send_channel_file
-    _context_token_cache[(str(agent_id), from_user_id)] = context_token
+    await save_context_token(agent_id, from_user_id, context_token)
 
     async with async_session() as db:
         agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
@@ -552,6 +759,24 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
 
         _cfs_token = _cfs.set(_wechat_file_sender)
 
+        # SDK-standard typing sequence: ack → typing(1) → LLM → typing(2) → reply
+        _ilink_uid = str((config.extra_config or {}).get("ilink_user_id") or "").strip()
+
+        try:
+            await send_wechat_text_message(
+                token=_token, base_url=_base_url, to_user_id=from_user_id,
+                context_token=context_token, text="✓ 已收到，正在思考...", route_tag=_route_tag,
+            )
+        except Exception as _ack_err:
+            logger.warning(f"[WeChat] Failed to send ack message: {_ack_err}")
+
+        # Start typing indicator
+        if _ilink_uid:
+            await send_wechat_typing(
+                token=_token, base_url=_base_url, ilink_user_id=_ilink_uid,
+                context_token=context_token, route_tag=_route_tag,
+            )
+
         llm_task = asyncio.ensure_future(_call_agent_llm(
             db=db, agent_id=agent_id, user_text=user_text,
             history=history, user_id=platform_user_id,
@@ -568,10 +793,17 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
             _cfs.reset(_cfs_token)
             unregister_running_task(conv_id)
 
+        # Send reply first (per SDK: message before stop_typing)
         await send_wechat_text_message(
             token=_token, base_url=_base_url, to_user_id=from_user_id,
             context_token=context_token, text=reply_text, route_tag=_route_tag,
         )
+
+        # Fire-and-forget: stop typing in background (don't block the user)
+        if _ilink_uid:
+            asyncio.create_task(
+                _stop_typing_bg(_token, _base_url, _ilink_uid, context_token, _route_tag)
+            )
 
         db.add(ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
@@ -596,8 +828,33 @@ class WeChatPollManager:
     def __init__(self) -> None:
         self._tasks: dict[uuid.UUID, asyncio.Task] = {}
         self._connected: dict[uuid.UUID, bool] = {}
+        self._processed_ids: collections.deque[str] = collections.deque(maxlen=2000)
+        self._dedup_lock = asyncio.Lock()
+
+    @staticmethod
+    def _build_dedup_key(msg: dict[str, Any]) -> str:
+        """Build a time-stable dedup key.
+
+        Uses msg_id if available, otherwise from_user_id + text hash.
+        Timestamp intentionally excluded — iLink may deliver the same
+        message with different timestamps across getupdates calls.
+        """
+        mid = msg.get("msg_id") or msg.get("client_msg_id")
+        if mid:
+            return f"mid:{mid}"
+
+        uid = str(msg.get("from_user_id") or "")[:32]
+        text_hash = hashlib.md5(
+            _extract_text(msg.get("item_list") or []).encode("utf-8", errors="replace")
+        ).hexdigest()[:12]
+        return f"{uid}:{text_hash}"
 
     async def start_client(self, agent_id: uuid.UUID, stop_existing: bool = True) -> None:
+        # If task is already running, skip unless explicit stop requested
+        existing = self._tasks.get(agent_id)
+        if existing and not existing.done():
+            if not stop_existing:
+                return
         if stop_existing:
             await self.stop_client(agent_id)
         task = asyncio.create_task(self._run_client(agent_id), name=f"wechat-poll-{str(agent_id)[:8]}")
@@ -662,10 +919,20 @@ class WeChatPollManager:
                         await self._update_extra(agent_id, {"get_updates_buf": new_cursor})
 
                     for msg in data.get("msgs", []) or []:
+                        dedup_key = self._build_dedup_key(msg)
+                        async with self._dedup_lock:
+                            if dedup_key and dedup_key in self._processed_ids:
+                                logger.debug(f"[WeChat] Skipping duplicate msg: {dedup_key[:60]}")
+                                continue
+                            if dedup_key:
+                                self._processed_ids.append(dedup_key)
                         try:
                             await _process_wechat_message(agent_id, msg, config)
                         except Exception as exc:
                             logger.error(f"[WeChat] Failed to process message for {agent_id}: {exc}")
+
+                    # Small delay to prevent racing getupdates calls
+                    await asyncio.sleep(0.5)
                 except WeChatSessionExpiredError:
                     logger.warning(f"[WeChat] Session expired for agent {agent_id}")
                     await self._set_connected(agent_id, False)
