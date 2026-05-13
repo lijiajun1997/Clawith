@@ -383,6 +383,74 @@ async def _check_new_agent_messages(trigger: AgentTrigger) -> bool:
 
 # ── Agent Invocation ────────────────────────────────────────────────
 
+async def _push_trigger_to_wechat(agent_id: uuid.UUID, notification: str) -> None:
+    """Push trigger notification to WeChat users who recently messaged this agent.
+
+    Best-effort: silently skips users without valid context_token.
+    WeChat iLink is 1:1 — extracts user_id from ChatSession.external_conv_id.
+    """
+    try:
+        from app.services.wechat_channel import (
+            send_wechat_text_message,
+            load_context_token,
+            WECHAT_ILINK_BASE_URL,
+        )
+        from app.models.channel_config import ChannelConfig as CC
+        from app.models.chat_session import ChatSession as CS
+
+        async with async_session() as db:
+            wcc_r = await db.execute(
+                select(CC).where(
+                    CC.agent_id == agent_id,
+                    CC.channel_type == "wechat",
+                    CC.is_configured == True,
+                )
+            )
+            wcc = wcc_r.scalar_one_or_none()
+            if not wcc:
+                return
+
+            extra = wcc.extra_config or {}
+            w_token = str(extra.get("bot_token") or "").strip()
+            w_base_url = str(extra.get("baseurl") or WECHAT_ILINK_BASE_URL).strip()
+            w_route_tag = str(extra.get("route_tag") or "").strip() or None
+            if not w_token:
+                return
+
+            # Find most recent WeChat session (1:1 binding)
+            wcs_r = await db.execute(
+                select(CS).where(
+                    CS.agent_id == agent_id,
+                    CS.source_channel == "wechat",
+                ).order_by(
+                    CS.last_message_at.desc().nulls_last()
+                ).limit(1)
+            )
+            wcs = wcs_r.scalar_one_or_none()
+            if not wcs:
+                return
+
+            # Extract wechat_user_id from external_conv_id ("wechat_{user_id}")
+            wechat_user_id = str(wcs.external_conv_id or "").replace("wechat_", "")
+            if not wechat_user_id:
+                return
+
+            ctx = await load_context_token(str(agent_id), wechat_user_id)
+            if not ctx:
+                return
+
+            await send_wechat_text_message(
+                token=w_token, base_url=w_base_url,
+                to_user_id=wechat_user_id,
+                context_token=ctx,
+                text=notification,
+                route_tag=w_route_tag,
+            )
+            logger.info(f"[Trigger] WeChat notification sent (user={wechat_user_id})")
+    except Exception as e:
+        logger.warning(f"[Trigger] WeChat push failed (non-critical): {e}")
+
+
 async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTrigger]):
     """Invoke an agent with context from one or more fired triggers.
 
@@ -689,8 +757,12 @@ async def _invoke_agent_for_triggers(agent_id: uuid.UUID, triggers: list[AgentTr
                             })
                         except Exception:
                             pass  # Connection may have closed
+
+                # Push to WeChat channel (best-effort; see _push_trigger_to_wechat)
+                await _push_trigger_to_wechat(agent_id, notification)
+
             except Exception as e:
-                logger.error(f"Failed to push trigger result to WebSocket: {e}")
+                logger.error(f"Failed to push trigger result: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -835,7 +907,7 @@ async def wake_agent_with_context(agent_id: uuid.UUID, message_context: str, *, 
         agent_id=agent_id,
         name="a2a_wake",
         type="on_message",
-        config={"from_agent_name": "", "_matched_message": message_context[:2000], "_matched_from": "agent", "_a2a_session_id": a2a_session_id},
+        config={"from_agent_name": "", "_matched_message": message_context[:64000], "_matched_from": "agent", "_a2a_session_id": a2a_session_id},
         reason=(
             "You received a notification from another agent. "
             "Read the message content above, update your focus and memory if needed, "

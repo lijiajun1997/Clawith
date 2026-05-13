@@ -514,8 +514,9 @@ AGENT_TOOLS = [
         "function": {
             "name": "send_channel_message",
             "description": (
-                "Send a message to a colleague via their configured channel (Feishu, DingTalk, WeCom). "
+                "Send a message to a colleague via their configured channel (Feishu, DingTalk, WeCom, WeChat). "
                 "Automatically detects the recipient's channel based on their org relationship. "
+                "For WeChat: set channel='wechat' and message — member_name is optional (1:1 binding). "
                 "Use this as the primary method to send messages to colleagues in your relationship network."
             ),
             "parameters": {
@@ -523,7 +524,7 @@ AGENT_TOOLS = [
                 "properties": {
                     "member_name": {
                         "type": "string",
-                        "description": "Recipient's name as shown in relationships, e.g. '张三'. Must be a person in your relationship network.",
+                        "description": "Recipient's name as shown in relationships, e.g. '张三'. For WeChat, can be omitted (1:1 binding).",
                     },
                     "message": {
                         "type": "string",
@@ -531,8 +532,8 @@ AGENT_TOOLS = [
                     },
                     "channel": {
                         "type": "string",
-                        "description": "Optional: Specific channel to use (feishu, dingtalk, wecom). Use this if multiple people have the same name in different channels.",
-                        "enum": ["feishu", "dingtalk", "wecom"]
+                        "description": "Optional: Specific channel to use (feishu, dingtalk, wecom, wechat). For WeChat, set this to skip member lookup.",
+                        "enum": ["feishu", "dingtalk", "wecom", "wechat"]
                     },
                 },
                 "required": ["member_name", "message"],
@@ -2194,40 +2195,128 @@ _FILE_CACHE_MAP: dict[str, list[str]] = {
 }
 _SKILLS_PREFIX = "skills/"
 
+# ── File content cache constants ─────────────────────────────
+_FC_MAX_SIZE = 100_000  # Only cache files < 100KB
+_FC_TTL = 3600  # 1 hour safety net; active invalidation on write
+
+
+def _fc_key(agent_id: uuid.UUID, rel_path: str) -> str:
+    """File content cache key."""
+    import hashlib
+    h = hashlib.sha256(rel_path.encode()).hexdigest()[:16]
+    return f"agent:fc:{agent_id}:{h}"
+
+
+_FM_KEY = "agent:fm:{agent_id}"
+
+
+async def _get_file_manifest(agent_id: uuid.UUID) -> dict:
+    """Get cached file manifest from Redis. Returns {rel_path: {s: size, m: mtime}}."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        raw = await r.hgetall(_FM_KEY.format(agent_id=agent_id))
+        if not raw:
+            return {}
+        return {k: json.loads(v) for k, v in raw.items()}
+    except Exception:
+        return {}
+
+
+async def _set_file_manifest(agent_id: uuid.UUID, manifest: dict) -> None:
+    """Store file manifest in Redis HASH."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        key = _FM_KEY.format(agent_id=agent_id)
+        await r.delete(key)
+        if manifest:
+            mapping = {k: json.dumps(v) for k, v in manifest.items()}
+            await r.hset(key, mapping=mapping)
+            await r.expire(key, _FC_TTL)
+    except Exception:
+        pass
+
+
+async def _get_cached_file_content(agent_id: uuid.UUID, rel_path: str) -> str | None:
+    """Get cached file content from Redis."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        return await r.get(_fc_key(agent_id, rel_path))
+    except Exception:
+        return None
+
+
+async def _set_cached_file_content(agent_id: uuid.UUID, rel_path: str, content: str) -> None:
+    """Cache file content in Redis (only if < 100KB)."""
+    if len(content) > _FC_MAX_SIZE:
+        return
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        await r.setex(_fc_key(agent_id, rel_path), _FC_TTL, content)
+    except Exception:
+        pass
+
+
+async def _build_file_manifest(ws: Path, agent_id: uuid.UUID) -> dict:
+    """Scan workspace and build file manifest, storing in Redis."""
+    import os
+    manifest = {}
+    skip_ext = {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
+                ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}
+    for root, dirs, files in os.walk(ws):
+        # Skip hidden, node_modules, conversations, tool_artifacts
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in
+                   ("node_modules", "__pycache__", ".git")]
+        for f in files:
+            if f.startswith("."):
+                continue
+            fp = Path(root) / f
+            if fp.suffix.lower() in skip_ext:
+                continue
+            try:
+                st = fp.stat()
+                rel = str(fp.relative_to(ws)).replace("\\", "/")
+                manifest[rel] = {"s": st.st_size, "m": st.st_mtime}
+            except (OSError, ValueError):
+                pass
+    await _set_file_manifest(agent_id, manifest)
+    return manifest
+
 
 async def _invalidate_context_cache(agent_id: uuid.UUID, rel_path: str) -> None:
     """Invalidate relevant context cache keys when a file is modified.
 
-    Args:
-        agent_id: Agent UUID
-        rel_path: Relative file path that was written/edited/deleted
+    Also invalidates file manifest and content caches for the affected file.
     """
-    sub_keys: list[str] = []
     rel_normalized = rel_path.strip("/").replace("\\", "/")
 
-    # Exact file matches
+    # Invalidate context sub-caches (soul, skills, rels, company)
+    sub_keys: list[str] = []
     for pattern, keys in _FILE_CACHE_MAP.items():
         if rel_normalized == pattern:
             sub_keys.extend(keys)
-
-    # Skills directory — any write under skills/ invalidates the skills index
     if rel_normalized.startswith(_SKILLS_PREFIX) or rel_normalized == "skills":
         sub_keys.append("skills")
+    if sub_keys:
+        try:
+            from app.services.agent_context import invalidate_agent_cache
+            await invalidate_agent_cache(agent_id, *sub_keys)
+        except Exception:
+            pass
 
-    if not sub_keys:
-        return
-
-    try:
-        from app.services.agent_context import invalidate_agent_cache
-        await invalidate_agent_cache(agent_id, *sub_keys)
-    except Exception:
-        pass
-
-    # Also invalidate the legacy recent-files cache
+    # Invalidate file content cache + manifest + legacy recent-files
     try:
         from app.core.events import get_redis
         r = await get_redis()
-        await r.delete(f"recent_files:{agent_id}")
+        keys_to_delete = [
+            _fc_key(agent_id, rel_normalized),
+            _FM_KEY.format(agent_id=agent_id),
+            f"recent_files:{agent_id}",
+        ]
+        await r.delete(*keys_to_delete)
     except Exception:
         pass
 
@@ -2284,6 +2373,18 @@ async def _execute_tool_direct(
         # Invalidate context cache when agent modifies files
         if tool_name in ("write_file", "edit_file", "delete_file") and isinstance(result, str) and result.startswith("✅"):
             await _invalidate_context_cache(agent_id, arguments.get("path", ""))
+            # Track recent file change (fire-and-forget, non-blocking)
+            try:
+                from app.services.recent_file_tracker import track_file_fire_and_forget
+                _op_map = {"write_file": "write", "edit_file": "edit", "delete_file": "delete"}
+                _tracked_size = len(arguments.get("content", "")) if tool_name == "write_file" else 0
+                track_file_fire_and_forget(
+                    agent_id=agent_id, path=arguments.get("path", ""),
+                    operation=_op_map[tool_name], actor_type="agent",
+                    actor_id=agent_id, file_size=_tracked_size,
+                )
+            except Exception:
+                pass
         # Persist tool result (same logic as execute_tool)
         result = _persist_tool_result_sync(ws, tool_name, arguments, result)
         return result
@@ -2368,6 +2469,18 @@ async def execute_tool(
             limit = int(arguments.get("limit", 2000))
             use_ocr = arguments.get("ocr", False)
             result = await _read_file(ws, path, tenant_id=_agent_tenant_id, offset=offset, limit=limit, use_ocr=use_ocr, agent_id=agent_id)
+            # Track skill invocation when reading skill.md files
+            _path_lower = path.lower().replace("\\", "/")
+            if _path_lower.endswith("skill.md") or _path_lower.endswith("skills.md"):
+                import re as _re
+                _m = _re.search(r"skills/([^/]+)/", path.replace("\\", "/"))
+                _skill_name = _m.group(1) if _m else Path(path).stem
+                from app.services.activity_logger import log_activity
+                await log_activity(
+                    agent_id, "skill_call",
+                    f"Read skill: {_skill_name}",
+                    detail={"skill_name": _skill_name, "path": path},
+                )
         elif tool_name == "read_document":
             path = arguments.get("path")
             if not path:
@@ -2413,13 +2526,14 @@ async def execute_tool(
             pattern = arguments.get("pattern")
             if not pattern:
                 return "❌ Missing required argument 'pattern' for search_files"
-            result = _search_files(
+            result = await _search_files_async(
                 ws,
                 pattern,
                 path=arguments.get("path", "."),
                 file_pattern=arguments.get("file_pattern", "*"),
                 ignore_case=arguments.get("ignore_case", False),
-                tenant_id=_agent_tenant_id
+                tenant_id=_agent_tenant_id,
+                agent_id=agent_id,
             )
         elif tool_name == "find_files":
             pattern = arguments.get("pattern")
@@ -2429,7 +2543,8 @@ async def execute_tool(
                 ws,
                 pattern,
                 path=arguments.get("path", "."),
-                tenant_id=_agent_tenant_id
+                tenant_id=_agent_tenant_id,
+                agent_id=agent_id,
             )
         elif tool_name == "manage_tasks":
             result = await _manage_tasks(agent_id, user_id, ws, arguments)
@@ -2628,6 +2743,18 @@ async def execute_tool(
         # Invalidate context cache when agent modifies files
         if tool_name in ("write_file", "edit_file", "delete_file") and isinstance(result, str) and result.startswith("✅"):
             await _invalidate_context_cache(agent_id, arguments.get("path", ""))
+            # Track recent file change (fire-and-forget, non-blocking)
+            try:
+                from app.services.recent_file_tracker import track_file_fire_and_forget
+                _op_map = {"write_file": "write", "edit_file": "edit", "delete_file": "delete"}
+                _tracked_size = len(arguments.get("content", "")) if tool_name == "write_file" else 0
+                track_file_fire_and_forget(
+                    agent_id=agent_id, path=arguments.get("path", ""),
+                    operation=_op_map[tool_name], actor_type="agent",
+                    actor_id=agent_id, file_size=_tracked_size,
+                )
+            except Exception:
+                pass
 
         # Invalidate skills cache on skill install
         if tool_name == "install_skill" and isinstance(result, str) and result.startswith("✅"):
@@ -3220,15 +3347,17 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     if not rel_path:
         return "Error: file_path is required"
 
-    # Resolve file path within agent workspace
-    file_path = (ws / rel_path).resolve()
+    # Resolve file path within agent workspace (with workspace/ + full-search auto-correction)
+    file_path = _auto_resolve_with_workspace_fallback(ws, rel_path)
     ws_resolved = ws.resolve()
     if not str(file_path).startswith(str(ws_resolved)):
         file_path = (WORKSPACE_ROOT / str(agent_id) / rel_path).resolve()
-        if not file_path.exists():
-            return f"Error: File not found: {rel_path}"
+        if not file_path.exists() and not rel_path.startswith("workspace/"):
+            alt = (WORKSPACE_ROOT / str(agent_id) / "workspace" / rel_path).resolve()
+            if str(alt).startswith(str(ws_resolved)) and alt.exists():
+                file_path = alt
     if not file_path.exists():
-        return f"Error: File not found: {rel_path}"
+        return "Error: " + _build_not_found_hint(ws, rel_path)
 
     # Priority 1: explicit recipient - resolve member across channels
     if member_name:
@@ -3247,9 +3376,15 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
             await sender(file_path, accompany_msg)
             return f"File '{file_path.name}' sent to user via channel."
         except Exception as e:
-            return f"Failed to send file: {e}"
+            logger.warning(f"[send_channel_file] channel sender failed: {e}")
+            return (
+                f"Failed to send file via channel: {e}\n"
+                "The file exists but could not be delivered. "
+                "Try using send_message_to_member to notify the user with a download link, "
+                "or ask the admin to check channel file permissions (e.g. Feishu im:resource)."
+            )
 
-    # Priority 3: Web chat fallback — return download URL
+    # Priority 3: No channel sender available — generate download URL
     aid = channel_web_agent_id.get() or str(agent_id)
     base_abs = (WORKSPACE_ROOT / str(agent_id)).resolve()
     try:
@@ -3258,11 +3393,19 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
         file_rel = rel_path
     from app.config import get_settings as _gs
     _s = _gs()
-    base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
+    base_url = getattr(_s, 'PUBLIC_BASE_URL', '') or getattr(_s, 'BASE_URL', '')
+    base_url = base_url.rstrip('/')
+    if not base_url:
+        return (
+            f"Error: File '{file_path.name}' cannot be delivered — no active channel sender "
+            "and BASE_URL is not configured. The file has been saved but the user cannot "
+            "receive it. Ask the admin to configure BASE_URL or check channel integration."
+        )
     download_url = f"{base_url}/api/agents/{aid}/files/download?path={file_rel}"
-    msg = f"File ready: [{file_path.name}]({download_url})"
+    msg = f"File ready for download: [{file_path.name}]({download_url})"
     if accompany_msg:
         msg = accompany_msg + "\n\n" + msg
+    msg += "\n\n⚠️ Note: This is a download link, NOT a direct file delivery. The user must click the link to download."
     return msg
 
 
@@ -3361,7 +3504,8 @@ async def _send_file_via_feishu(agent_id, config, file_path: Path, member_name: 
         import json as _j
         from app.config import get_settings as _gs
         _s = _gs()
-        base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
+        base_url = getattr(_s, 'PUBLIC_BASE_URL', '') or getattr(_s, 'BASE_URL', '')
+        base_url = base_url.rstrip('/')
         base_abs = (WORKSPACE_ROOT / str(agent_id)).resolve()
         try:
             _rel = str(file_path.resolve().relative_to(base_abs))
@@ -3450,15 +3594,18 @@ async def _send_file_via_slack(agent_id, config, file_path: Path, member_name: s
 
 
 async def _send_file_via_wechat(agent_id, config, file_path: Path, member_name: str, message: str) -> str | None:
-    """Send file to a person via WeChat iLink. Returns result string or None."""
+    """Send file via WeChat iLink (1:1 mode). Returns result string or None.
+
+    Uses ChatSession to find the WeChat user (no OrgMember dependency).
+    """
     from app.services.wechat_channel import (
         send_wechat_file_message,
         send_wechat_image_message,
         send_wechat_text_message,
-        get_cached_context_token,
+        load_context_token,
         WECHAT_ILINK_BASE_URL,
     )
-    from app.models.org import OrgMember, IdentityProvider
+    from app.models.chat_session import ChatSession as _WCSF
 
     extra = config.extra_config or {}
     token = str(extra.get("bot_token") or "").strip()
@@ -3467,31 +3614,47 @@ async def _send_file_via_wechat(agent_id, config, file_path: Path, member_name: 
     if not token:
         return None
 
-    # Resolve WeChat user_id by name from OrgMember
     wechat_user_id: str | None = None
     async with async_session() as db:
-        provider_r = await db.execute(
-            select(IdentityProvider).where(
-                IdentityProvider.channel_type == "wechat",
+        # 1:1 binding — find user from most recent WeChat session
+        wcs_r = await db.execute(
+            select(_WCSF).where(
+                _WCSF.agent_id == agent_id,
+                _WCSF.source_channel == "wechat",
+            ).order_by(
+                _WCSF.last_message_at.desc().nulls_last()
             ).limit(1)
         )
-        provider = provider_r.scalar_one_or_none()
-        if not provider:
-            return None
-        member_r = await db.execute(
-            select(OrgMember).where(
-                OrgMember.name == member_name,
-                OrgMember.identity_provider_id == provider.id,
-            ).limit(1)
-        )
-        member = member_r.scalar_one_or_none()
-        if not member or not member.external_id:
-            return None
-        wechat_user_id = member.external_id
+        wcs = wcs_r.scalar_one_or_none()
+        if wcs:
+            wechat_user_id = str(wcs.external_conv_id or "").replace("wechat_", "")
 
-    context_token = get_cached_context_token(str(agent_id), wechat_user_id)
+        # Fallback: OrgMember lookup
+        if not wechat_user_id:
+            from app.models.org import OrgMember, IdentityProvider
+            provider_r = await db.execute(
+                select(IdentityProvider).where(
+                    IdentityProvider.provider_type == "wechat",
+                ).limit(1)
+            )
+            provider = provider_r.scalar_one_or_none()
+            if provider:
+                member_r = await db.execute(
+                    select(OrgMember).where(
+                        OrgMember.name == member_name,
+                        OrgMember.identity_provider_id == provider.id,
+                    ).limit(1)
+                )
+                member = member_r.scalar_one_or_none()
+                if member and member.external_id:
+                    wechat_user_id = member.external_id
+
+    if not wechat_user_id:
+        return None
+
+    context_token = await load_context_token(str(agent_id), wechat_user_id)
     if not context_token:
-        return None  # No prior conversation context — cannot send proactively
+        return None
 
     try:
         data = file_path.read_bytes()
@@ -3512,7 +3675,7 @@ async def _send_file_via_wechat(agent_id, config, file_path: Path, member_name: 
                 token=token, base_url=base_url, to_user_id=wechat_user_id,
                 context_token=context_token, text=message, route_tag=route_tag,
             )
-        return f"File '{file_path.name}' sent to {member_name} via WeChat."
+        return f"File '{file_path.name}' sent via WeChat."
     except Exception as e:
         return f"Failed to send file via WeChat: {e}"
 
@@ -3827,8 +3990,94 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
     return header + "\n".join(items)
 
 
+def _search_file_in_agent_dir(ws: Path, rel_path: str, max_results: int = 5) -> list[str]:
+    """Search agent directory tree for files matching the basename.
+
+    Returns list of relative paths from ws root.
+    """
+    basename = Path(rel_path).name
+    if not basename or basename in (".", ".."):
+        return []
+    ws_resolved = ws.resolve()
+    matches: list[str] = []
+    try:
+        for p in ws_resolved.rglob(basename):
+            if p.is_file():
+                try:
+                    matches.append(str(p.relative_to(ws_resolved)))
+                except ValueError:
+                    pass
+                if len(matches) >= max_results:
+                    break
+    except (PermissionError, OSError):
+        pass
+    return matches
+
+
+def _build_not_found_hint(ws: Path, rel_path: str) -> str:
+    """Build 'File not found' message with search results from agent directory."""
+    msg = f"File not found: {rel_path}"
+    matches = _search_file_in_agent_dir(ws, rel_path)
+    if matches:
+        msg += "\n\n📂 Searched agent directory, found matching files:\n"
+        for m in matches:
+            msg += f"  - {m}\n"
+        msg += "💡 Use one of the above paths instead."
+    else:
+        basename = Path(rel_path).name
+        parent_rel = str(Path(rel_path).parent)
+        # Try listing parent directory contents as context
+        for prefix in ("", "workspace/"):
+            parent_path = (ws / prefix / parent_rel).resolve() if parent_rel != "." else (ws / prefix).resolve()
+            if parent_path.is_dir() and str(parent_path).startswith(str(ws.resolve())):
+                try:
+                    items = sorted(p.name for p in parent_path.iterdir() if not p.name.startswith("."))[:10]
+                    if items:
+                        display_dir = f"{prefix}{parent_rel}" if parent_rel != "." else prefix.rstrip("/") or "root"
+                        msg += f"\n\n📂 Files in '{display_dir}/':\n"
+                        for name in items:
+                            msg += f"  - {display_dir}/{name}\n"
+                        break
+                except (PermissionError, OSError):
+                    pass
+        if "📂" not in msg:
+            msg += f"\n\nNo file matching '{basename}' found in agent directory."
+    return msg
+
+
+def _auto_resolve_with_workspace_fallback(ws: Path, rel_path: str) -> Path:
+    """Try direct path → workspace/ prefix → full directory search (auto-correct).
+
+    Handles the common mismatch where agents reference 'uploads/x.xlsx'
+    but the file lives at 'workspace/uploads/x.xlsx'.
+    When neither matches, searches the entire agent directory for the basename.
+    """
+    direct = (ws / rel_path).resolve()
+    if direct.exists():
+        return direct
+    ws_resolved = ws.resolve()
+    if not rel_path.startswith("workspace/"):
+        alt = (ws / "workspace" / rel_path).resolve()
+        if str(alt).startswith(str(ws_resolved)) and alt.exists():
+            return alt
+    # Full directory search for basename
+    basename = Path(rel_path).name
+    if basename and basename not in (".", ".."):
+        try:
+            for match in ws_resolved.rglob(basename):
+                if match.is_file():
+                    return match
+        except (PermissionError, OSError):
+            pass
+    return direct  # return original for clearer error messages
+
+
 def _resolve_workspace_file(ws: Path, rel_path: str, tenant_id: str | None = None) -> tuple[Path, str | None]:
     """Resolve a relative path to absolute Path, with enterprise_info tenant support.
+
+    Triple-fallback: direct path → workspace/ prefix → full directory search.
+    When file is not found after all attempts, returns a detailed hint with
+    search results so the agent can self-correct.
 
     Returns (resolved_path, error_message). If error_message is set, caller should return it.
     """
@@ -3842,9 +4091,12 @@ def _resolve_workspace_file(ws: Path, rel_path: str, tenant_id: str | None = Non
         if not str(file_path).startswith(str(enterprise_root)):
             return file_path, "Access denied for this path"
     else:
-        file_path = (ws / rel_path).resolve()
+        file_path = _auto_resolve_with_workspace_fallback(ws, rel_path)
         if not str(file_path).startswith(str(ws.resolve())):
             return file_path, "Access denied for this path"
+    # If file still not found after all resolution attempts, return search-based hint
+    if not file_path.exists():
+        return file_path, _build_not_found_hint(ws, rel_path)
     return file_path, None
 
 
@@ -3900,12 +4152,22 @@ async def _read_file(
         return f"File not found: {rel_path}"
 
     try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
         _ocr_md_rel = None
 
         ext = file_path.suffix.lower()
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
         is_ocr_target = ext == ".pdf" or ext in image_exts
+
+        # Try Redis content cache for text files
+        content = None
+        if agent_id and not is_ocr_target:
+            content = await _get_cached_file_content(agent_id, rel_path.strip("/").replace("\\", "/"))
+
+        if content is None:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+            # Cache for future reads (skip OCR targets and large files)
+            if agent_id and not is_ocr_target:
+                await _set_cached_file_content(agent_id, rel_path.strip("/").replace("\\", "/"), content)
 
         if is_ocr_target:
             ocr_config = await _load_ocr_config(agent_id)
@@ -4394,21 +4656,113 @@ def _find_similar_lines(content: str, old_string: str, rel_path: str) -> str:
     return base_msg
 
 
-def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
+async def _search_files_async(
+    ws: Path, pattern: str, path: str = ".", file_pattern: str = "*",
+    ignore_case: bool = False, tenant_id: str | None = None,
+    agent_id: uuid.UUID | None = None,
+) -> str:
     """Search for content patterns across files using regex.
 
-    Args:
-        ws: Workspace root path
-        pattern: Regex pattern to search for
-        path: Directory to search in (relative to workspace root)
-        file_pattern: File pattern to match (glob)
-        ignore_case: Case-insensitive search
-        tenant_id: Optional tenant ID for enterprise_info
-
-    Returns:
-        Matching lines with file paths and line numbers
+    Uses Redis file content cache to avoid disk I/O on repeated searches.
+    Falls back to disk reads on cache miss.
     """
-    # Handle enterprise_info/ as shared directory (tenant-scoped)
+    # Handle enterprise_info/ as shared directory (tenant-scoped) — no caching
+    if path and path.startswith("enterprise_info"):
+        return await asyncio.to_thread(_search_files_disk, ws, pattern, path, file_pattern, ignore_case, tenant_id)
+
+    search_path = (ws / path).resolve() if path and path != "." else ws
+    if not str(search_path).startswith(str(ws.resolve())):
+        return "Access denied for this path"
+    if not search_path.exists():
+        return f"Directory not found: {path}"
+
+    flags = re.IGNORECASE if ignore_case else 0
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        return f"Invalid regex pattern: {e}"
+
+    import fnmatch
+    results = []
+    total_matches = 0
+    files_searched = 0
+
+    # Get file manifest (cached or rebuilt)
+    if agent_id:
+        manifest = await _get_file_manifest(agent_id)
+        if not manifest:
+            manifest = await asyncio.to_thread(_build_file_manifest_sync, ws, agent_id)
+            if manifest:
+                await _set_file_manifest(agent_id, manifest)
+        # Cached path: iterate manifest, read from Redis or disk
+        for rel_path_str, meta in manifest.items():
+            # Apply path prefix filter
+            if path and path != "." and not rel_path_str.startswith(path.rstrip("/") + "/"):
+                continue
+            # Apply file_pattern filter
+            fname = rel_path_str.rsplit("/", 1)[-1] if "/" in rel_path_str else rel_path_str
+            if not fnmatch.fnmatch(fname, file_pattern.replace("**/", "").replace("**", "")):
+                continue
+
+            files_searched += 1
+            # Read from cache or disk
+            content = await _get_cached_file_content(agent_id, rel_path_str)
+            if content is None:
+                fp = ws / rel_path_str
+                if not fp.exists():
+                    continue
+                try:
+                    content = fp.read_text(encoding="utf-8", errors="ignore")
+                    await _set_cached_file_content(agent_id, rel_path_str, content)
+                except Exception:
+                    continue
+
+            for i, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    display_line = line.strip()[:100]
+                    results.append(f"{rel_path_str}:{i}: {display_line}")
+                    total_matches += 1
+                    if len(results) >= 50:
+                        break
+            if len(results) >= 50:
+                break
+    else:
+        # Fallback: no manifest, read from disk (legacy behavior)
+        for file_path in search_path.rglob(file_pattern):
+            if not file_path.is_file():
+                continue
+            if file_path.name.startswith("."):
+                continue
+            suffix = file_path.suffix.lower()
+            if suffix in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
+                continue
+            files_searched += 1
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+                for i, line in enumerate(content.splitlines(), 1):
+                    if regex.search(line):
+                        rel = str(file_path.relative_to(ws)).replace("\\", "/")
+                        display_line = line.strip()[:100]
+                        results.append(f"{rel}:{i}: {display_line}")
+                        total_matches += 1
+                        if len(results) >= 50:
+                            break
+            except Exception:
+                continue
+            if len(results) >= 50:
+                break
+
+    if not results:
+        return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
+
+    truncated = total_matches > len(results)
+    truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
+    header = f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n"
+    return header + "\n".join(results)
+
+
+def _search_files_disk(ws: Path, pattern: str, path: str = ".", file_pattern: str = "*", ignore_case: bool = False, tenant_id: str | None = None) -> str:
+    """Synchronous disk-only search (used for enterprise_info paths)."""
     if path and path.startswith("enterprise_info"):
         if tenant_id:
             enterprise_root = (WORKSPACE_ROOT / f"enterprise_info_{tenant_id}").resolve()
@@ -4429,7 +4783,6 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
         return f"Directory not found: {path}"
 
     flags = re.IGNORECASE if ignore_case else 0
-
     try:
         regex = re.compile(pattern, flags)
     except re.error as e:
@@ -4439,43 +4792,61 @@ def _search_files(ws: Path, pattern: str, path: str = ".", file_pattern: str = "
     total_matches = 0
     files_searched = 0
 
-    # Use rglob for recursive search
     for file_path in search_path.rglob(file_pattern):
         if not file_path.is_file():
             continue
-        # Skip hidden files and common binary/extensions
         if file_path.name.startswith("."):
             continue
         suffix = file_path.suffix.lower()
         if suffix in {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}:
             continue
-
         files_searched += 1
         try:
             content = file_path.read_text(encoding="utf-8", errors="ignore")
             for i, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
                     rel_path = file_path.relative_to(ws_for_relative)
-                    # Truncate long lines
                     display_line = line.strip()[:100]
                     results.append(f"{rel_path}:{i}: {display_line}")
                     total_matches += 1
-                    if len(results) >= 50:  # Limit results per query
+                    if len(results) >= 50:
                         break
         except Exception:
             continue
-
         if len(results) >= 50:
             break
 
     if not results:
         return f"No matches found for pattern '{pattern}' in {files_searched} file(s)"
 
-    # Warn the LLM if results were capped so it knows to refine the search.
     truncated = total_matches > len(results)
     truncation_note = f" (showing first {len(results)} of {total_matches}+ — refine pattern or path for more)" if truncated else ""
     header = f"🔍 Found {total_matches}+ match(es) in {files_searched} file(s) for pattern '{pattern}'{truncation_note}:\n"
     return header + "\n".join(results)
+
+
+def _build_file_manifest_sync(ws: Path, agent_id: uuid.UUID) -> dict:
+    """Sync workspace scanner (for use with asyncio.to_thread)."""
+    import os
+    skip_ext = {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
+                ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}
+    manifest = {}
+    for root, dirs, files in os.walk(ws):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in
+                   ("node_modules", "__pycache__", ".git")]
+        for f in files:
+            if f.startswith("."):
+                continue
+            fp = Path(root) / f
+            if fp.suffix.lower() in skip_ext:
+                continue
+            try:
+                st = fp.stat()
+                rel = str(fp.relative_to(ws)).replace("\\", "/")
+                manifest[rel] = {"s": st.st_size, "m": st.st_mtime}
+            except (OSError, ValueError):
+                pass
+    return manifest
 
 
 def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
@@ -4610,14 +4981,71 @@ def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None =
         return f"Error searching for files: {str(e)}"
 
 
-async def _find_files_async(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None) -> str:
-    """Async version of find_files for better performance.
+async def _find_files_async(ws: Path, pattern: str, path: str = ".", tenant_id: str | None = None, agent_id: uuid.UUID | None = None) -> str:
+    """Async find_files with Redis manifest cache.
 
-    This version runs the file system operations in a thread pool to avoid
-    blocking the event loop during large directory scans.
+    Uses cached file manifest for fast lookup; falls back to os.walk on miss.
     """
-    import asyncio
-    return await asyncio.to_thread(_find_files, ws, pattern, path, tenant_id)
+    import fnmatch
+
+    # enterprise_info paths — no caching, use disk
+    if path and path.startswith("enterprise_info"):
+        return await asyncio.to_thread(_find_files, ws, pattern, path, tenant_id)
+
+    search_path = (ws / path).resolve() if path and path != "." else ws
+    if not str(search_path).startswith(str(ws.resolve())):
+        return "Access denied for this path"
+    if not search_path.exists():
+        return f"Directory not found: {path}"
+
+    # Try manifest cache
+    manifest = {}
+    if agent_id:
+        manifest = await _get_file_manifest(agent_id)
+        if not manifest:
+            manifest = await asyncio.to_thread(_build_file_manifest_sync, ws, agent_id)
+            if manifest:
+                await _set_file_manifest(agent_id, manifest)
+
+    search_pattern = pattern.replace("**/", "").replace("**", "")
+    matches = []
+    max_results = 200
+
+    if manifest:
+        # Cached path: filter manifest entries
+        for rel_path_str, meta in manifest.items():
+            if len(matches) >= max_results:
+                break
+            # Apply path prefix filter
+            if path and path != "." and not rel_path_str.startswith(path.rstrip("/") + "/"):
+                continue
+            fname = rel_path_str.rsplit("/", 1)[-1] if "/" in rel_path_str else rel_path_str
+            if fnmatch.fnmatch(fname, search_pattern):
+                size = meta.get("s", 0)
+                mtime = meta.get("m", 0)
+                matches.append((rel_path_str, False, size, mtime))
+    else:
+        # Fallback: disk scan
+        return await asyncio.to_thread(_find_files, ws, pattern, path, tenant_id)
+
+    if not matches:
+        return f"No files matching pattern: {pattern}"
+
+    matches.sort(key=lambda x: x[3], reverse=True)
+
+    results = []
+    display_count = min(100, len(matches))
+    for rel_path, is_dir, size, mtime in matches[:display_count]:
+        size_str = f"{size//1024}KB" if size > 1024 else f"{size}B"
+        results.append(f"📄 {rel_path} ({size_str})")
+
+    total_found = len(matches)
+    has_more = total_found > display_count
+    header = f"📂 Found {total_found} file(s) matching '{pattern}'"
+    if has_more:
+        header += f" (showing first {display_count})"
+
+    return header + ":\n" + "\n".join(results)
 
 
 async def _manage_tasks(
@@ -4906,6 +5334,10 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
     message_text = (args.get("message") or "").strip()
     target_channel = (args.get("channel") or "").strip().lower()
 
+    # WeChat iLink bots are 1:1 — skip OrgMember lookup
+    if target_channel == "wechat" and message_text:
+        return await _send_wechat_message_direct(agent_id, message_text)
+
     if not member_name:
         return "❌ Please provide member_name"
     if not message_text:
@@ -4967,6 +5399,8 @@ async def _send_channel_message(agent_id: uuid.UUID, args: dict) -> str:
                 return await _send_dingtalk_message(agent_id, member_name, message_text, target_member)
             elif provider_type == "wecom":
                 return await _send_wecom_message(agent_id, member_name, message_text, target_member)
+            elif provider_type == "wechat":
+                return await _send_wechat_message_direct(agent_id, message_text)
             else:
                 return f"❌ Unsupported channel type: {provider_type}"
 
@@ -5159,6 +5593,106 @@ async def _send_wecom_message(
     except Exception as e:
         logger.exception("[WeCom] Error")
         return f"❌ WeCom message error: {str(e)[:200]}"
+
+
+async def _send_wechat_message_direct(agent_id: uuid.UUID, message_text: str) -> str:
+    """Send a proactive message via WeChat iLink (1:1 mode).
+
+    WeChat iLink bots are bound to a single user — no OrgMember lookup needed.
+    Finds the most recent WeChat conversation and sends to that user.
+    """
+    from app.services.wechat_channel import (
+        send_wechat_text_message,
+        load_context_token,
+        WECHAT_ILINK_BASE_URL,
+    )
+    from app.models.chat_session import ChatSession as _WCS2
+    from app.models.user import User as _WU2
+
+    try:
+        async with async_session() as db:
+            # 1. Get WeChat channel config
+            config_result = await db.execute(
+                select(ChannelConfig).where(
+                    ChannelConfig.agent_id == agent_id,
+                    ChannelConfig.channel_type == "wechat",
+                    ChannelConfig.is_configured == True,
+                )
+            )
+            config = config_result.scalar_one_or_none()
+            if not config:
+                return "❌ This agent has no WeChat channel configured"
+
+            extra = config.extra_config or {}
+            token = str(extra.get("bot_token") or "").strip()
+            base_url = str(extra.get("baseurl") or WECHAT_ILINK_BASE_URL).strip()
+            route_tag = str(extra.get("route_tag") or "").strip() or None
+            if not token:
+                return "❌ WeChat channel missing bot_token"
+
+            # 2. Find the WeChat user (1:1 binding — most recent session)
+            wcs_r = await db.execute(
+                select(_WCS2).where(
+                    _WCS2.agent_id == agent_id,
+                    _WCS2.source_channel == "wechat",
+                ).order_by(
+                    _WCS2.last_message_at.desc().nulls_last()
+                ).limit(1)
+            )
+            sess_row = wcs_r.scalar_one_or_none()
+            if not sess_row:
+                return "❌ No WeChat conversation yet. The user must send a message first."
+
+            wechat_user_id = str(sess_row.external_conv_id or "").replace("wechat_", "")
+            if not wechat_user_id:
+                # Fallback: try OrgMember for this user
+                from app.models.org import OrgMember as _WOM2
+                om_r = await db.execute(
+                    select(_WOM2.external_id).where(
+                        _WOM2.user_id == sess_row.user_id,
+                    ).limit(1)
+                )
+                wechat_user_id = om_r.scalar_one_or_none() or ""
+            if not wechat_user_id:
+                return "❌ Cannot determine WeChat user ID"
+
+            # 3. Load cached context_token
+            context_token = await load_context_token(str(agent_id), wechat_user_id)
+            if not context_token:
+                return "❌ WeChat session expired. The user must send a new message to refresh."
+
+            # 4. Send via WeChat iLink
+            try:
+                await send_wechat_text_message(
+                    token=token, base_url=base_url, to_user_id=wechat_user_id,
+                    context_token=context_token, text=message_text,
+                    route_tag=route_tag,
+                )
+            except Exception as send_err:
+                err_str = str(send_err)[:200]
+                if "session" in err_str.lower() or "expire" in err_str.lower():
+                    return "❌ WeChat session expired — ask the user to send a new message."
+                return f"❌ WeChat send failed: {err_str[:200]}"
+
+            # 5. Save to session for UI visibility
+            try:
+                db.add(ChatMessage(
+                    agent_id=agent_id,
+                    user_id=sess_row.user_id,
+                    role="assistant",
+                    content=message_text,
+                    conversation_id=str(sess_row.id),
+                ))
+                sess_row.last_message_at = datetime.now(timezone.utc)
+                await db.commit()
+            except Exception as ex:
+                logger.error(f"[WeChat] Failed to save message to session: {ex}")
+
+            return "✅ Message sent via WeChat"
+
+    except Exception as e:
+        logger.exception("[WeChat] Direct message error")
+        return f"❌ WeChat message error: {str(e)[:200]}"
 
 
 async def _send_web_message(agent_id: uuid.UUID, args: dict) -> str:
@@ -6070,7 +6604,7 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                             full_msgs.append(LLMMessage(
                                 role="tool",
                                 tool_call_id=tc.get("id", ""),
-                                content=str(tool_result)[:4000],
+                                content=str(tool_result)[:64000],
                             ))
                         continue  # Next LLM round
 
@@ -6160,6 +6694,8 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
                 return "📭 No posts in the plaza yet. Be the first to share something!"
 
             output = []
+            POST_PREVIEW = 300
+            COMMENT_PREVIEW = 200
             for p in posts:
                 # Load comments
                 cr = await db.execute(
@@ -6168,11 +6704,13 @@ async def _plaza_get_new_posts(agent_id: uuid.UUID, arguments: dict) -> str:
                 comments = cr.scalars().all()
                 icon = "🤖" if p.author_type == "agent" else "👤"
                 time_str = p.created_at.strftime("%m-%d %H:%M") if p.created_at else ""
-                post_text = f"{icon} **{p.author_name}** ({time_str}) [post_id: {p.id}]\n{p.content}\n❤️ {p.likes_count}  💬 {p.comments_count}"
+                content_preview = p.content[:POST_PREVIEW] + ("..." if len(p.content) > POST_PREVIEW else "")
+                post_text = f"{icon} **{p.author_name}** ({time_str}) [post_id: {p.id}]\n{content_preview}\n❤️ {p.likes_count}  💬 {p.comments_count}"
                 if comments:
                     for c in comments:
                         c_icon = "🤖" if c.author_type == "agent" else "👤"
-                        post_text += f"\n  └─ {c_icon} {c.author_name}: {c.content}"
+                        c_text = c.content[:COMMENT_PREVIEW] + ("..." if len(c.content) > COMMENT_PREVIEW else "")
+                        post_text += f"\n  └─ {c_icon} {c.author_name}: {c_text}"
                 output.append(post_text)
 
             return "🏛️ Agent Plaza — Recent Posts:\n\n" + "\n\n---\n\n".join(output)
@@ -6189,8 +6727,8 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
     content = arguments.get("content", "").strip()
     if not content:
         return "Error: Post content cannot be empty."
-    if len(content) > 500:
-        content = content[:500]
+    if len(content) > 5000:
+        content = content[:5000]
 
     try:
         async with async_session() as db:
@@ -6254,8 +6792,8 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     content = arguments.get("content", "").strip()
     if not content:
         return "Error: Comment content cannot be empty."
-    if len(content) > 300:
-        content = content[:300]
+    if len(content) > 2000:
+        content = content[:2000]
 
     try:
         pid = uuid.UUID(str(post_id))
@@ -11024,6 +11562,24 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
         action = arguments.get("action")
         filename = arguments.get("filename", "")
 
+        # Auto-correct filename: workspace/ prefix → full directory search
+        if filename and not os.path.exists(filename) and not filename.startswith("workspace/"):
+            ws_path = os.path.join("workspace", filename)
+            if os.path.exists(ws_path):
+                filename = ws_path
+                arguments["filename"] = filename
+            else:
+                basename = os.path.basename(filename)
+                if basename:
+                    for match in agent_root.resolve().rglob(basename):
+                        if match.is_file():
+                            try:
+                                filename = str(match.relative_to(agent_root.resolve()))
+                            except ValueError:
+                                filename = str(match)
+                            arguments["filename"] = filename
+                            break
+
         if not action:
             return json.dumps({
                 "success": False,
@@ -11204,6 +11760,25 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
         action = arguments.get("action")
         filename = arguments.get("filename", "")
 
+        # Auto-correct filename: workspace/ prefix → full directory search
+        if filename and not os.path.exists(filename) and not filename.startswith("workspace/"):
+            ws_path = os.path.join("workspace", filename)
+            if os.path.exists(ws_path):
+                filename = ws_path
+                arguments["filename"] = filename
+            else:
+                # Full search: find basename anywhere in agent directory
+                basename = os.path.basename(filename)
+                if basename:
+                    for match in agent_root.resolve().rglob(basename):
+                        if match.is_file():
+                            try:
+                                filename = str(match.relative_to(agent_root.resolve()))
+                            except ValueError:
+                                filename = str(match)
+                            arguments["filename"] = filename
+                            break
+
         if not action:
             return json.dumps({
                 "success": False,
@@ -11221,10 +11796,8 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
         # 读取工作簿
         elif action == "read_workbook":
             if not filename or not os.path.exists(filename):
-                return json.dumps({
-                    "success": False,
-                    "error": f"File {filename} not found"
-                }, ensure_ascii=False)
+                hint = _build_not_found_hint(Path(str(agent_root)), filename or "")
+                return json.dumps({"success": False, "error": hint}, ensure_ascii=False)
 
             wb = load_workbook(filename, data_only=True)
             result = {}
