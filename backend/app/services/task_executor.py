@@ -83,6 +83,14 @@ async def execute_task(task_id: uuid.UUID, agent_id: uuid.UUID) -> None:
     from app.services.agent_context import build_agent_context
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, agent.role_description or "")
 
+    # ── [Safety] Resolve context window for in-memory overflow protection ──
+    _task_effective_window = None
+    try:
+        from app.services.context_manager import get_effective_context_window
+        _task_effective_window = get_effective_context_window(model)
+    except Exception:
+        pass
+
     # Add task-execution-specific instructions
     task_addendum = """
 
@@ -200,6 +208,19 @@ You are now in TASK EXECUTION MODE (not a conversation). A task has been assigne
                         tool_call_id=tc["id"],
                         content=str(tool_result),
                     ))
+                # ── [Safety] In-memory context trimming for task executor ──
+                # task_executor has no DB-level compression, so this in-memory
+                # trim is the sole guard against context overflow.
+                try:
+                    if _task_effective_window and len(messages) > 8:
+                        from app.services.context_manager import (
+                            trim_api_messages_inplace,
+                            estimate_messages_tokens,
+                        )
+                        _est_tokens = estimate_messages_tokens(messages)
+                        trim_api_messages_inplace(messages, _est_tokens, _task_effective_window)
+                except Exception:
+                    pass  # Safe fallback: continue with untrimmed messages
             else:
                 reply = response.content or ""
                 break

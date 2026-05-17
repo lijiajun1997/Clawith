@@ -520,3 +520,192 @@ def build_graduated_tool_summary(
             parts.append(f"  - {name}({args_brief}) => {result_brief}")
 
     return "\n".join(parts)
+
+
+# ── In-memory context overflow protection ──────────────────
+# These functions operate on the in-memory api_messages list directly,
+# complementing the DB-level compression above.  They are the safety net
+# that prevents exceed_context_size_error during long tool-calling loops.
+
+_MAX_TOOL_RESULT_CHARS = 50_000  # Single tool result max chars (~16k tokens)
+_TRIM_THRESHOLD_RATIO = 0.85    # Trigger in-memory trim at 85% of window
+_TRIM_TARGET_RATIO = 0.55       # After trimming, target 55% of window
+
+
+def estimate_messages_tokens(messages: list) -> int:
+    """Fast token estimate for an in-memory LLMMessage list.
+
+    Uses the ~3 chars/token heuristic.  Iterates each message's text
+    fields and sums character counts, then converts.
+
+    Returns 0 on any failure (safe — downstream will skip trimming).
+    """
+    try:
+        total_chars = 0
+        for m in messages:
+            c = getattr(m, "content", None)
+            if isinstance(c, str):
+                total_chars += len(c)
+            elif isinstance(c, list):
+                for part in c:
+                    if isinstance(part, dict):
+                        txt = part.get("text", "")
+                        if isinstance(txt, str):
+                            total_chars += len(txt)
+
+            dc = getattr(m, "dynamic_content", None)
+            if isinstance(dc, str):
+                total_chars += len(dc)
+
+            rc = getattr(m, "reasoning_content", None)
+            if isinstance(rc, str):
+                total_chars += len(rc)
+
+            tcs = getattr(m, "tool_calls", None)
+            if tcs and isinstance(tcs, list):
+                for tc in tcs:
+                    fn = tc.get("function", {})
+                    total_chars += len(fn.get("name", ""))
+                    total_chars += len(fn.get("arguments", ""))
+
+        return max(total_chars // 3, 1)
+    except Exception:
+        return 0
+
+
+def truncate_tool_result(content: str | list, max_chars: int = _MAX_TOOL_RESULT_CHARS) -> str | list:
+    """Truncate a tool result string to prevent single-output token bloat.
+
+    Preserves list (vision) content unchanged — vision payloads are gated
+    by the model's image handling, not text token limits.
+
+    Returns original content unchanged on any error.
+    """
+    try:
+        if not content:
+            return content
+        if isinstance(content, list):
+            return content
+        if not isinstance(content, str):
+            return content
+        if len(content) <= max_chars:
+            return content
+        from app.utils.text import truncate_head_tail
+        truncated = truncate_head_tail(content, max_chars, tail_chars=2000)
+        return truncated + f"\n\n[tool result truncated from {len(content)} to {max_chars} chars]"
+    except Exception:
+        return content
+
+
+def trim_api_messages_inplace(
+    api_messages: list,
+    prompt_tokens: int | None,
+    model_window: int,
+) -> int:
+    """In-place trim of an in-memory LLMMessage list when it risks
+    exceeding the model's context window.
+
+    This is the memory-level safety net that complements the DB-level
+    compression in maybe_trigger_compression / emergency_truncate.
+
+    Strategy:
+      1. Estimate current token usage (prefer real prompt_tokens from
+         API response, fall back to char-based estimate).
+      2. If usage < 85% of window → no-op (return 0).
+      3. If usage >= 85% → remove oldest messages between index 1 (system
+         prompt at index 0 is always preserved) and a calculated split point.
+      4. Fix sequence integrity: drop orphaned tool messages whose parent
+         assistant+tool_calls was removed.
+
+    Returns the number of messages removed.  Returns 0 on any error.
+
+    IMPORTANT: mutates api_messages in-place via slice assignment.
+    """
+    try:
+        if not api_messages or model_window <= 0:
+            return 0
+        if len(api_messages) <= 3:
+            return 0  # system + user + assistant — too few to trim
+
+        # Step 1: estimate current usage
+        if prompt_tokens and prompt_tokens > 0:
+            current_tokens = prompt_tokens
+        else:
+            current_tokens = estimate_messages_tokens(api_messages)
+
+        if current_tokens <= 0:
+            return 0
+
+        threshold = int(model_window * _TRIM_THRESHOLD_RATIO)
+        if current_tokens < threshold:
+            return 0  # Below danger zone — no-op
+
+        logger.warning(
+            f"[CtxMgr] In-memory trim triggered: ~{current_tokens} tokens "
+            f"vs {model_window} window ({current_tokens / model_window:.0%}). "
+            f"Messages: {len(api_messages)}"
+        )
+
+        original_len = len(api_messages)
+
+        # Step 2: calculate how many messages to remove
+        target_tokens = int(model_window * _TRIM_TARGET_RATIO)
+        avg_tokens_per_msg = max(current_tokens / len(api_messages), 1)
+        excess_tokens = max(current_tokens - target_tokens, 0)
+        msgs_to_remove = max(int(excess_tokens / avg_tokens_per_msg), 1)
+
+        # Never remove the system prompt (index 0).
+        # Never remove the last 4 messages (recent context + current tool round).
+        min_preserve_tail = 4
+        max_removable = len(api_messages) - 1 - min_preserve_tail
+        msgs_to_remove = min(msgs_to_remove, max_removable)
+        if msgs_to_remove <= 0:
+            return 0
+
+        # Remove oldest messages after system prompt
+        del api_messages[1 : 1 + msgs_to_remove]
+
+        # Step 3: fix sequence integrity — drop orphaned messages
+        # Pass 1: drop orphaned tool messages
+        _fixed = [api_messages[0]]  # keep system prompt
+        for i in range(1, len(api_messages)):
+            m = api_messages[i]
+            if m.role == "tool":
+                tc_ids = set()
+                if _fixed and _fixed[-1].role == "assistant" and _fixed[-1].tool_calls:
+                    tc_ids = {tc.get("id", "") for tc in _fixed[-1].tool_calls}
+                if m.tool_call_id and m.tool_call_id in tc_ids:
+                    _fixed.append(m)
+                # else: orphaned tool — skip
+            else:
+                _fixed.append(m)
+
+        # Pass 2: drop assistant+tool_calls with no following tool responses
+        _cleaned = []
+        for j in range(len(_fixed)):
+            m = _fixed[j]
+            if m.role == "assistant" and m.tool_calls:
+                tc_ids = {tc.get("id", "") for tc in m.tool_calls}
+                has_response = any(
+                    _fixed[k].role == "tool" and _fixed[k].tool_call_id in tc_ids
+                    for k in range(j + 1, min(j + 1 + len(m.tool_calls) * 2, len(_fixed)))
+                )
+                if has_response:
+                    _cleaned.append(m)
+                # else: orphaned assistant with tool_calls — drop
+            else:
+                _cleaned.append(m)
+
+        # Replace contents in-place so caller's reference stays valid
+        removed_count = original_len - len(_cleaned)
+        api_messages[:] = _cleaned
+
+        logger.info(
+            f"[CtxMgr] In-memory trim complete: removed {removed_count} messages, "
+            f"{len(api_messages)} remaining"
+        )
+        return max(removed_count, 0)
+
+    except Exception as e:
+        logger.error(f"[CtxMgr] In-memory trim failed (safe fallback): {e}")
+        return 0

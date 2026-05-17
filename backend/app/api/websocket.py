@@ -66,6 +66,32 @@ class ConnectionManager:
             return []
         return list(set(sid for _ws, sid in self.active_connections[agent_id] if sid))
 
+    def count_connections(self) -> int:
+        """Total active WebSocket connections across all agents."""
+        return sum(len(conns) for conns in self.active_connections.values())
+
+    def count_agents_with_connections(self) -> int:
+        """Number of agents that have at least one active connection."""
+        return sum(1 for conns in self.active_connections.values() if conns)
+
+    def cleanup_stale(self):
+        """Remove closed connections from the map."""
+        from starlette.websockets import WebSocketState
+        stale_agents = []
+        for agent_id, conns in self.active_connections.items():
+            before = len(conns)
+            self.active_connections[agent_id] = [
+                (ws, sid) for ws, sid in conns
+                if ws.state != WebSocketState.DISCONNECTED
+            ]
+            removed = before - len(self.active_connections[agent_id])
+            if removed:
+                logger.debug(f"[WS] Cleaned {removed} stale connection(s) for agent {agent_id}")
+            if not self.active_connections[agent_id]:
+                stale_agents.append(agent_id)
+        for agent_id in stale_agents:
+            del self.active_connections[agent_id]
+
 
 manager = ConnectionManager()
 
@@ -74,6 +100,15 @@ from fastapi import Depends
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
+
+
+@router.get("/api/dashboard/online-users")
+async def get_online_users(current_user: User = Depends(get_current_user)):
+    """Return the current number of online users (active WebSocket connections)."""
+    return {
+        "online_users": manager.count_connections(),
+        "active_agents": manager.count_agents_with_connections(),
+    }
 
 
 @router.get("/api/chat/{agent_id}/history")
@@ -106,6 +141,10 @@ async def get_chat_history(
                 entry["toolArgs"] = data.get("args")
                 entry["toolStatus"] = data.get("status", "done")
                 entry["toolResult"] = data.get("result", "")
+                if data.get("file_preview"):
+                    entry["file_preview"] = data["file_preview"]
+                if data.get("live_preview"):
+                    entry["live_preview"] = data["live_preview"]
             except Exception:
                 pass
         out.append(entry)
@@ -198,7 +237,8 @@ async def call_llm(
                 _ur = await _udb.execute(select(_UserModel).where(_UserModel.id == user_id))
                 _u = _ur.scalar_one_or_none()
                 if _u:
-                    _current_user_name = _u.display_name or _u.username
+                    _raw = _u.display_name or _u.username or ""
+                    _current_user_name = _raw.split("@")[0] if "@" in _raw else _raw
         except Exception:
             pass
     static_prompt, dynamic_prompt = await build_agent_context(agent_id, agent_name, role_description, current_user_name=_current_user_name)
@@ -434,6 +474,17 @@ async def call_llm(
             if _pt:
                 _last_prompt_tokens = _pt
 
+        # ── [Safety] In-memory message list trimming to prevent context overflow ──
+        # The DB-level compression above does NOT touch the in-memory api_messages
+        # list, so it can grow unbounded during a long tool-calling loop.
+        # This is the memory-level safety net.
+        try:
+            if _effective_window:
+                from app.services.context_manager import trim_api_messages_inplace
+                trim_api_messages_inplace(api_messages, _last_prompt_tokens, _effective_window)
+        except Exception:
+            pass  # Safe fallback: skip trimming, continue with current messages
+
         # ── Send token summary to frontend ──
         if _last_prompt_tokens and on_token_summary:
             try:
@@ -582,6 +633,14 @@ async def call_llm(
                 except Exception as e:
                     logger.warning(f"[LLM] Vision injection failed for {tool_name}: {e}")
 
+            # ── [Safety] Truncate large tool results to prevent single-output token bloat ──
+            try:
+                from app.services.context_manager import truncate_tool_result, _MAX_TOOL_RESULT_CHARS
+                if isinstance(tool_content, str) and len(tool_content) > _MAX_TOOL_RESULT_CHARS:
+                    tool_content = truncate_tool_result(tool_content)
+            except Exception:
+                pass  # Safe fallback: use original tool_content unchanged
+
             api_messages.append(LLMMessage(
                 role="tool",
                 tool_call_id=tc["id"],
@@ -638,7 +697,7 @@ async def _complete_llm_background(
     redis_bg_key = f"bg_llm:{agent_id_str}:{conv_id}"
     redis_inflight_key = f"inflight:{agent_id_str}:{conv_id}"
     try:
-        response = await llm_task
+        response = await asyncio.wait_for(llm_task, timeout=1200)
         logger.info(f"[BG] Background LLM task completed for session {conv_id}: {response[:80]}")
 
         # Save assistant message to DB
@@ -680,8 +739,27 @@ async def _complete_llm_background(
             "status": "done",
             "content": response[:500],
             "completed_at": datetime.now(tz.utc).isoformat(),
-        }), ex=600)
+        }), ex=1800)
         await r.delete(redis_inflight_key)
+
+    except asyncio.TimeoutError:
+        # Background task exceeded 20-minute timeout — save partial content
+        partial_text = "".join(partial_chunks).strip()
+        if partial_text:
+            async with async_session() as db:
+                asst_msg = ChatMessage(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=partial_text + "\n\n*[Generation timed out in background]*",
+                    conversation_id=conv_id,
+                )
+                db.add(asst_msg)
+                await db.commit()
+        r = await get_redis()
+        await r.set(redis_bg_key, json.dumps({"status": "timeout"}), ex=300)
+        await r.delete(redis_inflight_key)
+        logger.warning(f"[BG] Background LLM task timed out for session {conv_id}")
 
     except asyncio.CancelledError:
         # Task was cancelled (e.g. server shutdown) — save partial if any
@@ -975,6 +1053,11 @@ async def websocket_chat(
                     "type": "info",
                     "content": f"Background task failed: {_bg_info.get('error', 'unknown error')[:100]}",
                 })
+            elif _bg_status == "timeout":
+                await websocket.send_json({
+                    "type": "info",
+                    "content": "Background task timed out after 20 minutes. Partial result saved.",
+                })
             await _rr.delete(_bg_key)
 
         # Check for interrupted round (inflight marker still present)
@@ -996,7 +1079,24 @@ async def websocket_chat(
 
         while True:
             logger.info(f"[WS] Waiting for message from {agent_name}...")
-            data = await websocket.receive_json()
+
+            # ── Ping/pong keepalive: timeout-based receive to detect dead connections ──
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    logger.info(f"[WS] Ping failed, connection dead: {agent_name}")
+                    break
+                continue
+
+            # Handle ping/pong keepalive messages
+            if data.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+            if data.get("type") == "pong":
+                continue
 
             # Set a unique trace ID for this specific message processing
             from app.core.logging_config import set_trace_id
@@ -1187,7 +1287,7 @@ async def websocket_chat(
                                 # Try regex match on result text (web chat fallback format)
                                 import re as _re_fp
                                 tool_result = data.get("result", "") or ""
-                                _fm = _re_fp.match(r"File ready:\s*\[([^\]]+)\]\(([^)]+)\)", tool_result)
+                                _fm = _re_fp.search(r"File ready(?: for download)?:\s*\[([^\]]+)\]\(([^)]+)\)", tool_result)
                                 if _fm:
                                     file_name = _fm.group(1)
                                     download_url = _fm.group(2)
@@ -1210,8 +1310,10 @@ async def websocket_chat(
                                         aid = str(agent_id)
                                         from app.config import get_settings as _gs
                                         _s = _gs()
-                                        base_url = getattr(_s, 'BASE_URL', '').rstrip('/') or ''
-                                        download_url = f"{base_url}/api/agents/{aid}/files/download?path={_fp}"
+                                        base_url = (getattr(_s, 'PUBLIC_BASE_URL', '') or getattr(_s, 'BASE_URL', '')).rstrip('/')
+                                        from app.core.security import sign_download_url
+                                        _signed = sign_download_url(aid, _fp)
+                                        download_url = f"{base_url}/api/agents/{aid}/files/download?path={_fp}&{_signed}"
                                         data["file_preview"] = {"name": file_name, "path": file_rel, "url": download_url}
                                 if data.get("file_preview"):
                                     logger.info(f"[WS][FilePreview] Embedded for send_channel_file: {data['file_preview']['name']}")
@@ -1226,17 +1328,22 @@ async def websocket_chat(
                             try:
                                 import json as _json_tc
                                 async with async_session() as _tc_db:
+                                    _tc_content: dict = {
+                                        "name": data.get("name", ""),
+                                        "args": data.get("args"),
+                                        "status": "done",
+                                        "result": truncate_head_tail(data.get("result") or "", 500, tail_chars=200),
+                                        "reasoning_content": data.get("reasoning_content"),
+                                    }
+                                    if data.get("file_preview"):
+                                        _tc_content["file_preview"] = data["file_preview"]
+                                    if data.get("live_preview"):
+                                        _tc_content["live_preview"] = data["live_preview"]
                                     tc_msg = ChatMessage(
                                         agent_id=agent_id,
                                         user_id=user_id,
                                         role="tool_call",
-                                        content=_json_tc.dumps({
-                                            "name": data.get("name", ""),
-                                            "args": data.get("args"),
-                                            "status": "done",
-                                            "result": truncate_head_tail(data.get("result") or "", 500, tail_chars=200),
-                                            "reasoning_content": data.get("reasoning_content"),
-                                        }),
+                                        content=_json_tc.dumps(_tc_content),
                                         conversation_id=conv_id,
                                     )
                                     _tc_db.add(tc_msg)
@@ -1289,7 +1396,7 @@ async def websocket_chat(
                         await _r.set(_r_inflight_key, json.dumps({
                             "user_content": content[:200],
                             "started_at": _dt.now(_tz.utc).isoformat(),
-                        }), ex=600)
+                        }), ex=1800)
                     except Exception:
                         pass
 
@@ -1346,7 +1453,7 @@ async def websocket_chat(
                                 await _r_bg.set(
                                     f"bg_llm:{agent_id_str}:{conv_id}",
                                     json.dumps({"status": "running"}),
-                                    ex=600,
+                                    ex=1800,
                                 )
                             except Exception:
                                 pass
