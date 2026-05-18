@@ -1,6 +1,8 @@
 """Feishu (Lark) OAuth and API integration service."""
 
+import asyncio
 import json
+import time
 from collections import OrderedDict
 
 import httpx
@@ -37,6 +39,13 @@ class FeishuService:
     # long-running multi-tenant deployments.
     _LARK_CLIENT_CACHE_MAX = 50
 
+    # HTTP 超时和重试配置
+    _SEND_TIMEOUT = 15.0       # 消息发送超时(秒)
+    _PATCH_TIMEOUT = 15.0      # 消息更新超时(秒)
+    _TOKEN_TIMEOUT = 10.0      # Token获取超时(秒)
+    _MAX_RETRIES = 3           # 最大重试次数
+    _RETRY_BASE_DELAY = 1.0    # 重试基础延迟(秒)
+
     def __init__(self):
         self.app_id = settings.FEISHU_APP_ID
         self.app_secret = settings.FEISHU_APP_SECRET
@@ -47,6 +56,28 @@ class FeishuService:
         # keeps the most-recently-used entries at the tail so we can evict from
         # the head when the cache is full.
         self._lark_clients: OrderedDict[str, lark.Client] = OrderedDict()
+
+    @staticmethod
+    async def _retry_async(fn, *, max_retries: int = 3, base_delay: float = 1.0, label: str = ""):
+        """带指数退避的异步重试包装器。"""
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await fn()
+            except Exception as e:
+                last_exc = e
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"[Feishu] {label} attempt {attempt}/{max_retries} failed: {e}, "
+                        f"retrying in {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        f"[Feishu] {label} all {max_retries} attempts failed: {e}"
+                    )
+        raise last_exc
 
     @staticmethod
     def _parse_api_response(
@@ -93,7 +124,6 @@ class FeishuService:
         Caches tokens per (app_id, app_secret) pair with a 7200s TTL,
        提前 300s 过期以避免边界情况。
         """
-        import time
         target_app_id = app_id or self.app_id
         target_app_secret = app_secret or self.app_secret
         cache_key = (target_app_id, target_app_secret)
@@ -103,7 +133,7 @@ class FeishuService:
         if cached and time.time() < cached[1]:
             return cached[0]
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=self._TOKEN_TIMEOUT) as client:
             resp = await client.post(FEISHU_APP_TOKEN_URL, json={
                 "app_id": target_app_id,
                 "app_secret": target_app_secret,
@@ -327,6 +357,7 @@ class FeishuService:
         content: str,
         receive_id_type: str = "open_id",
         stage: str = "send_message",
+        retries: int = 3,
     ) -> dict:
         """Send a message via a specific Feishu bot (per-agent credentials).
 
@@ -337,26 +368,36 @@ class FeishuService:
             msg_type: "text", "interactive", etc.
             content: JSON string of message content
             receive_id_type: "open_id" or "chat_id"
+            retries: 最大重试次数
         """
-        # Get app access token for this specific agent's bot
-        async with httpx.AsyncClient() as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+        async def _do_send():
+            async with httpx.AsyncClient(timeout=self._SEND_TIMEOUT) as client:
+                token_resp = await client.post(
+                    FEISHU_APP_TOKEN_URL,
+                    json={"app_id": app_id, "app_secret": app_secret},
+                    timeout=self._TOKEN_TIMEOUT,
+                )
+                app_token = token_resp.json().get("app_access_token", "")
+                if not app_token:
+                    raise RuntimeError(f"Feishu {stage}: empty app_access_token")
 
-            resp = await client.post(
-                f"{FEISHU_SEND_MSG_URL}?receive_id_type={receive_id_type}",
-                json={
-                    "receive_id": receive_id,
-                    "msg_type": msg_type,
-                    "content": content,
-                },
-                headers={"Authorization": f"Bearer {app_token}"},
-            )
-            data = self._parse_api_response(resp, stage=stage)
-            return data
+                resp = await client.post(
+                    f"{FEISHU_SEND_MSG_URL}?receive_id_type={receive_id_type}",
+                    json={
+                        "receive_id": receive_id,
+                        "msg_type": msg_type,
+                        "content": content,
+                    },
+                    headers={"Authorization": f"Bearer {app_token}"},
+                )
+                return self._parse_api_response(resp, stage=stage)
+
+        return await self._retry_async(
+            _do_send,
+            max_retries=retries,
+            base_delay=self._RETRY_BASE_DELAY,
+            label=f"send_message({stage})",
+        )
 
     async def patch_message(
         self,
@@ -365,24 +406,33 @@ class FeishuService:
         message_id: str,
         content: str,
         stage: str = "patch_message",
+        retries: int = 3,
     ) -> dict:
         """Patch an existing message (e.g. updating an interactive card for streaming)."""
-        async with httpx.AsyncClient() as client:
-            token_resp = await client.post(FEISHU_APP_TOKEN_URL, json={
-                "app_id": app_id,
-                "app_secret": app_secret,
-            })
-            app_token = token_resp.json().get("app_access_token", "")
+        async def _do_patch():
+            async with httpx.AsyncClient(timeout=self._PATCH_TIMEOUT) as client:
+                token_resp = await client.post(
+                    FEISHU_APP_TOKEN_URL,
+                    json={"app_id": app_id, "app_secret": app_secret},
+                    timeout=self._TOKEN_TIMEOUT,
+                )
+                app_token = token_resp.json().get("app_access_token", "")
+                if not app_token:
+                    raise RuntimeError(f"Feishu {stage}: empty app_access_token")
 
-            resp = await client.patch(
-                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
-                json={
-                    "content": content,
-                },
-                headers={"Authorization": f"Bearer {app_token}"},
-            )
-            data = self._parse_api_response(resp, stage=stage, message_id=message_id)
-            return data
+                resp = await client.patch(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
+                    json={"content": content},
+                    headers={"Authorization": f"Bearer {app_token}"},
+                )
+                return self._parse_api_response(resp, stage=stage, message_id=message_id)
+
+        return await self._retry_async(
+            _do_patch,
+            max_retries=retries,
+            base_delay=self._RETRY_BASE_DELAY,
+            label=f"patch_message({stage})",
+        )
 
     async def resolve_open_id(self, app_id: str, app_secret: str,
                                email: str | None = None, mobile: str | None = None) -> str | None:

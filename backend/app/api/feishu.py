@@ -467,8 +467,8 @@ _processed_events: collections.deque[str] = collections.deque(maxlen=_EVENT_DEDU
 # Streaming card timing
 _FLUSH_INTERVAL_CARDKIT = 0.5   # seconds between CardKit stream flushes
 _FLUSH_INTERVAL_PATCH = 1.0     # seconds between message patch flushes
-_CARDKIT_STREAM_TIMEOUT = 5.0   # timeout for CardKit stream update
-_CARDKIT_FINAL_TIMEOUT = 10.0   # timeout for final card update
+_CARDKIT_STREAM_TIMEOUT = 10.0  # timeout for CardKit stream update
+_CARDKIT_FINAL_TIMEOUT = 15.0   # timeout for final card update
 
 
 async def _is_event_processed(event_id: str) -> bool:
@@ -952,7 +952,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     from pathlib import Path as _P
                     from app.config import get_settings as _gs_fallback
                     _fs = _gs_fallback()
-                    _base_url = getattr(_fs, 'BASE_URL', '').rstrip('/') or ''
+                    _base_url = (getattr(_fs, 'PUBLIC_BASE_URL', '') or getattr(_fs, 'BASE_URL', '')).rstrip('/')
                     _fp = _P(file_path)
                     _ws_root = _P(_fs.AGENT_DATA_DIR)
                     try:
@@ -963,19 +963,27 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                     if msg:
                         _fallback_parts.append(msg)
                     if _base_url:
-                        _dl_url = f"{_base_url}/api/agents/{agent_id}/files/download?path={_rel}"
+                        from app.core.security import sign_download_url
+                        _signed = sign_download_url(str(agent_id), _rel)
+                        _dl_url = f"{_base_url}/api/agents/{agent_id}/files/download?path={_rel}&{_signed}"
                         _fallback_parts.append(f"📎 {_fp.name}\n🔗 {_dl_url}")
                     _fallback_parts.append(
                         f"⚠️ 文件直接发送失败（{_upload_err}）\n"
                         "如需 Agent 直接发飞书文件，请在飞书开放平台为应用开启 "
                         "`im:resource`（即 `im:resource:upload`）权限并发布版本。"
                     )
-                    await feishu_service.send_message(
-                        config.app_id, config.app_secret,
-                        _reply_to_id, "text",
-                        _json.dumps({"text": "\n\n".join(_fallback_parts)}),
-                        receive_id_type=_rid_type,
-                    )
+                    try:
+                        await feishu_service.send_message(
+                            config.app_id, config.app_secret,
+                            _reply_to_id, "text",
+                            _json.dumps({"text": "\n\n".join(_fallback_parts)}),
+                            receive_id_type=_rid_type,
+                        )
+                    except Exception as _fallback_err:
+                        raise RuntimeError(
+                            f"File upload failed: {_upload_err}. "
+                            f"Fallback message also failed: {_fallback_err}"
+                        ) from _fallback_err
             _cfs_token = _cfs.set(_feishu_file_sender)
 
             # Set up streaming response via CardKit (primary) or IM patch (fallback)
@@ -1325,6 +1333,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             logger.info(f"[Feishu] LLM reply: {reply_text[:100]}")
 
             # Send final card update or fallback text
+            _feishu_delivered = False
             if _cardkit_degraded:
                 # CardKit degraded — send result as plain text message instead
                 logger.info(f"[Feishu] CardKit degraded, sending reply as plain text message")
@@ -1334,6 +1343,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _json.dumps({"text": reply_text[:4000]}), receive_id_type=_rid_type,
                         stage="degraded_fallback_text",
                     )
+                    _feishu_delivered = True
                 except Exception as e:
                     logger.error(f"[Feishu] Degraded fallback text also failed: {e}")
             elif cardkit_card_id:
@@ -1355,6 +1365,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         ),
                         timeout=_CARDKIT_FINAL_TIMEOUT,
                     )
+                    _feishu_delivered = True
                 except Exception as e:
                     logger.error(f"[Feishu] CardKit final update failed: {e}")
                     try:
@@ -1363,6 +1374,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
                             stage="stream_final_fallback_text",
                         )
+                        _feishu_delivered = True
                     except Exception as e2:
                         logger.error(f"[Feishu] CardKit fallback text also failed: {e2}")
             elif msg_id_for_patch:
@@ -1383,6 +1395,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _json_card.dumps(final_card),
                         stage="stream_final",
                     )
+                    _feishu_delivered = True
                 except Exception as e:
                     logger.error(f"[Feishu] Final card patch failed: {e}")
                     try:
@@ -1391,6 +1404,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                             _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
                             stage="stream_final_fallback_text",
                         )
+                        _feishu_delivered = True
                     except Exception as e2:
                         logger.error(f"[Feishu] Fallback text also failed: {e2}")
             else:
@@ -1400,8 +1414,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                         _json.dumps({"text": reply_text}), receive_id_type=_rid_type,
                         stage="stream_no_card_fallback_text",
                     )
+                    _feishu_delivered = True
                 except Exception as e:
                     logger.error(f"[Feishu] Failed to send fallback message: {e}")
+
+            if not _feishu_delivered:
+                logger.error(
+                    f"[Feishu] DELIVERY FAILED — all send paths exhausted, "
+                    f"conv_id={conv_id}, reply_len={len(reply_text)}"
+                )
 
             # Log activity
             from app.services.activity_logger import log_activity
@@ -1742,6 +1763,7 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
             logger.info(f"[Feishu] Image LLM reply: {reply_text[:100]}")
 
             # Send final card or fallback text
+            _img_delivered = False
             if _patch_msg_id:
                 try:
                     await _img_patch_queue.drain()
@@ -1752,17 +1774,36 @@ async def _handle_feishu_file(db, agent_id, config, message, sender_open_id, cha
                     streaming=False,
                     agent_name=_agent_name,
                 )
-                await feishu_service.patch_message(
-                    config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card), stage="image_stream_final"
-                )
+                try:
+                    await feishu_service.patch_message(
+                        config.app_id, config.app_secret, _patch_msg_id, _json_card_img.dumps(_final_card), stage="image_stream_final"
+                    )
+                    _img_delivered = True
+                except Exception as _e_patch:
+                    logger.error(f"[Feishu] Image final patch failed: {_e_patch}")
+                    try:
+                        await feishu_service.send_message(
+                            config.app_id, config.app_secret, _reply_to, "text",
+                            json.dumps({"text": reply_text}), receive_id_type=_rid_type, stage="image_final_fallback",
+                        )
+                        _img_delivered = True
+                    except Exception as _e_fb:
+                        logger.error(f"[Feishu] Image fallback text also failed: {_e_fb}")
             else:
                 try:
                     await feishu_service.send_message(
                         config.app_id, config.app_secret, _reply_to, "text",
                         json.dumps({"text": reply_text}), receive_id_type=_rid_type, stage="image_stream_fallback_text",
                     )
+                    _img_delivered = True
                 except Exception as _e_fb:
                     logger.error(f"[Feishu] Failed to send image reply: {_e_fb}")
+
+            if not _img_delivered:
+                logger.error(
+                    f"[Feishu] IMAGE DELIVERY FAILED — all send paths exhausted, "
+                    f"agent={agent_id}, reply_len={len(reply_text or '')}"
+                )
 
             # Save assistant reply in DB
             async with _async_session() as _db_save:
