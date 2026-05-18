@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import json
 import hashlib
 import os
 import time
@@ -518,10 +519,28 @@ def _extract_text(item_list: list[dict[str, Any]] | None) -> str:
     for item in item_list or []:
         t = item.get("type")
         if t == ITEM_TEXT:
-            text = ((item.get("text_item") or {}).get("text") or "").strip()
+            ti = item.get("text_item") or {}
+            text = (ti.get("text") or ti.get("content") or "").strip()
             if text:
                 parts.append(text)
     return "\n".join(parts).strip()
+
+
+def _describe_item_list(item_list: list[dict[str, Any]] | None) -> str:
+    """Return a compact description of item_list for debugging purposes."""
+    if not item_list:
+        return "empty"
+    descs = []
+    for item in item_list:
+        t = item.get("type")
+        keys = sorted(item.keys())
+        if t == ITEM_TEXT:
+            ti = item.get("text_item") or {}
+            txt = (ti.get("text") or ti.get("content") or "")[:50]
+            descs.append(f"text(type={t}, keys={keys}, text={txt!r})")
+        else:
+            descs.append(f"type={t}, keys={keys}")
+    return "; ".join(descs)
 
 
 def _extract_media_info(item_list: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -624,7 +643,14 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
     from app.services.activity_logger import log_activity
 
     from_user_id = str(msg.get("from_user_id") or "").strip()
-    if not from_user_id or from_user_id == (config.app_id or "").strip():
+    msg_id = str(msg.get("msg_id") or msg.get("client_msg_id") or "")[:40]
+    logger.info(f"[WeChat] Processing msg_id={msg_id} from={from_user_id[:40]} agent={str(agent_id)[:8]}")
+
+    if not from_user_id:
+        logger.warning(f"[WeChat] Dropping message — empty from_user_id (msg_id={msg_id})")
+        return
+    if from_user_id == (config.app_id or "").strip():
+        logger.warning(f"[WeChat] Dropping message — from_user_id matches bot's own app_id ({from_user_id[:40]})")
         return
 
     item_list = msg.get("item_list") or []
@@ -660,6 +686,7 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
                 user_text += f"\n[用户发送了{mtype}（下载失败）]"
 
     if not user_text:
+        logger.warning(f"[WeChat] Dropping message — no text extracted from item_list, agent={str(agent_id)[:8]}, from={from_user_id[:40]}, items={_describe_item_list(item_list)}")
         return
 
     context_token = str(msg.get("context_token") or "").strip()
@@ -720,7 +747,29 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
             .order_by(ChatMessage.created_at.desc())
             .limit(agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE)
         )
-        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+        # Build history same as WebSocket: convert tool_call records to assistant summaries
+        from app.api.websocket import _build_tool_call_summary
+        _history_msgs = list(reversed(history_r.scalars().all()))
+        history: list[dict] = []
+        _tc_buf: list[dict] = []
+        for m in _history_msgs:
+            if m.role == "tool_call":
+                try:
+                    _tc_buf.append(json.loads(m.content))
+                except Exception:
+                    pass
+                continue
+            if m.role in ("user", "assistant"):
+                if _tc_buf:
+                    summary = _build_tool_call_summary(_tc_buf)
+                    if summary:
+                        history.append({"role": "assistant", "content": summary})
+                    _tc_buf.clear()
+                history.append({"role": m.role, "content": m.content or ""})
+        if _tc_buf:
+            summary = _build_tool_call_summary(_tc_buf)
+            if summary:
+                history.append({"role": "assistant", "content": summary})
 
         db.add(ChatMessage(
             agent_id=agent_id, user_id=platform_user_id,
@@ -777,10 +826,35 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
                 context_token=context_token, route_tag=_route_tag,
             )
 
+        async def _wechat_on_tool_call(evt: dict):
+            """Persist tool_call records so Web UI can display them."""
+            if (evt.get("status") or "").lower() != "done":
+                return
+            try:
+                import json as _json_tc
+                from app.utils.text import truncate_head_tail
+                async with async_session() as _tc_db:
+                    _tc_db.add(ChatMessage(
+                        agent_id=agent_id,
+                        user_id=platform_user_id,
+                        role="tool_call",
+                        content=_json_tc.dumps({
+                            "name": evt.get("name") or "unknown_tool",
+                            "args": evt.get("args"),
+                            "status": "done",
+                            "result": truncate_head_tail(evt.get("result") or "", 500, tail_chars=200),
+                        }),
+                        conversation_id=session_conv_id,
+                    ))
+                    await _tc_db.commit()
+            except Exception as _tc_err:
+                logger.warning(f"[WeChat] Failed to save tool_call: {_tc_err}")
+
         llm_task = asyncio.ensure_future(_call_agent_llm(
             db=db, agent_id=agent_id, user_text=user_text,
             history=history, user_id=platform_user_id,
             session_id=session_conv_id,
+            on_tool_call=_wechat_on_tool_call,
         ))
         register_running_task(conv_id, llm_task)
         try:
@@ -825,11 +899,26 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
 class WeChatPollManager:
     """Manage WeChat iLink long-poll workers per agent."""
 
+    _DEDUP_TTL = 600  # 10 minutes
+
     def __init__(self) -> None:
         self._tasks: dict[uuid.UUID, asyncio.Task] = {}
         self._connected: dict[uuid.UUID, bool] = {}
         self._processed_ids: collections.deque[str] = collections.deque(maxlen=2000)
         self._dedup_lock = asyncio.Lock()
+
+    async def _is_duplicate(self, dedup_key: str) -> bool:
+        """Redis-backed dedup with in-memory fallback. Returns True if duplicate."""
+        try:
+            from app.core.events import get_redis
+            r = await get_redis()
+            return not await r.set(f"wechat:dedup:{dedup_key}", "1", nx=True, ex=self._DEDUP_TTL)
+        except Exception:
+            async with self._dedup_lock:
+                if dedup_key in self._processed_ids:
+                    return True
+                self._processed_ids.append(dedup_key)
+                return False
 
     @staticmethod
     def _build_dedup_key(msg: dict[str, Any]) -> str:
@@ -872,6 +961,9 @@ class WeChatPollManager:
         self._connected[agent_id] = False
         await self._set_connected(agent_id, False)
 
+    # Stagger delay between consecutive agent connections (seconds)
+    _STAGGER_DELAY = 0.5
+
     async def start_all(self) -> None:
         async with async_session() as db:
             result = await db.execute(
@@ -880,7 +972,9 @@ class WeChatPollManager:
                     ChannelConfig.is_configured == True,
                 )
             )
-            for cfg in result.scalars().all():
+            for i, cfg in enumerate(result.scalars().all()):
+                if i > 0:
+                    await asyncio.sleep(self._STAGGER_DELAY)
                 token = str((cfg.extra_config or {}).get("bot_token") or "").strip()
                 if token:
                     await self.start_client(cfg.agent_id)
@@ -918,14 +1012,15 @@ class WeChatPollManager:
                     if new_cursor and new_cursor != cursor:
                         await self._update_extra(agent_id, {"get_updates_buf": new_cursor})
 
-                    for msg in data.get("msgs", []) or []:
+                    msgs = data.get("msgs", []) or []
+                    if msgs:
+                        logger.info(f"[WeChat] Poll received {len(msgs)} message(s) for agent {str(agent_id)[:8]}")
+
+                    for msg in msgs:
                         dedup_key = self._build_dedup_key(msg)
-                        async with self._dedup_lock:
-                            if dedup_key and dedup_key in self._processed_ids:
-                                logger.debug(f"[WeChat] Skipping duplicate msg: {dedup_key[:60]}")
-                                continue
-                            if dedup_key:
-                                self._processed_ids.append(dedup_key)
+                        if dedup_key and await self._is_duplicate(dedup_key):
+                            logger.debug(f"[WeChat] Skipping duplicate msg: {dedup_key[:60]}")
+                            continue
                         try:
                             await _process_wechat_message(agent_id, msg, config)
                         except Exception as exc:

@@ -74,11 +74,12 @@ async def lifespan(app: FastAPI):
 
     # Auto-generate secure secrets if defaults detected (first run in container)
     if "change-me" in settings.SECRET_KEY.lower() or "change-me" in settings.JWT_SECRET_KEY.lower():
+        import os as _os
         import secrets as _secrets
         _env_paths = [".env", "../.env"]
         _env_path = None
         for _p in _env_paths:
-            if os.path.isfile(_p):
+            if _os.path.isfile(_p):
                 _env_path = _p
                 break
         if _env_path:
@@ -151,6 +152,7 @@ async def lifespan(app: FastAPI):
 
         import app.models.identity       # noqa
         import app.models.workspace      # noqa
+        import app.models.recent_file    # noqa
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("[startup] Database tables ready")
@@ -234,6 +236,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[startup] Default agents seed failed: {e}")
 
+    # One-time backfill: import historical skill read_file calls from conversation files
+    try:
+        from app.api.activity import backfill_skill_calls_once
+        await backfill_skill_calls_once()
+    except Exception as e:
+        logger.warning(f"[startup] Skill call backfill failed: {e}")
+
     # Start background tasks (always, even if seeding failed)
     try:
         logger.info("[startup] starting background tasks...")
@@ -271,6 +280,19 @@ async def lifespan(app: FastAPI):
     # Start ss-local SOCKS5 proxy for Discord API calls (non-fatal)
     ss_task = asyncio.create_task(_start_ss_local(), name="ss-local-proxy")
     ss_task.add_done_callback(_bg_task_error)
+
+    # Periodic WebSocket connection cleanup (every 60s)
+    async def _ws_cleanup_loop():
+        from app.api.websocket import manager as _ws_manager
+        while True:
+            await asyncio.sleep(60)
+            try:
+                _ws_manager.cleanup_stale()
+            except Exception:
+                pass
+
+    ws_cleanup_task = asyncio.create_task(_ws_cleanup_loop(), name="ws_cleanup")
+    ws_cleanup_task.add_done_callback(_bg_task_error)
 
     yield
 

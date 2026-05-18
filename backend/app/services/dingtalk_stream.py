@@ -169,6 +169,9 @@ class DingTalkStreamManager:
         if thread and thread.is_alive():
             logger.info(f"[DingTalk Stream] Stopping client for agent {agent_id}")
 
+    # Stagger delay between consecutive agent connections (seconds)
+    _STAGGER_DELAY = 0.5
+
     async def start_all(self):
         """Start Stream clients for all configured DingTalk agents."""
         logger.info("[DingTalk Stream] Initializing all active DingTalk channels...")
@@ -183,7 +186,9 @@ class DingTalkStreamManager:
 
         logger.info(f"[DingTalk Stream] Found {len(configs)} configured DingTalk channel(s)")
 
-        for config in configs:
+        for i, config in enumerate(configs):
+            if i > 0:
+                await asyncio.sleep(self._STAGGER_DELAY)
             if config.app_id and config.app_secret:
                 await self.start_client(
                     config.agent_id, config.app_id, config.app_secret,

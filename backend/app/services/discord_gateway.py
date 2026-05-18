@@ -271,6 +271,9 @@ class DiscordGatewayManager:
             except Exception as e:
                 logger.error(f"[Discord GW] Error closing client for {agent_id}: {e}")
 
+    # Stagger delay between consecutive agent connections (seconds)
+    _STAGGER_DELAY = 0.5
+
     async def start_all(self):
         """Start Gateway clients for all configured Discord agents."""
         if not _HAS_DISCORD:
@@ -286,7 +289,9 @@ class DiscordGatewayManager:
             )
             configs = result.scalars().all()
 
-        for config in configs:
+        for i, config in enumerate(configs):
+            if i > 0:
+                await asyncio.sleep(self._STAGGER_DELAY)
             extra = config.extra_config or {}
             mode = extra.get("connection_mode", "webhook")
             if mode == "gateway":

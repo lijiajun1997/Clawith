@@ -5,6 +5,7 @@ No callback URL or domain verification needed.
 """
 
 import asyncio
+import json
 import uuid
 from typing import Dict
 
@@ -227,6 +228,9 @@ class WeComStreamManager:
             except Exception:
                 pass
 
+    # Stagger delay between consecutive agent connections (seconds)
+    _STAGGER_DELAY = 0.5
+
     async def start_all(self):
         """Start WebSocket clients for all configured WeCom agents with bot credentials."""
         logger.info("[WeCom Stream] Initializing all active WeCom AI Bot channels...")
@@ -240,7 +244,9 @@ class WeComStreamManager:
             configs = result.scalars().all()
 
         started = 0
-        for config in configs:
+        for i, config in enumerate(configs):
+            if i > 0:
+                await asyncio.sleep(self._STAGGER_DELAY)
             extra = config.extra_config or {}
             bot_id = extra.get("bot_id", "")
             bot_secret = extra.get("bot_secret", "")
@@ -331,7 +337,29 @@ async def _process_wecom_stream_message(
             .order_by(ChatMessage.created_at.desc())
             .limit(ctx_size)
         )
-        history = [{"role": m.role, "content": m.content} for m in reversed(history_r.scalars().all())]
+        # Build history same as WebSocket: convert tool_call records to assistant summaries
+        from app.api.websocket import _build_tool_call_summary
+        _history_msgs = list(reversed(history_r.scalars().all()))
+        history: list[dict] = []
+        _tc_buf: list[dict] = []
+        for m in _history_msgs:
+            if m.role == "tool_call":
+                try:
+                    _tc_buf.append(json.loads(m.content))
+                except Exception:
+                    pass
+                continue
+            if m.role in ("user", "assistant"):
+                if _tc_buf:
+                    summary = _build_tool_call_summary(_tc_buf)
+                    if summary:
+                        history.append({"role": "assistant", "content": summary})
+                    _tc_buf.clear()
+                history.append({"role": m.role, "content": m.content or ""})
+        if _tc_buf:
+            summary = _build_tool_call_summary(_tc_buf)
+            if summary:
+                history.append({"role": "assistant", "content": summary})
 
         # Save user message
         db.add(ChatMessage(
@@ -342,10 +370,35 @@ async def _process_wecom_stream_message(
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
+        async def _wecom_on_tool_call(evt: dict):
+            """Persist tool_call records so Web UI can display them."""
+            if (evt.get("status") or "").lower() != "done":
+                return
+            try:
+                import json as _json_tc
+                from app.utils.text import truncate_head_tail
+                async with async_session() as _tc_db:
+                    _tc_db.add(ChatMessage(
+                        agent_id=agent_id,
+                        user_id=platform_user_id,
+                        role="tool_call",
+                        content=_json_tc.dumps({
+                            "name": evt.get("name") or "unknown_tool",
+                            "args": evt.get("args"),
+                            "status": "done",
+                            "result": truncate_head_tail(evt.get("result") or "", 500, tail_chars=200),
+                        }),
+                        conversation_id=session_conv_id,
+                    ))
+                    await _tc_db.commit()
+            except Exception as _tc_err:
+                logger.warning(f"[WeCom] Failed to save tool_call: {_tc_err}")
+
         # Call LLM
         reply_text = await _call_agent_llm(
             db, agent_id, user_text,
             history=history, user_id=platform_user_id,
+            on_tool_call=_wecom_on_tool_call,
         )
         logger.info(f"[WeCom Stream] LLM reply: {reply_text[:100]}")
 

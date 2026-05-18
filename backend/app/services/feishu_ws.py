@@ -325,6 +325,9 @@ class FeishuWSManager:
             except Exception as e:
                 logger.error(f"[Feishu WS] Error disconnecting client for {agent_id}: {e}")
 
+    # Stagger delay between consecutive agent WS connections (seconds)
+    _STAGGER_DELAY = 0.5
+
     async def start_all(self):
         """Start WS clients for all configured Feishu agents."""
         # Save the main event loop reference for thread-safe dispatch from SDK callbacks
@@ -342,7 +345,9 @@ class FeishuWSManager:
             )
             configs = result.scalars().all()
 
-        for config in configs:
+        for i, config in enumerate(configs):
+            if i > 0:
+                await asyncio.sleep(self._STAGGER_DELAY)
             extra = config.extra_config or {}
             mode = extra.get("connection_mode", "webhook")
             if mode == "websocket":
