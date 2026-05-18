@@ -17,6 +17,7 @@ from app.database import async_session
 from app.models.skill import Skill, SkillFile
 from app.core.security import get_current_admin, get_current_user, require_role
 from app.models.user import User
+from app.services.agent_context import invalidate_agent_cache
 from loguru import logger
 
 router = APIRouter(prefix="/skills", tags=["skills"])
@@ -27,6 +28,31 @@ GITHUB_API = "https://api.github.com"
 MAX_SKILL_SIZE = 5_242_880  # 5 MB total limit per skill
 MAX_SKILL_ZIP_SIZE = 30 * 1024 * 1024  # 30 MB  # 5 MB
 MAX_SINGLE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+# Binary file extensions that must be stored as base64 to survive Text columns
+BINARY_EXTENSIONS = frozenset({
+    ".docx", ".xlsx", ".pptx", ".pdf", ".zip", ".tar", ".gz", ".rar",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+    ".mp3", ".mp4", ".wav", ".avi", ".mov",
+    ".pyc", ".exe", ".dll", ".so", ".dylib",
+    ".sqlite", ".db", ".woff", ".woff2", ".ttf", ".eot",
+})
+BINARY_MARKER = "__B64__:"
+
+
+def _is_binary_path(path: str) -> bool:
+    ext = "." + path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return ext in BINARY_EXTENSIONS
+
+
+def _encode_binary(content_bytes: bytes) -> str:
+    return BINARY_MARKER + base64.b64encode(content_bytes).decode("ascii")
+
+
+def _decode_if_binary(content: str) -> tuple[bytes, bool]:
+    if content.startswith(BINARY_MARKER):
+        return base64.b64decode(content[len(BINARY_MARKER):]), True
+    return content.encode("utf-8"), False
 
 
 async def _get_tenant_setting(tenant_id: str | None, key: str) -> str:
@@ -75,9 +101,12 @@ class SkillFileIn(BaseModel):
 class SkillCreateIn(BaseModel):
     name: str
     description: str = ""
-    category: str = "custom"
-    icon: str = "📋"
+    category: str = "其他"
+    icon: str = "IconPackages"
+    icon_type: str = "tabler"
     folder_name: str
+    author: str | None = None
+    version: str = "1.0.0"
     files: list[SkillFileIn] = []
 
 
@@ -87,6 +116,31 @@ class ClawhubInstallIn(BaseModel):
 
 class UrlImportIn(BaseModel):
     url: str
+
+
+# ─── Categories ────────────────────────────────────────
+
+
+@router.get("/categories")
+async def list_categories(current_user: User = Depends(get_current_user)):
+    """Return predefined skill categories with counts."""
+    from app.models.skill import SKILL_CATEGORIES
+    import uuid as _uuid
+    from sqlalchemy import or_ as _or, func as sa_func
+
+    tenant_id = str(current_user.tenant_id) if current_user.tenant_id else None
+    async with async_session() as db:
+        # Count skills per category for this tenant
+        query = select(Skill.category, sa_func.count(Skill.id)).group_by(Skill.category)
+        if tenant_id:
+            query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+        result = await db.execute(query)
+        counts = dict(result.all())
+
+    return [
+        {"name": cat, "count": counts.get(cat, 0)}
+        for cat in SKILL_CATEGORIES
+    ]
 
 
 # ─── Helpers ──────────────────────────────────────────
@@ -228,7 +282,8 @@ async def _fetch_github_directory(
                     dl_resp = await client.get(item["url"])
                     if dl_resp.status_code == 200:
                         data = dl_resp.json()
-                        content = base64.b64decode(data.get("content", "")).decode("utf-8", errors="replace")
+                        raw_bytes = base64.b64decode(data.get("content", ""))
+                        content = _encode_binary(raw_bytes) if _is_binary_path(rel) else raw_bytes.decode("utf-8", errors="replace")
                         files.append({"path": rel, "content": content})
 
     try:
@@ -246,6 +301,9 @@ async def _save_skill_to_db(
     source_url: str | None = None,
     tenant_id: str | None = None,
     overwrite: bool = False,
+    icon_type: str = "emoji",
+    author: str | None = None,
+    version: str = "1.0.0",
 ) -> dict:
     """Create a Skill + SkillFile records in the database."""
     import uuid as _uuid
@@ -276,9 +334,12 @@ async def _save_skill_to_db(
             description=description,
             category=category,
             icon=icon,
+            icon_type=icon_type,
             folder_name=folder_name,
             is_builtin=False,
             tenant_id=_uuid.UUID(tenant_id) if tenant_id else None,
+            author=author,
+            version=version,
         )
         db.add(skill)
         await db.flush()
@@ -434,6 +495,12 @@ async def install_from_clawhub(body: ClawhubInstallIn, overwrite: bool = Query(F
     result["has_scripts"] = has_scripts
     result["file_count"] = len(files)
     result["source"] = "clawhub"
+
+    if overwrite:
+        result["synced_agents"] = await _sync_skill_to_deployed_agents(
+            folder_name=slug, skill_id=result["id"], tenant_id=tenant_id,
+        )
+
     return result
 
 
@@ -591,7 +658,7 @@ async def import_skill_zip(
 
                 files.append({
                     "path": rel_path,
-                    "content": file_content.decode("utf-8", errors="replace"),
+                    "content": _encode_binary(file_content) if _is_binary_path(rel_path) else file_content.decode("utf-8", errors="replace"),
                 })
 
             logger.info(f"[SkillImport] Extracted {len(files)} files")
@@ -609,6 +676,16 @@ async def import_skill_zip(
                 overwrite=overwrite,
             )
             result["files"] = [f["path"] for f in files]
+
+            # Auto-sync: overwrite existing agent workspaces if this was an overwrite
+            if overwrite:
+                synced = await _sync_skill_to_deployed_agents(
+                    folder_name=folder_name,
+                    skill_id=result["id"],
+                    tenant_id=tenant_id,
+                )
+                result["synced_agents"] = synced
+
             return result
 
     except zipfile.BadZipFile:
@@ -661,6 +738,12 @@ async def import_from_url(body: UrlImportIn, overwrite: bool = Query(False), cur
     result["tier"] = tier
     result["file_count"] = len(files)
     result["source"] = "url"
+
+    if overwrite:
+        result["synced_agents"] = await _sync_skill_to_deployed_agents(
+            folder_name=folder_name, skill_id=result["id"], tenant_id=tenant_id,
+        )
+
     return result
 
 
@@ -700,7 +783,10 @@ async def preview_url_import(body: UrlImportIn, current_user: User = Depends(get
 
 
 @router.get("/")
-async def list_skills(current_user: User = Depends(get_current_user)):
+async def list_skills(
+    category: str | None = Query(None),
+    current_user: User = Depends(get_current_user),
+):
     """List global skills scoped by tenant (builtin + tenant-specific)."""
     import uuid as _uuid
     from sqlalchemy import or_ as _or
@@ -710,6 +796,8 @@ async def list_skills(current_user: User = Depends(get_current_user)):
         # Scope by tenant: show builtin (tenant_id is NULL) + tenant-specific skills
         if tenant_id:
             query = query.where(_or(Skill.tenant_id.is_(None), Skill.tenant_id == _uuid.UUID(tenant_id)))
+        if category:
+            query = query.where(Skill.category == category)
         result = await db.execute(query)
         skills = result.scalars().all()
         return [
@@ -719,10 +807,14 @@ async def list_skills(current_user: User = Depends(get_current_user)):
                 "description": s.description,
                 "category": s.category,
                 "icon": s.icon,
+                "icon_type": s.icon_type,
                 "folder_name": s.folder_name,
                 "is_builtin": s.is_builtin,
                 "is_default": s.is_default,
+                "author": s.author,
+                "version": s.version,
                 "created_at": s.created_at.isoformat() if s.created_at else None,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
             }
             for s in skills
         ]
@@ -743,8 +835,14 @@ async def get_skill(skill_id: str, current_user: User = Depends(get_current_user
             "description": skill.description,
             "category": skill.category,
             "icon": skill.icon,
+            "icon_type": skill.icon_type,
             "folder_name": skill.folder_name,
             "is_builtin": skill.is_builtin,
+            "is_default": skill.is_default,
+            "author": skill.author,
+            "version": skill.version,
+            "created_at": skill.created_at.isoformat() if skill.created_at else None,
+            "updated_at": skill.updated_at.isoformat() if skill.updated_at else None,
             "files": [
                 {"path": f.path, "content": f.content}
                 for f in skill.files
@@ -761,9 +859,12 @@ async def create_skill(body: SkillCreateIn, current_user: User = Depends(get_cur
             description=body.description,
             category=body.category,
             icon=body.icon,
+            icon_type=body.icon_type,
             folder_name=body.folder_name,
             is_builtin=False,
             tenant_id=current_user.tenant_id,
+            author=body.author,
+            version=body.version,
         )
         db.add(skill)
         await db.flush()
@@ -788,7 +889,10 @@ class SkillUpdateIn(BaseModel):
     description: str | None = None
     category: str | None = None
     icon: str | None = None
+    icon_type: str | None = None
     is_default: bool | None = None
+    author: str | None = None
+    version: str | None = None
     files: list[SkillFileIn] | None = None
 
 
@@ -811,6 +915,12 @@ async def update_skill(skill_id: str, body: SkillUpdateIn, current_user: User = 
             skill.category = body.category
         if body.icon is not None:
             skill.icon = body.icon
+        if body.icon_type is not None:
+            skill.icon_type = body.icon_type
+        if body.author is not None:
+            skill.author = body.author
+        if body.version is not None:
+            skill.version = body.version
 
         # Handle is_default toggle — push to all agents when set to True
         if body.is_default is not None and body.is_default != skill.is_default:
@@ -1036,8 +1146,9 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
             skill = Skill(
                 name=folder.replace("-", " ").title(),
                 description="",
-                category="custom",
-                icon="--",
+                category="其他",
+                icon="IconPackages",
+                icon_type="tabler",
                 folder_name=folder,
                 is_builtin=False,
                 tenant_id=current_user.tenant_id,
@@ -1124,7 +1235,7 @@ def _check_skill_is_latest(skill: Skill, agent_dir) -> bool | None:
     db_skill_md = next((f for f in skill.files if f.path == "SKILL.md"), None)
     if not db_skill_md:
         return True
-    return disk_content == db_skill_md.content
+    return disk_content.replace("\r\n", "\n") == db_skill_md.content.replace("\r\n", "\n")
 
 
 async def _deploy_skill_to_agents(
@@ -1133,6 +1244,7 @@ async def _deploy_skill_to_agents(
     """Deploy a skill's files to specified agents' workspace directories."""
     from app.services.agent_manager import agent_manager
     from app.models.agent import Agent as AgentModel
+    from app.core.async_utils import run_sync
     import uuid as _uuid
 
     if not skill.files:
@@ -1143,6 +1255,8 @@ async def _deploy_skill_to_agents(
 
     deployed = 0
     errors = []
+    # 预收集文件内容，避免在线程中访问 ORM lazy-loaded 属性
+    files_to_write = [(sf.path, sf.content) for sf in skill.files]
 
     for aid in agent_ids:
         agent_r = await db.execute(select(AgentModel).where(AgentModel.id == _uuid.UUID(aid)))
@@ -1159,19 +1273,90 @@ async def _deploy_skill_to_agents(
             errors.append(f"Agent '{agent.name}' workspace not found")
             continue
 
-        skills_dir = agent_dir / "skills"
-        skills_dir.mkdir(parents=True, exist_ok=True)
-        skill_folder = skills_dir / skill.folder_name
-        skill_folder.mkdir(parents=True, exist_ok=True)
+        def _write_files(ad=agent_dir, fn=skill.folder_name, files=files_to_write):
+            skills_dir = ad / "skills"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            skill_folder = skills_dir / fn
+            skill_folder.mkdir(parents=True, exist_ok=True)
+            for fpath, content in files:
+                file_path = skill_folder / fpath
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                raw, is_bin = _decode_if_binary(content)
+                if is_bin:
+                    file_path.write_bytes(raw)
+                else:
+                    file_path.write_text(raw.decode("utf-8"), encoding="utf-8")
 
-        for sf in skill.files:
-            file_path = skill_folder / sf.path
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(sf.content, encoding="utf-8")
-
+        await run_sync(_write_files)
         deployed += 1
 
     return {"deployed": deployed, "errors": errors}
+
+
+async def _sync_skill_to_deployed_agents(
+    folder_name: str,
+    skill_id: str,
+    tenant_id: str | None,
+) -> int:
+    """Find all agents with this skill deployed and push the latest version.
+
+    Called after skill overwrite (ZIP import, URL import, etc.) so agent
+    workspaces stay in sync with the registry.
+    """
+    from app.models.agent import Agent as AgentModel
+    from app.services.agent_manager import agent_manager
+    from app.core.async_utils import run_sync
+    import uuid as _uuid
+
+    async with async_session() as db:
+        # Reload skill with files
+        skill_r = await db.execute(
+            select(Skill).where(Skill.id == _uuid.UUID(skill_id)).options(selectinload(Skill.files))
+        )
+        skill = skill_r.scalar_one_or_none()
+        if not skill or not skill.files:
+            return 0
+
+        # Find agents in tenant
+        agent_q = select(AgentModel)
+        if tenant_id:
+            agent_q = agent_q.where(AgentModel.tenant_id == _uuid.UUID(tenant_id))
+        agents = (await db.execute(agent_q)).scalars().all()
+
+        # Pre-collect file data
+        files_to_write = [(sf.path, sf.content) for sf in skill.files]
+
+        synced = 0
+        for agent in agents:
+            agent_dir = agent_manager._agent_dir(agent.id)
+            skill_folder = agent_dir / "skills" / folder_name
+
+            if not skill_folder.exists():
+                continue  # agent doesn't have this skill
+
+            def _overwrite_files(sf=skill_folder, files=files_to_write):
+                # Clean old files then write new ones
+                for child in sf.iterdir():
+                    if child.is_file():
+                        child.unlink()
+                    elif child.is_dir():
+                        shutil.rmtree(child)
+                for fpath, content in files:
+                    target = sf / fpath
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    raw, is_bin = _decode_if_binary(content)
+                    if is_bin:
+                        target.write_bytes(raw)
+                    else:
+                        target.write_text(raw.decode("utf-8"), encoding="utf-8")
+
+            await run_sync(_overwrite_files)
+            await invalidate_agent_cache(agent.id, "skills")
+            synced += 1
+
+        if synced:
+            logger.info(f"[SkillImport] Auto-synced '{folder_name}' to {synced} agent(s)")
+        return synced
 
 
 @router.get("/deployment/status")
@@ -1201,47 +1386,70 @@ async def deployment_status(
             agent_q = agent_q.where(AgentModel.tenant_id == _uuid.UUID(tenant_id))
         agents = (await db.execute(agent_q)).scalars().all()
 
-        # Scan each agent's workspace
-        agents_info = []
-        agent_dirs = {}
-        for agent in agents:
-            agent_dir = agent_manager._agent_dir(agent.id)
-            deployed_folders = _scan_agent_deployed_skills(agent_dir)
-            agents_info.append({
-                "id": str(agent.id),
-                "name": agent.name,
-                "status": agent.status,
-            })
-            agent_dirs[str(agent.id)] = {
-                "dir": agent_dir,
-                "deployed": deployed_folders,
+        # 预收集数据，避免在线程中访问 ORM 对象
+        agents_data = [
+            {"id": str(a.id), "name": a.name, "status": a.status, "dir": agent_manager._agent_dir(a.id)}
+            for a in agents
+        ]
+        skills_data = [
+            {
+                "id": str(s.id), "name": s.name, "folder_name": s.folder_name,
+                "icon": s.icon, "category": s.category, "is_default": s.is_default,
+                "skill_md_content": next((f.content for f in s.files if f.path == "SKILL.md"), None),
             }
+            for s in skills
+        ]
 
-        # Build skill deployment matrix
-        skills_info = []
-        for skill in skills:
-            deployments = []
-            for ai in agents_info:
-                ad = agent_dirs[ai["id"]]
-                is_deployed = skill.folder_name in ad["deployed"]
-                is_latest = _check_skill_is_latest(skill, ad["dir"]) if is_deployed else None
-                deployments.append({
-                    "agent_id": ai["id"],
-                    "agent_name": ai["name"],
-                    "deployed": is_deployed,
-                    "is_latest": is_latest,
-                })
-            skills_info.append({
-                "id": str(skill.id),
-                "name": skill.name,
-                "folder_name": skill.folder_name,
-                "icon": skill.icon,
-                "category": skill.category,
-                "is_default": skill.is_default,
-                "agent_deployments": deployments,
+    # 在线程池中执行文件系统扫描（不阻塞事件循环）
+    from app.core.async_utils import run_sync
+
+    def _scan_all_workspaces():
+        result = {}
+        for ad in agents_data:
+            deployed = _scan_agent_deployed_skills(ad["dir"])
+            result[ad["id"]] = {"dir": ad["dir"], "deployed": deployed}
+        return result
+
+    agent_dirs = await run_sync(_scan_all_workspaces)
+
+    # Build skill deployment matrix
+    agents_info = [{"id": a["id"], "name": a["name"], "status": a["status"]} for a in agents_data]
+    skills_info = []
+    for sd in skills_data:
+        deployments = []
+        for ai in agents_info:
+            ad = agent_dirs[ai["id"]]
+            is_deployed = sd["folder_name"] in ad["deployed"]
+            if is_deployed:
+                skill_md_path = ad["dir"] / "skills" / sd["folder_name"] / "SKILL.md"
+                if skill_md_path.exists():
+                    disk_content = skill_md_path.read_text(encoding="utf-8")
+                    db_content = sd["skill_md_content"]
+                    if db_content is not None:
+                        is_latest = disk_content.replace("\r\n", "\n") == db_content.replace("\r\n", "\n")
+                    else:
+                        is_latest = True
+                else:
+                    is_latest = False
+            else:
+                is_latest = None
+            deployments.append({
+                "agent_id": ai["id"],
+                "agent_name": ai["name"],
+                "deployed": is_deployed,
+                "is_latest": is_latest,
             })
+        skills_info.append({
+            "id": sd["id"],
+            "name": sd["name"],
+            "folder_name": sd["folder_name"],
+            "icon": sd["icon"],
+            "category": sd["category"],
+            "is_default": sd["is_default"],
+            "agent_deployments": deployments,
+        })
 
-        return {"skills": skills_info, "agents": agents_info}
+    return {"skills": skills_info, "agents": agents_info}
 
 
 @router.post("/deployment/deploy")
@@ -1261,6 +1469,10 @@ async def deployment_deploy(
             raise HTTPException(404, "Skill not found")
 
         result = await _deploy_skill_to_agents(skill, body.agent_ids, db, tenant_id)
+        # Invalidate skills cache for all target agents
+        import uuid as _uuid
+        for aid in body.agent_ids:
+            await invalidate_agent_cache(_uuid.UUID(aid), "skills")
         return result
 
 
@@ -1281,6 +1493,9 @@ async def deployment_update(
             raise HTTPException(404, "Skill not found")
 
         result = await _deploy_skill_to_agents(skill, body.agent_ids, db, tenant_id)
+        import uuid as _uuid
+        for aid in body.agent_ids:
+            await invalidate_agent_cache(_uuid.UUID(aid), "skills")
         return {"updated": result["deployed"], "errors": result["errors"]}
 
 
@@ -1321,5 +1536,6 @@ async def deployment_undeploy(
             if skill_folder.exists():
                 shutil.rmtree(skill_folder)
                 removed += 1
+                await invalidate_agent_cache(_uuid.UUID(aid), "skills")
 
         return {"removed": removed, "errors": errors}
