@@ -108,6 +108,10 @@ class Agent(Base):
     heartbeat_active_hours: Mapped[str] = mapped_column(String(20), default="09:00-18:00")
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Dream (daily review and reflection)
+    dream_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_dream_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Timezone (IANA format, e.g. "Asia/Shanghai"). None = inherit from tenant.
     timezone: Mapped[str | None] = mapped_column(String(50), default=None, nullable=True)
 

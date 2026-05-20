@@ -50,6 +50,8 @@ export interface Agent {
     heartbeat_interval_minutes: number;
     heartbeat_active_hours: string;
     last_heartbeat_at?: string;
+    dream_enabled: boolean;
+    last_dream_at?: string;
     timezone?: string;
     context_window_size?: number;
     agent_type?: 'native' | 'openclaw';

@@ -116,6 +116,10 @@ def _is_in_active_hours(active_hours: str, tz_name: str = "UTC") -> bool:
         return True  # Default to active if parsing fails
 
 
+_agent_task_semaphore = asyncio.Semaphore(1)
+"""Global semaphore: serializes heartbeat and dream executions."""
+
+
 async def _execute_heartbeat(agent_id: uuid.UUID):
     """Execute a single heartbeat for an agent.
 
@@ -125,6 +129,12 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
       Phase 2: LLM tool loop (no DB connection held)
       Phase 3: Write token usage + last_heartbeat_at → commit
     """
+    async with _agent_task_semaphore:
+        await _execute_heartbeat_inner(agent_id)
+
+
+async def _execute_heartbeat_inner(agent_id: uuid.UUID):
+    """Inner heartbeat logic (called under semaphore)."""
     try:
         from app.database import async_session
         from app.models.agent import Agent
@@ -282,6 +292,7 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
         plaza_posts_made = 0       # hard limit: 1 new post per heartbeat
         plaza_comments_made = 0    # hard limit: 2 comments per heartbeat
         _hb_accumulated_tokens = 0
+        _tool_fail_counts: dict[str, int] = {}  # tool_name → consecutive error count
 
         # Token tracking helpers
         from app.services.token_tracker import record_token_usage, extract_usage_tokens, estimate_tokens_from_chars
@@ -388,6 +399,22 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                             plaza_comments_made += 1
                     else:
                         tool_result = await execute_tool(tool_name, args, agent_id, agent_creator_id)
+
+                    # ── Tool consecutive failure guard ──
+                    _is_tool_error = isinstance(tool_result, str) and tool_result.startswith("❌")
+                    if _is_tool_error:
+                        _tool_fail_counts[tool_name] = _tool_fail_counts.get(tool_name, 0) + 1
+                        _fail_count = _tool_fail_counts[tool_name]
+                        if _fail_count >= 10:
+                            logger.warning(f"[Heartbeat] Tool {tool_name} failed {_fail_count} times consecutively, aborting heartbeat")
+                            llm_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"],
+                                content=f"❌ 工具 '{tool_name}' 已连续失败 {_fail_count} 次，心跳任务已终止。"))
+                            break
+                        if _fail_count >= 3:
+                            tool_result += (f"\n\n⚠️ 工具 '{tool_name}' 已连续失败 {_fail_count} 次。"
+                                            f"请停止用相同方式调用此工具，换一个完全不同的策略。")
+                    else:
+                        _tool_fail_counts.pop(tool_name, None)
 
                     llm_messages.append(LLMMessage(
                         role="tool",

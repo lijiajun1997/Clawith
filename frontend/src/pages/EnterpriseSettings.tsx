@@ -2502,9 +2502,11 @@ export default function EnterpriseSettings() {
     const [companyIntroSaving, setCompanyIntroSaving] = useState(false);
     const [companyIntroSaved, setCompanyIntroSaved] = useState(false);
 
-    // Company config (system prompt & heartbeat instruction)
+    // Company config (system prompt & heartbeat instruction & dream)
     const [companySystemPrompt, setCompanySystemPrompt] = useState('');
     const [companyHeartbeatInstruction, setCompanyHeartbeatInstruction] = useState('');
+    const [companyDreamInstruction, setCompanyDreamInstruction] = useState('');
+    const [companyDreamConfig, setCompanyDreamConfig] = useState({ min_conversations: 20 });
     const [companyConfigSaving, setCompanyConfigSaving] = useState(false);
     const [companyConfigSaved, setCompanyConfigSaved] = useState(false);
 
@@ -2526,7 +2528,7 @@ export default function EnterpriseSettings() {
             })
             .catch(() => { });
 
-        // Load company config (system prompt & heartbeat instruction)
+        // Load company config (system prompt & heartbeat instruction & dream)
         fetchJson<any>(`/tenants/${selectedTenantId}/company-config`)
             .then(d => {
                 if (d.system_prompt) {
@@ -2538,6 +2540,14 @@ export default function EnterpriseSettings() {
                     setCompanyHeartbeatInstruction(d.heartbeat_instruction);
                 } else if (d.default_heartbeat_instruction) {
                     setCompanyHeartbeatInstruction(d.default_heartbeat_instruction);
+                }
+                if (d.dream_instruction) {
+                    setCompanyDreamInstruction(d.dream_instruction);
+                } else if (d.default_dream_instruction) {
+                    setCompanyDreamInstruction(d.default_dream_instruction);
+                }
+                if (d.dream_config) {
+                    setCompanyDreamConfig(d.dream_config);
                 }
             })
             .catch(() => { });
@@ -2565,6 +2575,8 @@ export default function EnterpriseSettings() {
                 body: JSON.stringify({
                     system_prompt: companySystemPrompt,
                     heartbeat_instruction: companyHeartbeatInstruction,
+                    dream_instruction: companyDreamInstruction,
+                    dream_config: companyDreamConfig,
                 }),
             });
             setCompanyConfigSaved(true);
@@ -3581,6 +3593,64 @@ Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for c
                                 {companyConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
                                 <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
                                     💡 {t('enterprise.companyConfig.heartbeatHint', 'This instruction applies to all agents as default. Agents can override it with their own HEARTBEAT.md file. Changes take effect immediately upon saving.')}
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* ── Dream (Daily Review) ── */}
+                        <h3 style={{ marginBottom: '8px' }}>{t('enterprise.companyConfig.dreamTitle', 'Dream — 每日复盘提示词')}</h3>
+                        <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px', lineHeight: 1.6 }}>
+                            {t('enterprise.companyConfig.dreamDesc',
+                                'Define the dream instruction for agents. At midnight in each agent\'s timezone, agents with sufficient daily conversations will review their day, update memory, and analyze tool usage patterns. Only agents meeting the conversation threshold participate.'
+                            )}
+                        </p>
+                        <div className="card" style={{ marginBottom: '24px', padding: '16px' }}>
+                            <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '6px' }}>
+                                {t('enterprise.companyConfig.dreamThreshold', '最低对话条数阈值')}
+                            </label>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                                <input
+                                    className="form-input"
+                                    type="number"
+                                    min={1}
+                                    max={1000}
+                                    value={companyDreamConfig.min_conversations}
+                                    onChange={e => setCompanyDreamConfig({ ...companyDreamConfig, min_conversations: Number(e.target.value) || 20 })}
+                                    style={{ width: '120px' }}
+                                />
+                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                    {t('enterprise.companyConfig.dreamThresholdHint',
+                                        '当日对话记录条数低于此值的 Agent 不参与复盘（默认 20）'
+                                    )}
+                                </span>
+                            </div>
+
+                            <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '6px' }}>
+                                {t('enterprise.companyConfig.dreamInstructionLabel', 'Dream 提示词')}
+                            </label>
+                            <textarea
+                                className="form-input"
+                                value={companyDreamInstruction}
+                                onChange={e => setCompanyDreamInstruction(e.target.value)}
+                                placeholder={t('enterprise.companyConfig.dreamPlaceholder',
+                                    'Enter dream instruction for agents...'
+                                )}
+                                rows={12}
+                                style={{
+                                    minHeight: '250px', resize: 'vertical',
+                                    fontFamily: 'var(--font-mono)', fontSize: '13px',
+                                    lineHeight: '1.6', whiteSpace: 'pre-wrap',
+                                }}
+                            />
+                            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <button className="btn btn-primary" onClick={saveCompanyConfig} disabled={companyConfigSaving}>
+                                    {companyConfigSaving ? t('common.loading') : t('common.save', 'Save')}
+                                </button>
+                                {companyConfigSaved && <span style={{ color: 'var(--success)', fontSize: '12px' }}>✅ {t('enterprise.config.saved', 'Saved')}</span>}
+                                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                                    💡 {t('enterprise.companyConfig.dreamHint',
+                                        'Dream runs at midnight in agent timezone. Only agents with conversations >= threshold participate. Changes take effect immediately.'
+                                    )}
                                 </span>
                             </div>
                         </div>

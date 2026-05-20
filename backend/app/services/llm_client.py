@@ -276,7 +276,7 @@ class OpenAICompatibleClient(LLMClient):
         # Debug: log any reasoning_content in messages
         for i, f in enumerate(formatted):
             if "reasoning_content" in f:
-                logger.warning(f"[LLM] Message {i} (role={f['role']}) has reasoning_content ({len(f['reasoning_content'])} chars)")
+                logger.debug(f"[LLM] Message {i} (role={f['role']}) has reasoning_content ({len(f['reasoning_content'])} chars)")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": formatted,
@@ -460,6 +460,7 @@ class OpenAICompatibleClient(LLMClient):
         return LLMResponse(
             content=msg.get("content", ""),
             tool_calls=msg.get("tool_calls", []),
+            reasoning_content=msg.get("reasoning_content"),
             finish_reason=choice.get("finish_reason"),
             usage=data.get("usage"),
             model=data.get("model"),

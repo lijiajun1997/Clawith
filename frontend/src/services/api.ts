@@ -42,6 +42,14 @@ async function tryRefreshToken(): Promise<boolean> {
             if (data.refresh_token) {
                 localStorage.setItem('refresh_token', data.refresh_token);
             }
+            // Sync Zustand store so WS reconnections use the fresh token
+            try {
+                const { useAuthStore } = await import('../stores');
+                const store = useAuthStore.getState();
+                if (store.user) {
+                    store.setAuth(store.user, data.access_token, data.refresh_token || store.refreshToken);
+                }
+            } catch { /* store import may fail during initialization */ }
             return true;
         } catch {
             return false;

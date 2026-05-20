@@ -60,6 +60,8 @@ class TenantUpdate(BaseModel):
 class CompanyConfigUpdate(BaseModel):
     system_prompt: str | None = None
     heartbeat_instruction: str | None = None
+    dream_instruction: str | None = None
+    dream_config: dict | None = None
 
 
 class CompanyConfigOut(BaseModel):
@@ -67,6 +69,9 @@ class CompanyConfigOut(BaseModel):
     heartbeat_instruction: str | None = None
     default_system_prompt: str | None = None
     default_heartbeat_instruction: str | None = None
+    dream_instruction: str | None = None
+    default_dream_instruction: str | None = None
+    dream_config: dict | None = None
 
 
 # ─── Helpers ────────────────────────────────────────────
@@ -537,18 +542,22 @@ async def get_company_config(
     result = await db.execute(
         select(TenantSetting).where(
             TenantSetting.tenant_id == tenant_id,
-            TenantSetting.key.in_(["company_system_prompt", "company_heartbeat_instruction"])
+            TenantSetting.key.in_(["company_system_prompt", "company_heartbeat_instruction", "company_dream_instruction", "company_dream_config"])
         )
     )
     settings_records = result.scalars().all()
 
     config = {}
     for record in settings_records:
-        if record.value and "content" in record.value:
-            if record.key == "company_system_prompt":
+        if record.value:
+            if record.key == "company_system_prompt" and "content" in record.value:
                 config["system_prompt"] = record.value["content"]
-            elif record.key == "company_heartbeat_instruction":
+            elif record.key == "company_heartbeat_instruction" and "content" in record.value:
                 config["heartbeat_instruction"] = record.value["content"]
+            elif record.key == "company_dream_instruction" and "content" in record.value:
+                config["dream_instruction"] = record.value["content"]
+            elif record.key == "company_dream_config":
+                config["dream_config"] = record.value
 
     # Return default content when no saved config exists
     if "system_prompt" not in config:
@@ -565,6 +574,14 @@ async def get_company_config(
             config["default_heartbeat_instruction"] = DEFAULT_HEARTBEAT_INSTRUCTION
         except Exception:
             pass
+    if "dream_instruction" not in config:
+        try:
+            from app.services.dream import DEFAULT_DREAM_INSTRUCTION
+            config["default_dream_instruction"] = DEFAULT_DREAM_INSTRUCTION
+        except Exception:
+            pass
+    if "dream_config" not in config:
+        config["dream_config"] = {"min_conversations": 20}
 
     return CompanyConfigOut(**config)
 
@@ -623,6 +640,44 @@ async def update_company_config(
             ))
         config["heartbeat_instruction"] = data.heartbeat_instruction
 
+    # Update dream instruction if provided
+    if data.dream_instruction is not None:
+        result = await db.execute(
+            select(TenantSetting).where(
+                TenantSetting.tenant_id == tenant_id,
+                TenantSetting.key == "company_dream_instruction"
+            )
+        )
+        setting = result.scalar_one_or_none()
+        if setting:
+            setting.value = {"content": data.dream_instruction}
+        else:
+            db.add(TenantSetting(
+                tenant_id=tenant_id,
+                key="company_dream_instruction",
+                value={"content": data.dream_instruction}
+            ))
+        config["dream_instruction"] = data.dream_instruction
+
+    # Update dream config (threshold etc.) if provided
+    if data.dream_config is not None:
+        result = await db.execute(
+            select(TenantSetting).where(
+                TenantSetting.tenant_id == tenant_id,
+                TenantSetting.key == "company_dream_config"
+            )
+        )
+        setting = result.scalar_one_or_none()
+        if setting:
+            setting.value = data.dream_config
+        else:
+            db.add(TenantSetting(
+                tenant_id=tenant_id,
+                key="company_dream_config",
+                value=data.dream_config
+            ))
+        config["dream_config"] = data.dream_config
+
     await db.commit()
 
     # Trigger immediate sync to all agent workspaces (non-blocking)
@@ -632,6 +687,8 @@ async def update_company_config(
             sync_config["company_system_prompt"] = config["system_prompt"]
         if "heartbeat_instruction" in config:
             sync_config["company_heartbeat_instruction"] = config["heartbeat_instruction"]
+        if "dream_instruction" in config:
+            sync_config["company_dream_instruction"] = config["dream_instruction"]
 
         if sync_config:
             async def _background_sync():

@@ -2582,7 +2582,11 @@ function AgentDetailInner() {
             const delay = getReconnectDelay(key);
             reconnectTimerRef.current[key] = setTimeout(() => {
                 reconnectTimerRef.current[key] = null;
-                if (!reconnectDisabledRef.current[key]) ensureSessionSocket(sess, agentId, authToken);
+                // Always use the latest token from store/localStorage, not the stale closure
+                const latestToken = useAuthStore.getState().token || localStorage.getItem('token');
+                if (!reconnectDisabledRef.current[key] && latestToken) {
+                    ensureSessionSocket(sess, agentId, latestToken);
+                }
             }, delay);
         };
 
@@ -2657,6 +2661,56 @@ function AgentDetailInner() {
                 clearReconnectTimer(key);
                 stopBgPoll(key);
                 if (isActiveRuntime && e.code === 4003) setAgentExpired(true);
+                return;
+            }
+            // Auth failed (4001) — try token refresh before giving up
+            if (e.code === 4001) {
+                const latestToken = useAuthStore.getState().token || localStorage.getItem('token');
+                if (!latestToken) {
+                    // No token at all — redirect to login
+                    reconnectDisabledRef.current[key] = true;
+                    clearReconnectTimer(key);
+                    stopBgPoll(key);
+                    window.location.href = '/login';
+                    return;
+                }
+                // Token might have been refreshed since the WS was created.
+                // Check if the current store token differs from what we used — if so, retry once.
+                if (latestToken !== authToken) {
+                    // New token available — retry immediately with it
+                    setTimeout(() => {
+                        if (!reconnectDisabledRef.current[key]) ensureSessionSocket(sess, agentId, latestToken);
+                    }, 500);
+                    return;
+                }
+                // Same token — attempt refresh via REST API, then retry
+                (async () => {
+                    try {
+                        const rt = localStorage.getItem('refresh_token');
+                        if (!rt) throw new Error('No refresh token');
+                        const res = await fetch('/api/auth/refresh', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ refresh_token: rt }),
+                        });
+                        if (!res.ok) throw new Error('Refresh failed');
+                        const data = await res.json();
+                        localStorage.setItem('token', data.access_token);
+                        if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
+                        // Update Zustand store
+                        useAuthStore.getState().setAuth(useAuthStore.getState().user!, data.access_token, data.refresh_token);
+                        // Retry with new token
+                        setTimeout(() => {
+                            if (!reconnectDisabledRef.current[key]) ensureSessionSocket(sess, agentId, data.access_token);
+                        }, 500);
+                    } catch {
+                        // Refresh failed — stop reconnecting and redirect to login
+                        reconnectDisabledRef.current[key] = true;
+                        clearReconnectTimer(key);
+                        stopBgPoll(key);
+                        window.location.href = '/login';
+                    }
+                })();
                 return;
             }
             // If was streaming, start background poll to catch the result
@@ -6767,6 +6821,44 @@ function AgentDetailInner() {
                                                     <span style={{
                                                         position: 'absolute', top: '3px',
                                                         left: (agent?.heartbeat_enabled ?? true) ? '23px' : '3px',
+                                                        width: '18px', height: '18px', background: 'white',
+                                                        borderRadius: '50%', transition: 'left 0.2s',
+                                                    }} />
+                                                </span>
+                                            </label>
+                                        </div>
+
+                                        {/* Dream toggle */}
+                                        <div style={{
+                                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                            padding: '10px 14px', background: 'var(--bg-elevated)', borderRadius: '8px',
+                                            border: '1px solid var(--border-subtle)',
+                                        }}>
+                                            <div>
+                                                <div style={{ fontWeight: 500, fontSize: '13px' }}>🌙 {t('agent.settings.dream.enabled', 'Enable Dream')}</div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{t('agent.settings.dream.enabledDesc', 'Agent reviews daily conversations and updates memory at midnight')}</div>
+                                            </div>
+                                            <label style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px', cursor: canManage ? 'pointer' : 'default' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={agent?.dream_enabled ?? true}
+                                                    disabled={!canManage}
+                                                    onChange={async (e) => {
+                                                        if (!canManage) return;
+                                                        await agentApi.update(id!, { dream_enabled: e.target.checked } as any);
+                                                        queryClient.invalidateQueries({ queryKey: ['agent', id] });
+                                                    }}
+                                                    style={{ opacity: 0, width: 0, height: 0 }}
+                                                />
+                                                <span style={{
+                                                    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+                                                    background: (agent?.dream_enabled ?? true) ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                                    borderRadius: '12px', transition: 'background 0.2s',
+                                                    opacity: canManage ? 1 : 0.6
+                                                }}>
+                                                    <span style={{
+                                                        position: 'absolute', top: '3px',
+                                                        left: (agent?.dream_enabled ?? true) ? '23px' : '3px',
                                                         width: '18px', height: '18px', background: 'white',
                                                         borderRadius: '50%', transition: 'left 0.2s',
                                                     }} />

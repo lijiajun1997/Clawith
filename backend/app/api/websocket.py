@@ -417,8 +417,20 @@ async def call_llm(
     _consecutive_empty_responses = 0
     _max_consecutive_empty = 30  # Maximum allowed consecutive empty responses (increased from 3)
 
+    # ── Tool consecutive failure tracking ──
+    _tool_fail_counts: dict[str, int] = {}  # tool_name → consecutive error count
+
     # Tool-calling loop — effectively unlimited; context window compression is the real guard
     for round_i in range(_max_tool_rounds):
+
+        # ── Refresh working TTL each round to prevent premature expiry ──
+        if _was_marked_working and agent_id:
+            try:
+                from app.core.events import get_redis as _get_redis_refresh
+                _rr = await _get_redis_refresh()
+                await _rr.expire(f"working:{str(agent_id)}", 600)
+            except Exception:
+                pass
 
         # ── LLM call with retry + model alternation ──
         response = None
@@ -627,6 +639,26 @@ async def call_llm(
                 session_id=session_id,
             )
             logger.debug(f"[LLM] Tool result: {result[:100]}")
+
+            # ── Tool consecutive failure guard ──
+            _is_tool_error = isinstance(result, str) and result.startswith("❌")
+            if _is_tool_error:
+                _tool_fail_counts[tool_name] = _tool_fail_counts.get(tool_name, 0) + 1
+                _fail_count = _tool_fail_counts[tool_name]
+                if _fail_count >= 10:
+                    logger.warning(f"[LLM] Tool {tool_name} failed { _fail_count} times consecutively, aborting task")
+                    api_messages.append(LLMMessage(role="tool", tool_call_id=tc["id"],
+                        content=f"❌ 工具 '{tool_name}' 已连续失败 {_fail_count} 次，任务已终止。请更换方案或联系管理员。"))
+                    if agent_id and _accumulated_tokens > 0:
+                        await record_token_usage(agent_id, _accumulated_tokens)
+                    await client.close()
+                    await _clear_working()
+                    return f"❌ 任务终止：工具 '{tool_name}' 连续失败 {_fail_count} 次，请更换方案。"
+                if _fail_count >= 3:
+                    result += (f"\n\n⚠️ 工具 '{tool_name}' 已连续失败 {_fail_count} 次。"
+                               f"请停止用相同方式调用此工具，换一个完全不同的策略。")
+            else:
+                _tool_fail_counts.pop(tool_name, None)
 
             # Notify client about tool call result
             if on_tool_call:

@@ -20,10 +20,12 @@ PERSISTENT_DATA = Path(settings.AGENT_DATA_DIR)
 # Configuration keys in TenantSetting
 KEY_SYSTEM_PROMPT = "company_system_prompt"
 KEY_HEARTBEAT_INSTRUCTION = "company_heartbeat_instruction"
+KEY_DREAM_INSTRUCTION = "company_dream_instruction"
 
 # Target filenames in agent workspace
 FILE_SYSTEM_PROMPT = "COMPANY_SYSTEM_PROMPT.md"
 FILE_HEARTBEAT_INSTRUCTION = "HEARTBEAT.md"
+FILE_DREAM_INSTRUCTION = "DREAM.md"
 
 
 async def sync_company_config_to_agent(agent_id: uuid.UUID, config: dict) -> bool:
@@ -78,6 +80,24 @@ async def sync_company_config_to_agent(agent_id: uuid.UUID, config: dict) -> boo
             except Exception as e:
                 logger.warning(f"[CompanyConfigSync] Failed to remove {FILE_HEARTBEAT_INSTRUCTION} for agent {agent_id}: {e}")
 
+    # Write dream instruction
+    if KEY_DREAM_INSTRUCTION in config:
+        content = config[KEY_DREAM_INSTRUCTION]
+        file_path = ws_root / FILE_DREAM_INSTRUCTION
+        if content and content.strip():
+            try:
+                file_path.write_text(content, encoding="utf-8")
+                written = True
+            except Exception as e:
+                logger.warning(f"[CompanyConfigSync] Failed to write {FILE_DREAM_INSTRUCTION} for agent {agent_id}: {e}")
+        elif file_path.exists():
+            try:
+                file_path.unlink()
+                written = True
+                logger.info(f"[CompanyConfigSync] Removed empty {FILE_DREAM_INSTRUCTION} for agent {agent_id}")
+            except Exception as e:
+                logger.warning(f"[CompanyConfigSync] Failed to remove {FILE_DREAM_INSTRUCTION} for agent {agent_id}: {e}")
+
     # Invalidate company context cache if anything was written
     if written:
         try:
@@ -101,7 +121,7 @@ async def get_tenant_config(tenant_id: uuid.UUID) -> dict:
         result = await db.execute(
             select(TenantSetting).where(
                 TenantSetting.tenant_id == tenant_id,
-                TenantSetting.key.in_([KEY_SYSTEM_PROMPT, KEY_HEARTBEAT_INSTRUCTION])
+                TenantSetting.key.in_([KEY_SYSTEM_PROMPT, KEY_HEARTBEAT_INSTRUCTION, KEY_DREAM_INSTRUCTION])
             )
         )
         settings_records = result.scalars().all()
@@ -147,7 +167,7 @@ async def _sync_tick():
             # Get all tenants with company config settings
             result = await db.execute(
                 select(TenantSetting).where(
-                    TenantSetting.key.in_([KEY_SYSTEM_PROMPT, KEY_HEARTBEAT_INSTRUCTION])
+                    TenantSetting.key.in_([KEY_SYSTEM_PROMPT, KEY_HEARTBEAT_INSTRUCTION, KEY_DREAM_INSTRUCTION])
                 )
             )
             settings_records = result.scalars().all()
