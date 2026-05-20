@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback, Component, ErrorInfo } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -16,7 +17,7 @@ import type { WorkspaceActivity, WorkspaceLiveDraft } from '../components/Worksp
 import AgentCredentials from '../components/AgentCredentials';
 import { SkillCardGrid } from '../components/SkillCardGrid';
 import { SkillMarketplace } from '../components/SkillMarketplace';
-import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress, tenantApi } from '../services/api';
+import { activityApi, agentApi, channelApi, enterpriseApi, fileApi, scheduleApi, skillApi, taskApi, triggerApi, uploadFileWithProgress, tenantApi, type AgentSkillItem } from '../services/api';
 import { useAppStore } from '../stores';
 import { useAuthStore } from '../stores';
 import { copyToClipboard } from '../utils/clipboard';
@@ -47,7 +48,23 @@ import {
     IconEye,
     IconFolder,
     IconLock,
-    IconLockOpen
+    IconLockOpen,
+    IconTerminal,
+    IconCode,
+    IconEdit,
+    IconSearch,
+    IconTrash,
+    IconBook,
+    IconMail,
+    IconTool,
+    IconSend2,
+    IconPhoto,
+    IconFileSpreadsheet,
+    IconFileTypePdf,
+    IconPresentation,
+    IconMusic,
+    IconVideo,
+    IconArchive,
 } from '@tabler/icons-react';
 import { useDropZone } from '../hooks/useDropZone';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -840,250 +857,109 @@ function fetchAuth<T>(url: string, options?: RequestInit): Promise<T> {
     }).then(r => r.json());
 }
 
-// ── Pulse LED keyframe (shared with Chat.tsx, guarded by ID) ──────────────
-const _PULSE_STYLE_ID = 'cw-tool-pulse-style';
-if (typeof document !== 'undefined' && !document.getElementById(_PULSE_STYLE_ID)) {
-    const _s = document.createElement('style');
-    _s.id = _PULSE_STYLE_ID;
-    _s.textContent = `
-        @keyframes cw-pulse-led {
-            0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(99,102,241,0.6); }
-            50%       { opacity: 0.55; transform: scale(1.5); box-shadow: 0 0 0 4px rgba(99,102,241,0); }
-        }
-        .cw-running-led { animation: cw-pulse-led 1.4s ease-in-out infinite; }
-    `;
-    document.head.appendChild(_s);
-}
-
 
 /**
  * AnalysisCard — unified controlled collapsible card for all agent-internal processing.
  *
- * Covers three scenarios:
- *   - Thinking only (no tools): agent reasoned before answering directly
- *   - Tools only: agent called tools without visible thinking
- *   - Thinking + Tools: interleaved thinking and tool calls (most common)
- *
+ * Timeline design: vertical rail with node icons, matching upstream analysis-trace style.
+ * Covers: thinking-only, tools-only, thinking+tools interleaved.
  * CONTROLLED component (expanded + onToggle from parent) to survive WS re-renders.
  */
 type AnalysisItem =
-    | { type: 'thinking'; content: string }
-    | { type: 'tool'; name: string; args: any; status: 'running' | 'done'; result?: string };
+    | { type: 'thinking'; content: string; timestamp?: string }
+    | { type: 'tool'; name: string; args: any; status: 'running' | 'done'; result?: string; timestamp?: string };
 
 function AnalysisCard({
     items, t, expanded, onToggle, isGroupRunning,
 }: {
     items: AnalysisItem[];
-    t: (k: string) => string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    t: any;
     expanded: boolean;
     onToggle: () => void;
-    /** True when parent isWaiting/isStreaming AND this is the last active group */
     isGroupRunning: boolean;
 }) {
     const toolItems = items.filter(i => i.type === 'tool') as Extract<AnalysisItem, { type: 'tool' }>[];
-    const thinkingItems = items.filter(i => i.type === 'thinking') as Extract<AnalysisItem, { type: 'thinking' }>[];
-    const hasTools = toolItems.length > 0;
     const toolCount = toolItems.length;
-
-    // Check if any tool is still running
     const hasRunningTool = toolItems.some(tc => tc.status === 'running');
     const isRunning = hasRunningTool || isGroupRunning;
-
-    // Last running tool name (displayed in header while active)
     const runningTool = [...toolItems].reverse().find(tc => tc.status === 'running') ?? null;
 
-    // For collapsed thinking-only state: show a one-line preview of thinking content
-    const allThinkingText = thinkingItems.map(it => it.content).join(' ').trim();
-    const thinkingSummary = allThinkingText.length > 55
-        ? allThinkingText.slice(0, 55) + '…'
-        : allThinkingText;
+    const allThinkingText = items.filter(i => i.type === 'thinking').map(it => it.content).join(' ').trim();
+    const thinkingSummary = allThinkingText.length > 55 ? allThinkingText.slice(0, 55) + '…' : allThinkingText;
+
+    let title: string;
+    if (isRunning) {
+        title = runningTool ? runningTool.name : t('agent.chat.thinking');
+    } else if (toolCount > 0 && allThinkingText) {
+        title = t('agent.chat.thoughtAndTools', '思考过程 · {{count}} 个工具', { count: toolCount });
+    } else if (toolCount > 0) {
+        title = t('agent.chat.ranTools', '运行了 {{count}} 个工具', { count: toolCount });
+    } else if (allThinkingText) {
+        title = t('agent.chat.thoughtProcess', '思考过程');
+    } else {
+        title = t('agent.chat.analysing');
+    }
 
     return (
         <div style={{ paddingLeft: '36px', marginBottom: '6px' }}>
-            <div style={{
-                borderRadius: '8px',
-                background: 'rgba(99,102,241,0.06)',
-                border: `1px solid ${isRunning ? 'rgba(99,102,241,0.32)' : 'rgba(99,102,241,0.18)'}`,
-                fontSize: '12px',
-                overflow: 'hidden',
-                transition: 'border-color 0.3s ease',
-            }}>
-                {/* ── Header toggle ── */}
-                <button
-                    onClick={onToggle}
-                    style={{
-                        background: 'none', border: 'none', cursor: 'pointer',
-                        width: '100%', display: 'flex', alignItems: 'center', gap: '6px',
-                        padding: '7px 10px',
-                        color: 'var(--accent-text, #818cf8)',
-                    }}
-                >
-                    {/* Status indicator: pulse when running, static green when done */}
-                    {isRunning ? (
-                        <span className="cw-running-led" style={{
-                            display: 'inline-block', width: '6px', height: '6px',
-                            borderRadius: '50%', background: '#818cf8', flexShrink: 0,
-                        }} />
-                    ) : (
-                        <span style={{
-                            display: 'inline-block', width: '6px', height: '6px',
-                            borderRadius: '50%', background: '#22c55e', flexShrink: 0, opacity: 0.85,
-                        }} />
-                    )}
-
-                    {/* Title + contextual subtitle */}
-                    <span style={{ flex: 1, textAlign: 'left', display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0 }}>
-                        <span style={{ fontWeight: 500, flexShrink: 0 }}>{t('agent.chat.analysing')}</span>
-                        <span style={{ color: 'rgba(99,102,241,0.35)', flexShrink: 0 }}>·</span>
-                        {isRunning ? (
-                            // Running: show current tool name, or 'Thinking...' if no active tool
-                            <span style={{
-                                fontFamily: 'var(--font-mono)', fontSize: '11px', color: '#a5b4fc',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>
-                                {runningTool ? runningTool.name : t('agent.chat.thinking')}
-                            </span>
-                        ) : !hasTools && thinkingSummary ? (
-                            // Done + thinking only: single-line preview
-                            <span style={{
-                                fontSize: '11px', color: 'var(--text-tertiary)',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                            }}>{thinkingSummary}</span>
-                        ) : null}
+            <div className={`analysis-trace-shell${isRunning ? ' analysis-trace-shell--active' : ''}`}>
+                <button className="analysis-trace-header" onClick={onToggle}>
+                    <span className="analysis-trace-signal">
+                        <span /><span /><span />
                     </span>
-
-                    {/* Tool count badge (hidden when no tools) */}
+                    <span className="analysis-trace-title">{title}</span>
                     {toolCount > 0 && (
-                        <span style={{
-                            background: 'rgba(99,102,241,0.18)', color: '#818cf8',
-                            borderRadius: '10px', padding: '1px 7px',
-                            fontSize: '10px', fontWeight: 600, flexShrink: 0,
-                        }}>{toolCount}</span>
+                        <span className="analysis-trace-count">{toolCount}</span>
                     )}
-
-                    {/* Expand chevron */}
-                    <span style={{
-                        fontSize: '10px', color: 'var(--text-tertiary)',
-                        transition: 'transform 0.2s', display: 'inline-block',
-                        transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
-                        flexShrink: 0,
-                    }}>▶</span>
+                    <span className={`analysis-trace-chevron${expanded ? ' analysis-trace-chevron--expanded' : ''}`}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M6 9l6 6l6-6" />
+                        </svg>
+                    </span>
                 </button>
 
-                {/* ── Collapsed: tool name pills (only when tools present) ── */}
-                {!expanded && hasTools && (
-                    <div style={{ padding: '0 10px 7px 10px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {toolItems.map((tc, i) => {
-                            const running = tc.status === 'running';
-                            return (
-                                <span key={i} style={{
-                                    background: running ? 'rgba(99,102,241,0.14)' : 'rgba(99,102,241,0.08)',
-                                    border: `1px solid ${running ? 'rgba(99,102,241,0.28)' : 'rgba(99,102,241,0.14)'}`,
-                                    borderRadius: '4px', padding: '1px 6px',
-                                    fontSize: '10px', color: running ? '#818cf8' : '#a5b4fc',
-                                    fontFamily: 'var(--font-mono)',
-                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
-                                }}>
-                                    {running && (
-                                        <span className="cw-running-led" style={{
-                                            display: 'inline-block', width: '4px', height: '4px',
-                                            borderRadius: '50%', background: '#818cf8', flexShrink: 0,
-                                        }} />
-                                    )}
-                                    {tc.name}
-                                </span>
-                            );
-                        })}
-                    </div>
-                )}
-
-                {/* ── Expanded: all items in chronological order ── */}
                 {expanded && (
-                    <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)' }}>
+                    <div className="analysis-trace-body">
                         {items.map((item, idx) => {
-                            if (item.type === 'thinking') {
-                                // Thinking block: plain italic text, scrollable
-                                return (
-                                    <div key={idx} style={{
-                                        padding: '8px 12px',
-                                        borderBottom: idx < items.length - 1 ? '1px solid rgba(99,102,241,0.08)' : 'none',
-                                        fontSize: '11px', lineHeight: '1.7',
-                                        color: 'var(--text-tertiary)',
-                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                        maxHeight: '200px', overflowY: 'auto',
-                                        fontStyle: 'italic',
-                                        background: 'rgba(147,130,220,0.04)',
-                                    }}>
-                                        {item.content}
-                                    </div>
-                                );
-                            }
+                            const isLast = idx === items.length - 1;
+                            const isThought = item.type === 'thinking';
+                            const ts = item.timestamp
+                                ? new Date(item.timestamp).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                                : null;
 
-                            // Tool row: native <details> for per-item collapse
-                            const tc = item;
-                            const running = tc.status === 'running';
-                            const argsStr = tc.args && Object.keys(tc.args).length > 0
-                                ? JSON.stringify(tc.args, null, 2) : '';
-                            const hasDetail = !!(argsStr || tc.result);
                             return (
-                                <details
-                                    key={idx}
-                                    open={running}
-                                    style={{
-                                        borderBottom: idx < items.length - 1 ? '1px solid rgba(99,102,241,0.10)' : 'none',
-                                    }}
-                                >
-                                    <summary style={{
-                                        padding: '7px 10px',
-                                        display: 'flex', alignItems: 'center', gap: '5px',
-                                        cursor: hasDetail ? 'pointer' : 'default',
-                                        listStyle: 'none', userSelect: 'none',
-                                    }}>
-                                        <span
-                                            className={running ? 'cw-running-led' : undefined}
-                                            style={{
-                                                display: 'inline-block', width: '5px', height: '5px',
-                                                borderRadius: '50%',
-                                                background: running ? '#f59e0b' : '#22c55e',
-                                                flexShrink: 0,
-                                            }}
-                                        />
-                                        <span style={{
-                                            fontFamily: 'var(--font-mono)', fontSize: '11px',
-                                            color: '#818cf8', fontWeight: 600, flex: 1,
-                                        }}>{tc.name}</span>
-                                        {running && (
-                                            <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
-                                                {t('common.loading')}
-                                            </span>
+                                <div key={idx} className="analysis-trace-row">
+                                    <div className="analysis-trace-node-wrap">
+                                        {isThought ? (
+                                            <div className="analysis-trace-node analysis-trace-node--thought">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                                                    <circle cx="12" cy="12" r="9" />
+                                                    <path d="M12 7v5l3 3" />
+                                                </svg>
+                                            </div>
+                                        ) : (
+                                            <div className={`analysis-trace-node analysis-trace-node--tool${(item as Extract<AnalysisItem, { type: 'tool' }>).status === 'running' ? ' analysis-trace-node--running' : ''}`}>
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">
+                                                    <path d="M8 9l3 3l-3 3" />
+                                                    <path d="M13 15l3 0" />
+                                                    <rect x="3" y="4" width="18" height="16" rx="2" />
+                                                </svg>
+                                            </div>
                                         )}
-                                        {hasDetail && <span style={{ fontSize: '9px', color: 'var(--text-tertiary)' }}>▶</span>}
-                                    </summary>
-                                    {hasDetail && (
-                                        <div style={{ padding: '0 10px 8px 20px' }}>
-                                            {argsStr && (
-                                                <div style={{
-                                                    fontFamily: 'var(--font-mono)', fontSize: '10px',
-                                                    color: 'var(--text-tertiary)', whiteSpace: 'pre-wrap',
-                                                    wordBreak: 'break-all', maxHeight: '200px', overflowY: 'auto',
-                                                    background: 'rgba(0,0,0,0.12)', borderRadius: '4px',
-                                                    padding: '4px 6px', marginBottom: tc.result ? '4px' : 0,
-                                                }}>{argsStr}</div>
-                                            )}
-                                            {tc.result && (
-                                                <div style={{
-                                                    fontSize: '10px', color: 'var(--text-secondary)',
-                                                    whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                                                    maxHeight: '400px', overflowY: 'auto',
-                                                    borderTop: argsStr ? '1px solid rgba(99,102,241,0.10)' : 'none',
-                                                    paddingTop: argsStr ? '4px' : 0,
-                                                }}>
-                                                    {tc.result}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </details>
+                                        {!isLast && <div className="analysis-trace-rail" />}
+                                    </div>
+                                    <div className="analysis-trace-row-content">
+                                        {isThought ? (
+                                            <>
+                                                {ts && <div className="analysis-trace-time">{ts}</div>}
+                                                <div className="analysis-trace-thought-text">{item.content}</div>
+                                            </>
+                                        ) : (
+                                            <AnalysisToolRow item={item as Extract<AnalysisItem, { type: 'tool' }>} t={t} timestamp={ts} />
+                                        )}
+                                    </div>
+                                </div>
                             );
                         })}
                     </div>
@@ -1092,6 +968,99 @@ function AnalysisCard({
         </div>
     );
 }
+
+function AnalysisToolRow({ item, t, timestamp }: { item: Extract<AnalysisItem, { type: 'tool' }>; t: any; timestamp?: string | null }) {
+    const running = item.status === 'running';
+    const argsStr = item.args && Object.keys(item.args).length > 0 ? JSON.stringify(item.args, null, 2) : '';
+
+    const displayName = getToolDisplayName(item.name);
+    const icon = getToolIcon(item.name, 15);
+
+    const resultPreview = item.result
+        ? (item.result.length > 300 ? item.result.slice(0, 300) + '…' : item.result)
+        : null;
+
+    return (
+        <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                {icon}
+                <div className="analysis-trace-tool-name">{displayName}</div>
+                {timestamp && <span className="analysis-trace-time">{timestamp}</span>}
+                {running && <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{t('common.loading')}</span>}
+            </div>
+            {resultPreview && (
+                <div className="analysis-trace-tool-preview">{resultPreview}</div>
+            )}
+            {(argsStr || (item.result && item.result.length > 300)) && (
+                <details style={{ marginTop: 4 }}>
+                    <summary className="analysis-trace-detail-summary">{t('agent.chat.viewDetails', '查看细节')}</summary>
+                    <div style={{ marginTop: 4 }}>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                            <span className="analysis-trace-meta-badge analysis-trace-meta-badge--mono">{item.name}</span>
+                        </div>
+                        {argsStr && <div className="analysis-trace-tool-input">{argsStr}</div>}
+                        {item.result && item.result.length > 300 && (
+                            <div className="analysis-trace-tool-output">{item.result}</div>
+                        )}
+                    </div>
+                </details>
+            )}
+        </>
+    );
+}
+
+function getToolDisplayName(name: string): string {
+    const map: Record<string, string> = {
+        execute_code: '执行代码',
+        run_python_file: '运行 Python',
+        python_run_file: '运行 Python',
+        write_file: '写入文件',
+        read_file: '读取文件',
+        edit_file: '编辑文件',
+        read_document: '读取文档',
+        search_web: '搜索网页',
+        send_channel_file: '发送文件',
+        send_file_to_user: '发送文件',
+        list_files: '列出文件',
+        delete_file: '删除文件',
+        search_knowledge: '搜索知识库',
+        web_search: '网页搜索',
+        web_scrape: '网页抓取',
+        create_task: '创建任务',
+        update_task: '更新任务',
+        query_tasks: '查询任务',
+        delegate_task: '委派任务',
+        send_message: '发送消息',
+        browser_navigate: '浏览器导航',
+        browser_screenshot: '浏览器截图',
+        browser_click: '浏览器点击',
+        browser_input: '浏览器输入',
+        memory_save: '保存记忆',
+        memory_recall: '回忆记忆',
+        skill_execute: '执行技能',
+    };
+    if (map[name]) return map[name];
+    return name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getToolIcon(name: string, size = 16) {
+    const s = size;
+    const props = { width: s, height: s, style: { flexShrink: 0 } as React.CSSProperties };
+    if (/code|python|execute|terminal|bash|script/i.test(name)) return <IconTerminal {...props} />;
+    if (/write|edit_file/i.test(name)) return <IconEdit {...props} />;
+    if (/create|update|save|write_file/i.test(name)) return <IconEdit {...props} />;
+    if (/read|list|query|search|find|recall|scrape/i.test(name)) return <IconSearch {...props} />;
+    if (/send|notify|message|channel|publish/i.test(name)) return <IconSend2 {...props} />;
+    if (/delete|remove/i.test(name)) return <IconTrash {...props} />;
+    if (/web|browser|navigate|screenshot|click|url/i.test(name)) return <IconWorld {...props} />;
+    if (/task|todo|delegate/i.test(name)) return <IconClipboardCheck {...props} />;
+    if (/knowledge|skill/i.test(name)) return <IconBook {...props} />;
+    if (/memory|think/i.test(name)) return <IconBrain {...props} />;
+    if (/email|mail/i.test(name)) return <IconMail {...props} />;
+    if (/calendar|schedule/i.test(name)) return <IconCalendar {...props} />;
+    return <IconTool {...props} />;
+}
+
 
 
 
@@ -1144,10 +1113,10 @@ function groupMessagesForDisplay(messages: any[]): GroupedEntry[] {
         if (msgClass[i] === 'analysis') {
             if (!curGroup) { curGroup = []; groupKey = i; }
             if (m.role === 'tool_call') {
-                curGroup.push({ type: 'tool', name: m.toolName || 'tool', args: m.toolArgs || {}, status: m.toolStatus === 'running' ? 'running' : 'done', result: m.toolResult || undefined });
+                if ((m as any).thinking) curGroup.push({ type: 'thinking', content: (m as any).thinking, timestamp: m.timestamp });
+                curGroup.push({ type: 'tool', name: m.toolName || 'tool', args: m.toolArgs || {}, status: m.toolStatus === 'running' ? 'running' : 'done', result: m.toolResult || undefined, timestamp: m.timestamp });
             } else if (m.role === 'assistant') {
-                if (m.thinking) curGroup.push({ type: 'thinking', content: m.thinking });
-                if (m.content?.trim()) curGroup.push({ type: 'thinking', content: m.content.trim() });
+                if (m.thinking) curGroup.push({ type: 'thinking', content: m.thinking, timestamp: m.timestamp });
             }
         } else {
             flush();
@@ -1182,6 +1151,12 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
     const [editAgentDescription, setEditAgentDescription] = useState('');
     // Track which rows are being deleted (for optimistic UI)
     const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+    // Batch report state
+    const [batchMode, setBatchMode] = useState(false);
+    const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+    const [batchRelation, setBatchRelation] = useState('collaborator');
+    const [batchDescription, setBatchDescription] = useState('');
+    const [batchBusy, setBatchBusy] = useState(false);
 
     const { data: relationships = [], refetch } = useQuery({
         queryKey: ['relationships', agentId],
@@ -1457,7 +1432,228 @@ function RelationshipEditor({ agentId, readOnly = false }: { agentId: string; re
                     </div>
                 )}
             </div>
+            {/* ── Batch Report Relationships ── */}
+            <div className="card" style={{ marginBottom: '12px' }}>
+                <h4 style={{ marginBottom: '4px' }}>{t('agent.detail.batchReport')}</h4>
+                <p style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '12px' }}>{t('agent.detail.batchReportDesc')}</p>
+                {!readOnly && !batchMode && (
+                    <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={() => setBatchMode(true)}>+ {t('agent.detail.batchReport')}</button>
+                )}
+                {!readOnly && batchMode && (
+                    <div style={{ border: '1px solid rgba(59,130,246,0.5)', borderRadius: '8px', padding: '12px', background: 'var(--bg-elevated)' }}>
+                        {/* Agent multi-select list */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '12px', fontWeight: 600 }}>{t('agent.detail.selectedCount', { count: batchSelected.size })}</span>
+                            <div style={{ display: 'flex', gap: '6px' }}>
+                                <button className="btn btn-ghost" style={{ fontSize: '11px' }} onClick={() => {
+                                    setBatchSelected(new Set(availableAgents.map((a: any) => a.id)));
+                                }}>{t('agent.detail.selectAll')}</button>
+                                <button className="btn btn-ghost" style={{ fontSize: '11px' }} onClick={() => setBatchSelected(new Set())}>{t('agent.detail.deselectAll')}</button>
+                            </div>
+                        </div>
+                        <div style={{ maxHeight: '200px', overflowY: 'auto', border: '1px solid var(--border-subtle)', borderRadius: '6px', marginBottom: '10px' }}>
+                            {availableAgents.length === 0 && (
+                                <div style={{ padding: '12px', fontSize: '12px', color: 'var(--text-tertiary)', textAlign: 'center' }}>No other agents</div>
+                            )}
+                            {availableAgents.map((a: any) => (
+                                <label key={a.id} style={{
+                                    display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px',
+                                    cursor: 'pointer', fontSize: '12px',
+                                    background: batchSelected.has(a.id) ? 'rgba(59,130,246,0.08)' : 'transparent',
+                                    borderBottom: '1px solid var(--border-subtle)',
+                                }}>
+                                    <input type="checkbox" checked={batchSelected.has(a.id)} onChange={e => {
+                                        setBatchSelected(prev => {
+                                            const next = new Set(prev);
+                                            e.target.checked ? next.add(a.id) : next.delete(a.id);
+                                            return next;
+                                        });
+                                    }} />
+                                    <span style={{ fontWeight: 500 }}>{a.name}</span>
+                                    <span style={{ color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{a.role_description || ''}</span>
+                                </label>
+                            ))}
+                        </div>
+                        {/* Relation type + description */}
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                            <select className="input" value={batchRelation} onChange={e => setBatchRelation(e.target.value)} style={{ width: '150px', flexShrink: 0, fontSize: '12px' }}>
+                                {getAgentRelationOptions(t).map((o: any) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                        </div>
+                        <textarea className="input" placeholder={t('agent.detail.descriptionPlaceholder', 'Description...')} value={batchDescription} onChange={e => setBatchDescription(e.target.value)} rows={2} style={{ fontSize: '12px', resize: 'vertical', marginBottom: '8px', width: '100%' }} />
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <button className="btn btn-primary" style={{ fontSize: '12px' }} disabled={batchSelected.size === 0 || batchBusy} onClick={async () => {
+                                setBatchBusy(true);
+                                try {
+                                    // 1. For current agent (B): upsert records for each selected agent
+                                    const currentExisting = agentRelationships.map((r: any) => ({ target_agent_id: r.target_agent_id, relation: r.relation, description: r.description }));
+                                    for (const aid of batchSelected) {
+                                        const idx = currentExisting.findIndex((r: any) => r.target_agent_id === aid);
+                                        if (idx >= 0) {
+                                            currentExisting[idx] = { ...currentExisting[idx], relation: batchRelation, description: batchDescription };
+                                        } else {
+                                            currentExisting.push({ target_agent_id: aid, relation: batchRelation, description: batchDescription });
+                                        }
+                                    }
+                                    await fetchAuth(`/agents/${agentId}/relationships/agents`, { method: 'PUT', body: JSON.stringify({ relationships: currentExisting }) });
+
+                                    // 2. For each selected agent (A): upsert relation pointing to current agent (B)
+                                    await Promise.all(Array.from(batchSelected).map(async (aid) => {
+                                        try {
+                                            const res = await fetchAuth<any[]>(`/agents/${aid}/relationships/agents`);
+                                            const existing = (res || []).map((r: any) => ({ target_agent_id: r.target_agent_id, relation: r.relation, description: r.description }));
+                                            const idx = existing.findIndex((r: any) => r.target_agent_id === agentId);
+                                            if (idx >= 0) {
+                                                existing[idx] = { ...existing[idx], relation: batchRelation, description: batchDescription };
+                                            } else {
+                                                existing.push({ target_agent_id: agentId, relation: batchRelation, description: batchDescription });
+                                            }
+                                            await fetchAuth(`/agents/${aid}/relationships/agents`, { method: 'PUT', body: JSON.stringify({ relationships: existing }) });
+                                        } catch { /* skip agents user has no access to */ }
+                                    }));
+
+                                    refetchAgentRels();
+                                    setBatchMode(false);
+                                    setBatchSelected(new Set());
+                                    setBatchDescription('');
+                                } finally {
+                                    setBatchBusy(false);
+                                }
+                            }}>{batchBusy ? t('agent.detail.batchAdding') : t('agent.detail.batchAddConfirm')}</button>
+                            <button className="btn btn-secondary" style={{ fontSize: '12px' }} disabled={batchBusy} onClick={() => { setBatchMode(false); setBatchSelected(new Set()); setBatchDescription(''); }}>{t('common.cancel')}</button>
+                            {batchSelected.size > 0 && <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginLeft: '4px' }}>{t('agent.detail.selectedCount', { count: batchSelected.size })}</span>}
+                        </div>
+                    </div>
+                )}
+            </div>
         </div>
+    );
+}
+
+function FileIcon({ name, size = 14 }: { name: string; size?: number }) {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    const props = { size, stroke: 1.75 };
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) return <IconPhoto {...props} />;
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return <IconFileSpreadsheet {...props} />;
+    if (['doc', 'docx'].includes(ext)) return <IconFileText {...props} />;
+    if (['ppt', 'pptx'].includes(ext)) return <IconPresentation {...props} />;
+    if (['pdf'].includes(ext)) return <IconFileTypePdf {...props} />;
+    if (['js', 'ts', 'tsx', 'jsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'rb', 'php', 'sh', 'sql', 'html', 'css', 'json', 'yaml', 'yml', 'xml'].includes(ext)) return <IconCode {...props} />;
+    if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return <IconMusic {...props} />;
+    if (['mp4', 'avi', 'mov', 'mkv', 'webm', 'flv'].includes(ext)) return <IconVideo {...props} />;
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(ext)) return <IconArchive {...props} />;
+    if (['txt', 'md', 'log'].includes(ext)) return <IconFileText {...props} />;
+    return <IconFile {...props} />;
+}
+
+// Skill picker popup — rendered via portal to escape overflow clipping
+function SkillPickerPopup({ skills, selected, onToggle, onClose, anchorRef }: {
+    skills: AgentSkillItem[];
+    selected: Set<string>;
+    onToggle: (name: string) => void;
+    onClose: () => void;
+    anchorRef: React.RefObject<HTMLElement | null>;
+}) {
+    const { t } = useTranslation();
+    const [filter, setFilter] = useState('');
+    const ref = useRef<HTMLDivElement>(null);
+    const [pos, setPos] = useState<{ left: number; bottom: number }>({ left: 0, bottom: 0 });
+
+    useEffect(() => {
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+        const rect = anchor.getBoundingClientRect();
+        setPos({ left: rect.left, bottom: window.innerHeight - rect.top + 6 });
+    }, [anchorRef]);
+
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node) && !anchorRef.current?.contains(e.target as Node)) onClose();
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [onClose, anchorRef]);
+
+    const filtered = skills.filter(s =>
+        !filter || s.name.toLowerCase().includes(filter.toLowerCase()) || s.description.toLowerCase().includes(filter.toLowerCase())
+    );
+
+    return createPortal(
+        <div ref={ref} className="skill-picker-popup" style={{ position: 'fixed', left: pos.left, bottom: pos.bottom, zIndex: 9999 }}>
+            <div className="skill-picker-header">
+                <input
+                    className="skill-picker-search"
+                    placeholder={t('chat.skill.search', '搜索技能...')}
+                    value={filter}
+                    onChange={e => setFilter(e.target.value)}
+                    autoFocus
+                />
+            </div>
+            <div className="skill-picker-list">
+                {filtered.length === 0 && <div className="skill-picker-empty">{t('chat.skill.empty', '无匹配技能')}</div>}
+                {filtered.map(s => (
+                    <label key={s.folder_name} className={`skill-picker-item${selected.has(s.name) ? ' selected' : ''}`}>
+                        <input type="checkbox" checked={selected.has(s.name)} onChange={() => onToggle(s.name)} />
+                        <div className="skill-picker-item-info">
+                            <span className="skill-picker-item-name">{s.name}</span>
+                            <span className="skill-picker-item-desc">{s.description}</span>
+                        </div>
+                    </label>
+                ))}
+            </div>
+        </div>,
+        document.body
+    );
+}
+
+// @ mention popup — rendered via portal
+function SkillAtPopup({ skills, filter, selected, onSelect, onClose, anchorRef }: {
+    skills: AgentSkillItem[];
+    filter: string;
+    selected: Set<string>;
+    onSelect: (name: string) => void;
+    onClose: () => void;
+    anchorRef: React.RefObject<HTMLElement | null>;
+}) {
+    const ref = useRef<HTMLDivElement>(null);
+    const [pos, setPos] = useState<{ left: number; bottom: number }>({ left: 0, bottom: 0 });
+
+    useEffect(() => {
+        const anchor = anchorRef.current;
+        if (!anchor) return;
+        const rect = anchor.getBoundingClientRect();
+        setPos({ left: rect.left + 8, bottom: window.innerHeight - rect.top + 4 });
+    }, [anchorRef]);
+
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node) && !anchorRef.current?.contains(e.target as Node)) onClose();
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [onClose, anchorRef]);
+
+    const filtered = skills.filter(s =>
+        !filter || s.name.toLowerCase().includes(filter.toLowerCase())
+    ).slice(0, 8);
+
+    if (filtered.length === 0) return null;
+
+    return createPortal(
+        <div ref={ref} className="skill-at-popup" style={{ position: 'fixed', left: pos.left, bottom: pos.bottom, zIndex: 9999 }}>
+            {filtered.map(s => (
+                <button
+                    key={s.folder_name}
+                    type="button"
+                    className={`skill-at-item${selected.has(s.name) ? ' selected' : ''}`}
+                    onClick={() => onSelect(s.name)}
+                >
+                    <span className="skill-at-item-name">{s.name}</span>
+                    <span className="skill-at-item-desc">{s.description.slice(0, 40)}{s.description.length > 40 ? '...' : ''}</span>
+                </button>
+            ))}
+        </div>,
+        document.body
     );
 }
 
@@ -1470,14 +1666,17 @@ function AgentDetailInner() {
     const validTabs = ['status', 'aware', 'mind', 'tools', 'skills', 'relationships', 'workspace', 'chat', 'activityLog', 'approvals', 'settings'];
     const hashTab = location.hash?.replace('#', '');
     const [activeTab, setActiveTabRaw] = useState<string>(() => {
-        if (hashTab && validTabs.includes(hashTab)) return hashTab;
-        return 'chat';
+        const initial = (hashTab && validTabs.includes(hashTab)) ? hashTab : 'chat';
+        // Notify Layout of initial tab on first render
+        queueMicrotask(() => window.dispatchEvent(new CustomEvent('agent-tab-change', { detail: initial })));
+        return initial;
     });
 
     // Sync URL hash when tab changes
     const setActiveTab = (tab: string) => {
         setActiveTabRaw(tab);
         window.history.replaceState(null, '', `#${tab}`);
+        window.dispatchEvent(new CustomEvent('agent-tab-change', { detail: tab }));
         if (tab !== 'chat') setChatCompact(false);
     };
 
@@ -1592,9 +1791,20 @@ function AgentDetailInner() {
     const [sessionsLoading, setSessionsLoading] = useState(false);
     const [allSessionsLoading, setAllSessionsLoading] = useState(false);
     const [agentExpired, setAgentExpired] = useState(false);
-    // Chat mode toggles: long task & web search prompt injection
-    const [longTaskMode, setLongTaskMode] = useState(false);
+    // Chat mode: auto / light / medium / heavy
+    const [chatMode, setChatMode] = useState<'auto' | 'light' | 'medium' | 'heavy'>('auto');
     const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+    // Skill selector state
+    const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
+    const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+    const [skillAtOpen, setSkillAtOpen] = useState(false);
+    const [skillAtFilter, setSkillAtFilter] = useState('');
+    // Agent skills list (shared by picker + @mention)
+    const { data: agentSkillList = [] } = useQuery({
+        queryKey: ['agent-skills', id],
+        queryFn: () => fileApi.agentSkills.list(id!),
+        enabled: !!id,
+    });
     // Websocket chat state (for 'me' conversation)
     const token = useAuthStore((s) => s.token);
     const currentUser = useAuthStore((s) => s.user);
@@ -1608,6 +1818,8 @@ function AgentDetailInner() {
     const wsMapRef = useRef<Record<SessionRuntimeKey, WebSocket>>({});
     const reconnectTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setTimeout> | null>>({});
     const reconnectDisabledRef = useRef<Record<SessionRuntimeKey, boolean>>({});
+    const reconnectAttemptRef = useRef<Record<SessionRuntimeKey, number>>({});
+    const heartbeatTimerRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setInterval> | null>>({});
     const sessionUiStateRef = useRef<Record<SessionRuntimeKey, { isWaiting: boolean; isStreaming: boolean }>>({});
     const activeSessionIdRef = useRef<string | null>(null);
     const currentAgentIdRef = useRef<string | undefined>(id);
@@ -1624,13 +1836,172 @@ function AgentDetailInner() {
         }
     };
 
+    const clearHeartbeat = (key: SessionRuntimeKey) => {
+        const timer = heartbeatTimerRef.current[key];
+        if (timer) {
+            clearInterval(timer);
+            heartbeatTimerRef.current[key] = null;
+        }
+    };
+
+    const RECONNECT_BASE_DELAY = 2000;
+    const RECONNECT_MAX_DELAY = 30000;
+
+    const getReconnectDelay = (key: SessionRuntimeKey) => {
+        const attempt = reconnectAttemptRef.current[key] || 0;
+        const delay = Math.min(RECONNECT_BASE_DELAY * Math.pow(2, attempt), RECONNECT_MAX_DELAY);
+        reconnectAttemptRef.current[key] = attempt + 1;
+        return delay;
+    };
+
     const closeSessionSocket = (key: SessionRuntimeKey, disableReconnect = true) => {
         if (disableReconnect) reconnectDisabledRef.current[key] = true;
         clearReconnectTimer(key);
+        clearHeartbeat(key);
         const ws = wsMapRef.current[key];
         if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
         delete wsMapRef.current[key];
         delete sessionUiStateRef.current[key];
+        delete interruptedStreamingRef.current[key];
+    };
+
+    // ── Background poll: when WS drops during streaming, poll REST API for new messages ──
+    const bgPollRef = useRef<Record<SessionRuntimeKey, ReturnType<typeof setInterval> | null>>({});
+    const bgPollSeqRef = useRef<Record<SessionRuntimeKey, number>>({});
+    const bgPollLastMsgIdRef = useRef<Record<SessionRuntimeKey, string>>({});
+    const bgCompletedRef = useRef<Record<SessionRuntimeKey, boolean>>({});
+    const [bgCompletedVer, setBgCompletedVer] = useState(0);
+    const interruptedStreamingRef = useRef<Record<SessionRuntimeKey, boolean>>({});
+
+    const startBgPoll = (agentId: string, sessionId: string) => {
+        const key = buildSessionRuntimeKey(agentId, sessionId);
+        // Already polling
+        if (bgPollRef.current[key]) return;
+        const seq = ++bgPollSeqRef.current[key];
+        let attempts = 0;
+        const maxAttempts = 240; // 20 min max (5s × 240), matches backend _complete_llm_background timeout
+
+        bgPollRef.current[key] = setInterval(async () => {
+            // Stop if superseded
+            if (bgPollSeqRef.current[key] !== seq) { stopBgPoll(key); return; }
+            // Stop if WS reconnected AND no pending background task
+            const existing = wsMapRef.current[key];
+            if (existing && existing.readyState === WebSocket.OPEN && !interruptedStreamingRef.current[key]) { stopBgPoll(key); return; }
+            if (++attempts > maxAttempts) {
+                const isActiveT = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+                if (isActiveT) {
+                    setIsStreaming(false);
+                    setIsWaiting(false);
+                    if (reconnectNotifTimerRef.current) clearTimeout(reconnectNotifTimerRef.current);
+                    setReconnectNotif(null);
+                }
+                setSessionUiState(key, { isStreaming: false, isWaiting: false });
+                delete interruptedStreamingRef.current[key];
+                stopBgPoll(key); return;
+            }
+
+            const tkn = localStorage.getItem('token');
+            const authHeaders = { Authorization: `Bearer ${tkn}` };
+
+            // ── Check background task status via REST API ──
+            try {
+                const statusRes = await fetch(`/api/chat/${agentId}/bg-status?session_id=${sessionId}`, { headers: authHeaders });
+                if (statusRes.ok) {
+                    const statusData = await statusRes.json();
+                    const bgStatus = statusData?.bg_status;
+                    if (bgStatus?.status === 'error') {
+                        // Background task failed — show error and stop polling
+                        const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+                        if (isActiveRuntime) {
+                            const errorMsg = bgStatus.error || 'Unknown error';
+                            setChatMessages(prev => {
+                                const parsed = parseChatMsg({
+                                    role: 'assistant',
+                                    content: `⚠️ ${t('chat.bgTaskFailed', 'Background task failed')}: ${errorMsg}`,
+                                    timestamp: new Date().toISOString(),
+                                });
+                                for (let i = prev.length - 1; i >= 0; i--) {
+                                    if (prev[i].role === 'assistant' && (prev[i] as any)._streaming) {
+                                        return [...prev.slice(0, i), parsed, ...prev.slice(i + 1)];
+                                    }
+                                }
+                                return [...prev, parsed];
+                            });
+                            setIsStreaming(false);
+                            setIsWaiting(false);
+                            if (reconnectNotifTimerRef.current) clearTimeout(reconnectNotifTimerRef.current);
+                            setReconnectNotif(null);
+                        }
+                        setSessionUiState(key, { isStreaming: false, isWaiting: false });
+                        delete interruptedStreamingRef.current[key];
+                        stopBgPoll(key);
+                        return;
+                    }
+                }
+            } catch { /* status check failed, continue with message poll */ }
+
+            // ── Check for new assistant messages ──
+            try {
+                const res = await fetch(`/api/agents/${agentId}/sessions/${sessionId}/messages`, {
+                    headers: authHeaders,
+                });
+                if (!res.ok) return;
+                const msgs = await res.json();
+                const assistantMsgs = msgs.filter((m: any) => m.role === 'assistant');
+                // Compare against recorded count from before the message was sent
+                const lastKnown = bgPollLastMsgIdRef.current[key];
+                let prevCount = 0;
+                if (lastKnown?.startsWith('count:')) {
+                    prevCount = parseInt(lastKnown.slice(6), 10) || 0;
+                }
+                const newMsg = assistantMsgs.length > prevCount
+                    ? assistantMsgs[assistantMsgs.length - 1]
+                    : null;
+
+                if (newMsg) {
+                    // Found the result — inject into UI if this is the active session
+                    const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+                    if (isActiveRuntime) {
+                        const parsed = parseChatMsg({
+                            role: 'assistant',
+                            content: newMsg.content || '',
+                            ...(newMsg.thinking && { thinking: newMsg.thinking }),
+                            ...(newMsg.created_at && { timestamp: newMsg.created_at }),
+                            ...(newMsg.id && { id: newMsg.id }),
+                        });
+                        setChatMessages(prev => {
+                            // Search backwards for the streaming placeholder to replace
+                            for (let i = prev.length - 1; i >= 0; i--) {
+                                if (prev[i].role === 'assistant' && (prev[i] as any)._streaming) {
+                                    return [...prev.slice(0, i), parsed, ...prev.slice(i + 1)];
+                                }
+                            }
+                            return [...prev, parsed];
+                        });
+                        setIsStreaming(false);
+                        setIsWaiting(false);
+                        // Show brief completion notification then clear
+                        setReconnectNotif('restored');
+                        if (reconnectNotifTimerRef.current) clearTimeout(reconnectNotifTimerRef.current);
+                        reconnectNotifTimerRef.current = setTimeout(() => setReconnectNotif(null), 3000);
+                    }
+                    setSessionUiState(key, { isStreaming: false, isWaiting: false });
+                    delete interruptedStreamingRef.current[key];
+                    stopBgPoll(key);
+                }
+            } catch { /* ignore fetch errors, retry next interval */ }
+        }, 5000);
+    };
+
+    const stopBgPoll = (key: SessionRuntimeKey) => {
+        if (bgPollRef.current[key]) {
+            clearInterval(bgPollRef.current[key]!);
+            delete bgPollRef.current[key];
+        }
+    };
+
+    const stopAllBgPolls = () => {
+        Object.keys(bgPollRef.current).forEach(stopBgPoll);
     };
 
     const setSessionUiState = (key: SessionRuntimeKey, next: Partial<{ isWaiting: boolean; isStreaming: boolean }>) => {
@@ -1829,13 +2200,33 @@ function AgentDetailInner() {
                 ...(m.thinking && { thinking: m.thinking }),
                 ...(m.created_at && { timestamp: m.created_at }),
                 ...(m.id && { id: m.id }),
+                ...(m.file_preview && { file_preview: m.file_preview }),
+                ...(m.live_preview && { live_preview: m.live_preview }),
             }));
 
-            if (isWritableSession(sess, scopeOverride)) {
-                setChatMessages(preParsed);
-            } else {
-                setHistoryMsgs(preParsed);
+            // Collect file_preview from send_channel_file tool calls and attach to the following assistant message
+            const pendingFps: { name: string; path: string; url: string }[] = [];
+            for (const m of preParsed) {
+                if (m.role === 'tool_call' && m.toolName === 'send_channel_file' && (m as any).file_preview) {
+                    const fp = (m as any).file_preview;
+                    if (fp.name && fp.url) pendingFps.push(fp);
+                } else if (m.role === 'assistant' && pendingFps.length > 0) {
+                    (m as any).filePreviews = [...pendingFps];
+                    pendingFps.length = 0;
+                }
             }
+            // Attach remaining to last assistant or tool group
+            if (pendingFps.length > 0) {
+                const lastAssistant = [...preParsed].reverse().find(m => m.role === 'assistant');
+                if (lastAssistant) {
+                    (lastAssistant as any).filePreviews = [...pendingFps];
+                } else {
+                    const lastTool = [...preParsed].reverse().find(m => m.role === 'tool_call');
+                    if (lastTool) (lastTool as any).filePreviews = [...pendingFps];
+                }
+            }
+
+            setChatMessages(preParsed);
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
             console.error('Failed to load session messages:', err);
@@ -1853,9 +2244,16 @@ function AgentDetailInner() {
             if (res.ok) {
                 const newSess = normalizeChatSession(await res.json());
                 setChatScope('mine');
-                setSessions((prev) => [newSess, ...prev]);
                 setIsStreaming(false);
                 setIsWaiting(false);
+                // Refresh the sessions list from the server to ensure consistency
+                // (prevents the list from being overwritten by WebSocket-triggered fetchMySessions)
+                await fetchMySessions(true, id);
+                // Ensure the new session is in the list even if fetchMySessions hasn't returned it yet
+                setSessions((prev) => {
+                    if (prev.some((s: any) => s.id === newSess.id)) return prev;
+                    return [newSess, ...prev];
+                });
                 await selectSession(newSess, 'mine');
             } else {
                 const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
@@ -1924,8 +2322,9 @@ function AgentDetailInner() {
         } catch (e) { alert('Failed: ' + e); }
         setExpirySaving(false);
     };
-    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; }
+    interface ChatMsg { role: 'user' | 'assistant' | 'tool_call'; content: string; fileName?: string; toolName?: string; toolArgs?: any; toolStatus?: 'running' | 'done'; toolResult?: string; thinking?: string; imageUrl?: string; timestamp?: string; filePreviews?: { name: string; path: string; url: string }[]; }
     const [chatMessages, setChatMessages] = useState<ChatMsg[]>([]);
+    const pendingFilePreviewsRef = useRef<{ name: string; path: string; url: string }[]>([]);
     // Stable expanded-state map for tool groups — keyed by groupStartIndex.
     // Stored in a ref so it survives parent re-renders without causing extra renders.
     const toolGroupExpandedRef = useRef<Map<number, boolean>>(new Map());
@@ -2001,16 +2400,20 @@ function AgentDetailInner() {
     const [wsConnected, setWsConnected] = useState(false);
     const [isWaiting, setIsWaiting] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
+    const [reconnectNotif, setReconnectNotif] = useState<'restored' | 'restoring' | null>(null);
+    const reconnectNotifTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [tokenSummary, setTokenSummary] = useState<{ prompt_tokens: number; context_window: number | null; ratio: number | null } | null>(null);
     const [chatUploadDrafts, setChatUploadDrafts] = useState<{ id: string; name: string; percent: number; previewUrl?: string; sizeBytes: number }[]>([]);
     const chatUploadAbortRef = useRef<Map<string, () => void>>(new Map());
-    const [attachedFiles, setAttachedFiles] = useState<{ name: string; text: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' }[]>([]);
+    const [attachedFiles, setAttachedFiles] = useState<{ name: string; path?: string; imageUrl?: string; source?: 'upload' | 'workspace_auto' }[]>([]);
     const wsRef = useRef<WebSocket | null>(null);
     const chatEndRef = useRef<HTMLDivElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const chatInputRef = useRef<HTMLTextAreaElement>(null);
     const chatInputAreaRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const skillBtnRef = useRef<HTMLDivElement>(null);
+    const chatInputBlockRef = useRef<HTMLDivElement>(null);
 
     // Settings form local state
     const [settingsForm, setSettingsForm] = useState({
@@ -2144,6 +2547,9 @@ function AgentDetailInner() {
         Object.keys(reconnectDisabledRef.current).forEach((k) => {
             reconnectDisabledRef.current[k] = true;
         });
+        Object.keys(heartbeatTimerRef.current).forEach((k) => {
+            clearHeartbeat(k);
+        });
         Object.keys(wsMapRef.current).forEach((k) => {
             const ws = wsMapRef.current[k];
             if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
@@ -2173,10 +2579,20 @@ function AgentDetailInner() {
         const scheduleReconnect = () => {
             if (reconnectDisabledRef.current[key]) return;
             clearReconnectTimer(key);
+            const delay = getReconnectDelay(key);
             reconnectTimerRef.current[key] = setTimeout(() => {
                 reconnectTimerRef.current[key] = null;
                 if (!reconnectDisabledRef.current[key]) ensureSessionSocket(sess, agentId, authToken);
-            }, 2000);
+            }, delay);
+        };
+
+        const startHeartbeat = () => {
+            clearHeartbeat(key);
+            heartbeatTimerRef.current[key] = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    try { ws.send(JSON.stringify({ type: 'ping' })); } catch { /* connection lost */ }
+                }
+            }, 30000);
         };
 
         const ws = new WebSocket(`${protocol}//${window.location.host}/ws/chat/${agentId}?token=${authToken}${sessionParam}`);
@@ -2186,37 +2602,89 @@ function AgentDetailInner() {
                 ws.close();
                 return;
             }
-            if (currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId) {
+            // Reset reconnect backoff on successful connection
+            reconnectAttemptRef.current[key] = 0;
+            // Don't stop BgPoll if waiting for background LLM result
+            if (!interruptedStreamingRef.current[key]) {
+                stopBgPoll(key);
+            }
+            startHeartbeat();
+            const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
+            if (isActiveRuntime) {
                 wsRef.current = ws;
                 setWsConnected(true);
+                // Clear stale streaming state if no pending background task
+                if (!interruptedStreamingRef.current[key]) {
+                    setIsStreaming(false);
+                    setIsWaiting(false);
+                }
+                // Show reconnection notification
+                if (reconnectNotifTimerRef.current) clearTimeout(reconnectNotifTimerRef.current);
+                if (interruptedStreamingRef.current[key]) {
+                    setReconnectNotif('restoring');
+                } else {
+                    setReconnectNotif('restored');
+                    reconnectNotifTimerRef.current = setTimeout(() => setReconnectNotif(null), 3000);
+                }
             }
         };
         ws.onclose = (e) => {
-            if (wsMapRef.current[key] === ws) delete wsMapRef.current[key];
+            // Only process if this is still the current WS — stale onclose from old WS
+            // must not overwrite state set by the new connection.
+            const isCurrent = wsMapRef.current[key] === ws;
+            if (isCurrent) {
+                delete wsMapRef.current[key];
+                clearHeartbeat(key);
+            }
+            if (!isCurrent) return;
+            // Capture streaming state before clearing it
+            const wasStreaming = sessionUiStateRef.current[key]?.isStreaming;
             setSessionUiState(key, { isWaiting: false, isStreaming: false });
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) {
                 wsRef.current = null;
                 setWsConnected(false);
                 setIsWaiting(false);
-                setIsStreaming(false);
+                // Keep streaming indicator if LLM may still be running in background
+                if (wasStreaming) {
+                    setIsStreaming(true);
+                } else {
+                    setIsStreaming(false);
+                }
             }
             if (e.code === 4003 || e.code === 4002) {
                 reconnectDisabledRef.current[key] = true;
                 clearReconnectTimer(key);
+                stopBgPoll(key);
                 if (isActiveRuntime && e.code === 4003) setAgentExpired(true);
                 return;
+            }
+            // If was streaming, start background poll to catch the result
+            if (wasStreaming) {
+                interruptedStreamingRef.current[key] = true;
+                startBgPoll(agentId, sessionId);
             }
             scheduleReconnect();
         };
         ws.onerror = (error) => {
+            // Only process if still current
+            if (wsMapRef.current[key] !== ws) return;
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (isActiveRuntime) setWsConnected(false);
             console.warn(`WebSocket error for session ${sessionId}:`, error);
             // Error automatically triggers onclose with abnormal code, which handles reconnect
         };
         ws.onmessage = (e) => {
+            // Only process if still current
+            if (wsMapRef.current[key] !== ws) return;
             const d = JSON.parse(e.data);
+            // Handle server ping — respond with pong to keep connection alive
+            if (d.type === 'ping') {
+                try { ws.send(JSON.stringify({ type: 'pong' })); } catch { /* connection lost */ }
+                return;
+            }
+            // Client heartbeat pong — no action needed
+            if (d.type === 'pong') return;
             const isActiveRuntime = currentAgentIdRef.current === agentId && activeSessionIdRef.current === sessionId;
             if (['thinking', 'chunk', 'tool_call', 'done', 'error', 'quota_exceeded'].includes(d.type)) {
                 const nextStreaming = ['thinking', 'chunk', 'tool_call'].includes(d.type);
@@ -2231,6 +2699,8 @@ function AgentDetailInner() {
                     fetchMySessions(true, agentId);
                 }
                 if (['done', 'error', 'quota_exceeded'].includes(d.type)) {
+                    bgCompletedRef.current[key] = true;
+                    setBgCompletedVer(v => v + 1);
                     closeSessionSocket(key, true);
                 }
                 return;
@@ -2257,9 +2727,9 @@ function AgentDetailInner() {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
                     if (last && last.role === 'assistant' && (last as any)._streaming) {
-                        return [...prev.slice(0, -1), { ...last, thinking: (last.thinking || '') + d.content } as any];
+                        return [...prev.slice(0, -1), { ...last, thinking: (last.thinking || '') + d.content, timestamp: last.timestamp || new Date().toISOString() } as any];
                     }
-                    return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true } as any];
+                    return [...prev, { role: 'assistant', content: '', thinking: d.content, _streaming: true, timestamp: new Date().toISOString() } as any];
                 });
             } else if (d.type === 'workspace_draft') {
                 if (WORKSPACE_TOOLS.has(d.name)) {
@@ -2316,6 +2786,10 @@ function AgentDetailInner() {
                         }
                     }
                 }
+                // Collect file previews from send_channel_file for file card rendering
+                if (d.name === 'send_channel_file' && d.file_preview) {
+                    pendingFilePreviewsRef.current.push(d.file_preview);
+                }
                 if (d.live_preview) {
                     const lp = d.live_preview;
                     setLiveState(prev => {
@@ -2357,26 +2831,38 @@ function AgentDetailInner() {
                     queryClient.invalidateQueries({ queryKey: ['files', id, workspacePath] });
                 }
                 setChatMessages(prev => {
-                    const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result };
+                    const ts = new Date().toISOString();
+                    const toolMsg: ChatMsg = { role: 'tool_call', content: '', toolName: d.name, toolArgs: d.args, toolStatus: d.status, toolResult: d.result, timestamp: ts };
                     if (d.status === 'done') {
                         const lastIdx = prev.length - 1;
                         const last = prev[lastIdx];
-                        if (last && last.role === 'tool_call' && last.toolName === d.name && last.toolStatus === 'running') return [...prev.slice(0, lastIdx), toolMsg];
+                        if (last && last.role === 'tool_call' && last.toolName === d.name && last.toolStatus === 'running') {
+                            return [...prev.slice(0, lastIdx), { ...toolMsg, timestamp: last.timestamp || ts }];
+                        }
                     }
                     return [...prev, toolMsg];
                 });
             } else if (d.type === 'chunk') {
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), { ...last, content: last.content + d.content } as any];
+                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), { ...last, content: last.content + d.content, timestamp: last.timestamp || new Date().toISOString() } as any];
                     return [...prev, { role: 'assistant', content: d.content, _streaming: true } as any];
                 });
             } else if (d.type === 'done') {
+                const collectedPreviews = pendingFilePreviewsRef.current.length > 0 ? [...pendingFilePreviewsRef.current] : undefined;
+                pendingFilePreviewsRef.current = [];
                 setChatMessages(prev => {
                     const last = prev[prev.length - 1];
                     const thinking = (last && last.role === 'assistant' && (last as any)._streaming) ? last.thinking : undefined;
-                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), parseChatMsg({ role: 'assistant', content: d.content, thinking, timestamp: new Date().toISOString() })];
-                    return [...prev, parseChatMsg({ role: d.role, content: d.content, timestamp: new Date().toISOString() })];
+                    let finalContent = d.content || '';
+                    // Strip "File ready: [...](...)" lines when file cards will be rendered
+                    if (collectedPreviews && collectedPreviews.length > 0) {
+                        finalContent = finalContent.replace(/^File ready:\s*\[[^\]]+\]\([^)]+\)\s*\n?/gm, '').trim();
+                    }
+                    const parsed = parseChatMsg({ role: 'assistant', content: finalContent, thinking, timestamp: new Date().toISOString() });
+                    if (collectedPreviews) (parsed as any).filePreviews = collectedPreviews;
+                    if (last && last.role === 'assistant' && (last as any)._streaming) return [...prev.slice(0, -1), parsed];
+                    return [...prev, parsed];
                 });
                 fetchMySessions(true, agentId);
             } else if (d.type === 'error' || d.type === 'quota_exceeded') {
@@ -2417,6 +2903,8 @@ function AgentDetailInner() {
     useEffect(() => {
         return () => {
             sessionMsgAbortRef.current?.abort();
+            stopAllBgPolls();
+            if (reconnectNotifTimerRef.current) clearTimeout(reconnectNotifTimerRef.current);
             Object.keys(reconnectDisabledRef.current).forEach((key) => { reconnectDisabledRef.current[key] = true; });
             Object.keys(reconnectTimerRef.current).forEach((key) => clearReconnectTimer(key));
             Object.values(wsMapRef.current).forEach((ws) => {
@@ -2461,7 +2949,7 @@ function AgentDetailInner() {
     // Memoized component for each chat message to avoid re-renders while typing
     const ChatMessageItem = React.useMemo(() => React.memo(({
         msg, i, isLeft, t, senderLabel, avatarText, forceSenderLabel = false,
-        onFileLink,
+        onFileLink, sourceChannel,
     }: {
         msg: any;
         i: number;
@@ -2471,6 +2959,7 @@ function AgentDetailInner() {
         avatarText?: string;
         forceSenderLabel?: boolean;
         onFileLink?: (path: string) => void;
+        sourceChannel?: string;
     }) => {
         const fe = msg.fileName?.split('.').pop()?.toLowerCase() ?? '';
         const fi = fe === 'pdf' ? '▪ PDF' : (fe === 'csv' || fe === 'xlsx' || fe === 'xls') ? '▪ Spreadsheet' : (fe === 'docx' || fe === 'doc') ? '▪ Document' : '▪ File';
@@ -2509,6 +2998,9 @@ function AgentDetailInner() {
             return (
                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', marginTop: '4px', opacity: 0.6, display: 'flex', alignItems: 'center', justifyContent: isLeft ? 'flex-start' : 'flex-end' }}>
                     {timeStr}
+                    {sourceChannel && sourceChannel !== 'web' && (
+                        <span style={{ marginLeft: '6px', padding: '0 4px', borderRadius: '3px', background: 'var(--bg-elevated)', fontSize: '9px', opacity: 0.8 }}>{sourceChannel}</span>
+                    )}
                     {msg.content && <CopyMessageButton text={msg.content} />}
                 </div>
             );
@@ -2557,6 +3049,42 @@ function AgentDetailInner() {
                             </div>
                         ) : <MarkdownRenderer content={displayContent} onFileLink={onFileLink} />
                     ) : <div style={{ whiteSpace: 'pre-wrap' }}>{displayContent}</div>}
+                    {msg.role === 'assistant' && (msg as any).filePreviews && (msg as any).filePreviews.length > 0 && (
+                        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {(msg as any).filePreviews.map((fp: { name: string; path: string; url: string }, fi: number) => {
+                                const _ext = (fp.name.split('.').pop() || '').toLowerCase();
+                                const _typeMap: Record<string, string> = { pdf: 'PDF', csv: 'CSV', xlsx: 'Excel', xls: 'Excel', docx: 'Word', doc: 'Word', pptx: 'PPT', md: 'Markdown', txt: 'Text' };
+                                const _typeName = _typeMap[_ext] || _ext.toUpperCase() || 'File';
+                                const _dlToken = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
+                                const _dlUrl = fp.url.includes('token=') ? fp.url : fp.url + (fp.url.includes('?') ? '&' : '?') + `token=${_dlToken}`;
+                                return (
+                                    <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', borderRadius: '12px', border: '1px solid var(--border-subtle)', background: 'var(--bg-secondary)', maxWidth: '360px', cursor: 'pointer', transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)' }}
+                                        onClick={() => { const p = fp.path.startsWith('workspace/') ? fp.path : `workspace/${fp.path}`; setWorkspaceActivePath(p); setSidePanelTab('workspace'); setLivePanelVisible(true); }}
+                                        onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--accent-primary, #6366f1)'; (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 16px rgba(99,102,241,0.12)'; (e.currentTarget as HTMLDivElement).style.transform = 'translateY(-1px)'; }}
+                                        onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-subtle)'; (e.currentTarget as HTMLDivElement).style.boxShadow = 'none'; (e.currentTarget as HTMLDivElement).style.transform = 'none'; }}
+                                    >
+                                        <div style={{ width: '48px', height: '48px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'linear-gradient(135deg, rgba(99,102,241,0.14), rgba(59,130,246,0.10))', color: 'var(--accent-primary)', flexShrink: 0 }}><FileIcon name={fp.name} size={22} /></div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={fp.name}>{fp.name}</div>
+                                            <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{_typeName}</div>
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+                                            <button title={t('agent.chat.preview', 'Preview')} onClick={e => { e.stopPropagation(); const p = fp.path.startsWith('workspace/') ? fp.path : `workspace/${fp.path}`; setWorkspaceActivePath(p); setSidePanelTab('workspace'); setLivePanelVisible(true); }}
+                                                style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', transition: 'all 150ms ease' }}
+                                                onMouseEnter={e => { (e.target as HTMLElement).style.color = 'var(--accent-primary, #6366f1)'; (e.target as HTMLElement).style.borderColor = 'var(--accent-primary, #6366f1)'; }}
+                                                onMouseLeave={e => { (e.target as HTMLElement).style.color = 'var(--text-secondary)'; (e.target as HTMLElement).style.borderColor = 'var(--border-subtle)'; }}
+                                            ><IconEye size={15} stroke={1.75} /></button>
+                                            <a href={_dlUrl} download={fp.name} title={t('agent.chat.download', 'Download')} onClick={e => e.stopPropagation()}
+                                                style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)', color: 'var(--text-secondary)', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', transition: 'all 150ms ease' }}
+                                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#22c55e'; (e.currentTarget as HTMLElement).style.borderColor = '#22c55e'; }}
+                                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = 'var(--text-secondary)'; (e.currentTarget as HTMLElement).style.borderColor = 'var(--border-subtle)'; }}
+                                            ><IconFileText size={15} stroke={1.75} /></a>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
                     {timestampHtml}
                 </div>
             </div>
@@ -2613,9 +3141,18 @@ function AgentDetailInner() {
         let contentForLLM = userMsg;
 
         // Inject mode prompts
+        const MODE_PROMPTS: Record<string, string> = {
+            light: '请直接回答或简单查询后回答，不需要交付分析报告',
+            medium: '根据任务，充分获取信息，灵活选择文字/HTML/Word/Excel方式交付',
+            heavy: '根据任务难度进行规划，思考是否有合适的工具和技能，充分调用合适的信息进行任务规划，完成任务，可根据难度决定交付需要调用的工具轮次',
+        };
         const modePrefixes: string[] = [];
         if (webSearchEnabled) modePrefixes.push('联网搜索');
-        if (longTaskMode) modePrefixes.push('你可以进行长链路工具调用，深入分析和处理用户的问题');
+        const modePrompt = MODE_PROMPTS[chatMode];
+        if (modePrompt) modePrefixes.push(modePrompt);
+        if (selectedSkills.size > 0) {
+            modePrefixes.push(`用户指定使用以下技能：${[...selectedSkills].join('、')}。请在回答中优先调用这些技能`);
+        }
         if (modePrefixes.length > 0) {
             const prefix = modePrefixes.join('。') + '。';
             contentForLLM = contentForLLM ? `${prefix}\n${contentForLLM}` : prefix;
@@ -2635,8 +3172,7 @@ function AgentDetailInner() {
                     filesPrompt += `[图片文件已上传: ${file.name}，保存在 ${file.path || ''}]\n`;
                 } else {
                     const wsPath = file.path || '';
-                    const fileLoc = wsPath ? `\nFile location: ${wsPath} (for read_file/read_document tools)\nIn execute_code, use path: "${wsPath}" (working directory is agent root)\n` : '';
-                    filesPrompt += `[File: ${file.name}]${fileLoc}\n${file.text}\n\n`;
+                    filesPrompt += `[File uploaded: ${file.name}]\nPath: ${wsPath}\nUse read_file / read_document / execute_code to access this file.\n\n`;
                 }
             });
 
@@ -2653,6 +3189,9 @@ function AgentDetailInner() {
         setIsWaiting(true);
         setIsStreaming(false);
         setSessionUiState(activeRuntimeKey, { isWaiting: true, isStreaming: false });
+        // Record current assistant msg count for background poll comparison
+        const prevAsstCount = chatMessages.filter((m: any) => m.role === 'assistant').length;
+        bgPollLastMsgIdRef.current[activeRuntimeKey] = `count:${prevAsstCount}`;
         setChatMessages(prev => [...prev, parseChatMsg({
             role: 'user',
             content: userMsg,
@@ -2672,6 +3211,7 @@ function AgentDetailInner() {
             chatInputRef.current.style.height = 'auto';
         }
         setAttachedFiles([]);
+        setSelectedSkills(new Set());
     };
 
     const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2713,7 +3253,6 @@ function AgentDetailInner() {
                 setAttachedFiles((prev) =>
                     [...prev, {
                         name: data.filename,
-                        text: data.extracted_text,
                         path: data.workspace_path,
                         imageUrl: data.image_data_url || undefined,
                     }].slice(0, 10),
@@ -2730,19 +3269,32 @@ function AgentDetailInner() {
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
-    // Clipboard paste handler — auto-upload pasted images
+    // Clipboard paste handler — auto-upload pasted images and files
     const handlePaste = async (e: React.ClipboardEvent) => {
-        const items = e.clipboardData?.items;
-        if (!items) return;
-
         const filesToUpload: File[] = [];
-        for (let i = 0; i < items.length; i++) {
-            if (items[i].type.startsWith('image/')) {
-                const blob = items[i].getAsFile();
-                if (blob) {
-                    const ext = blob.type.split('/')[1] || 'png';
-                    const fileName = `paste-${Date.now()}-${i}.${ext}`;
-                    filesToUpload.push(new File([blob], fileName, { type: blob.type }));
+
+        // 1) Collect files from clipboardData.files (covers Windows Explorer copy-paste)
+        const clipboardFiles = e.clipboardData?.files;
+        if (clipboardFiles && clipboardFiles.length > 0) {
+            for (let i = 0; i < clipboardFiles.length; i++) {
+                const f = clipboardFiles[i];
+                if (f && f.size > 0) filesToUpload.push(f);
+            }
+        }
+
+        // 2) Fallback: iterate items for image blobs (screenshot paste etc.)
+        if (!filesToUpload.length) {
+            const items = e.clipboardData?.items;
+            if (items) {
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].type.startsWith('image/')) {
+                        const blob = items[i].getAsFile();
+                        if (blob) {
+                            const ext = blob.type.split('/')[1] || 'png';
+                            const fileName = `paste-${Date.now()}-${i}.${ext}`;
+                            filesToUpload.push(new File([blob], fileName, { type: blob.type }));
+                        }
+                    }
                 }
             }
         }
@@ -2785,7 +3337,6 @@ function AgentDetailInner() {
                 setAttachedFiles((prev) =>
                     [...prev, {
                         name: data.filename,
-                        text: data.extracted_text,
                         path: data.workspace_path,
                         imageUrl: data.image_data_url || undefined,
                     }].slice(0, 10),
@@ -2822,7 +3373,7 @@ function AgentDetailInner() {
                     id ? { agent_id: id } : undefined,
                 );
                 const data = await promise;
-                setAttachedFiles(prev => [...prev, { name: data.filename, text: data.extracted_text, path: data.workspace_path, imageUrl: data.image_data_url || undefined }]);
+                setAttachedFiles(prev => [...prev, { name: data.filename, path: data.workspace_path, imageUrl: data.image_data_url || undefined }]);
             } catch (err: any) {
                 if (err?.message !== 'Upload cancelled') {
                     alert(err?.message || t('agent.upload.failed'));
@@ -2989,6 +3540,12 @@ function AgentDetailInner() {
     const isCreator = agent && currentUser && (agent as any).creator_id === currentUser.id;
     const isCompanyWide = permData?.scope_type === 'company' && !permData?.is_team;
     const canViewWorkspace = isAdmin || isCreator || !isCompanyWide;
+    const isCompanyViewer = isCompanyWide && !isCreator && !isAdmin;
+
+    // Company viewers can only see chat tab — auto-switch if on a hidden tab
+    useEffect(() => {
+        if (isCompanyViewer && activeTab !== 'chat') setActiveTab('chat');
+    }, [isCompanyViewer]);
 
     // Team member selection state for permission management
     const [teamSearchRes, setTeamSearchRes] = useState<any[]>([]);
@@ -3090,10 +3647,11 @@ function AgentDetailInner() {
     };
     const statusKey = computeStatusKey();
     const canManage = (agent as any).access_level === 'manage' || isAdmin;
+    const isChatActive = activeTab === 'chat';
 
     return (
         <>
-            <div>
+            <div style={isChatActive ? { display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 0, overflow: 'hidden' } : undefined}>
                 {/* Header — hidden in chat compact mode */}
                 {!(activeTab === 'chat' && chatCompact) && (
                 <div className="page-header">
@@ -3141,7 +3699,6 @@ function AgentDetailInner() {
                         <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                             {canManage && editingName ? (
                                 <input
-                                    className="page-title"
                                     autoFocus
                                     value={nameInput}
                                     onChange={e => setNameInput(e.target.value)}
@@ -3163,6 +3720,7 @@ function AgentDetailInner() {
                                         borderRadius: '6px', color: 'var(--text-primary)',
                                         padding: '4px 10px', minWidth: '320px', width: 'auto', outline: 'none',
                                         marginBottom: '0', display: 'block',
+                                        fontSize: 'var(--text-2xl)', fontWeight: 600,
                                     }}
                                 />
                             ) : (
@@ -3262,6 +3820,8 @@ function AgentDetailInner() {
                 {!(isMobile && activeTab === 'chat') && !(activeTab === 'chat' && chatCompact) && (
                 <div className="tabs">
                     {TABS.filter(tab => {
+                        // Company viewers: only chat tab
+                        if (isCompanyViewer) return tab === 'chat';
                         // Workspace tab: only show if user has permission
                         if (tab === 'workspace' && !canViewWorkspace) return false;
                         // 'use' access: hide settings and approvals tabs
@@ -4471,7 +5031,6 @@ function AgentDetailInner() {
                                 gap: 0,
                                 flex: 1,
                                 minHeight: 0,
-                                height: isMobile ? 'calc(100dvh - 52px)' : chatCompact ? 'calc(100vh - 32px)' : 'calc(100vh - 206px)',
                                 border: isMobile ? 'none' : '1px solid color-mix(in srgb, var(--border-subtle) 55%, var(--bg-primary))',
                                 borderRadius: isMobile ? '0' : '12px',
                                 overflow: 'hidden',
@@ -4645,6 +5204,7 @@ function AgentDetailInner() {
                                                                             style={{ fontSize: '12px', fontWeight: isActive ? 600 : 400, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0, cursor: 'text' }}>{s.title}</div>
                                                                     )}
                                                                     {chLabel && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)', flexShrink: 0 }}>{chLabel}</span>}
+                                                                    {bgCompletedRef.current[buildSessionRuntimeKey(id!, s.id)] && <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: 'rgba(34,197,94,0.15)', color: '#22c55e', flexShrink: 0 }}>{t('agent.chat.bgCompleted', '✓ Done')}</span>}
                                                                 </div>
                                                                 <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                                     {s.last_message_at
@@ -4758,153 +5318,158 @@ function AgentDetailInner() {
                                             <button className="btn btn-secondary" onClick={createNewSession} style={{ fontSize: '12px' }}>{t('agent.chat.startNewSession')}</button>
                                         )}
                                     </div>
-                                ) : !isWritableSession(activeSession) ? (
-                                    /* ── Read-only history view (other user's session or agent-to-agent) ── */
-                                    <>
-                                        <div ref={historyContainerRef} onScroll={handleHistoryScroll} style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 12px' }}>
-                                            {(() => {
-                                                const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
-                                                const isHumanReadonly = !isA2A && !activeSession.is_group;
-                                                const thisAgentName = (agent as any)?.name;
-                                                const thisAgentPid = isA2A && thisAgentName
-                                                    ? historyMsgs.find((m: any) => m.sender_name === thisAgentName)?.participant_id
-                                                    : null;
-
-                                                return groupMessagesForDisplay(historyMsgs).map((entry) => {
-                                                    if (entry.type === 'analysis_group') {
-                                                        return <AnalysisCard key={`hag-${entry.key}`} items={entry.items} t={t} expanded={!!toolGroupExpandedRef.current.get(entry.key)} onToggle={() => toggleToolGroup(entry.key)} isGroupRunning={false} />;
-                                                    }
-                                                    const { msg, i } = entry;
-                                                    const isLeft = isA2A && thisAgentPid
-                                                        ? msg.participant_id !== thisAgentPid
-                                                        : msg.role === 'assistant';
-                                                    return (
-                                                        <ChatMessageItem
-                                                            key={i} msg={msg} i={i} isLeft={isLeft} t={t}
-                                                            senderLabel={isHumanReadonly ? (isLeft ? ((agent as any)?.name || 'Agent') : (activeSession.username || 'User')) : undefined}
-                                                            avatarText={isHumanReadonly ? (isLeft ? (((agent as any)?.name || 'Agent')[0]) : ((activeSession.username || 'User')[0])) : undefined}
-                                                            onFileLink={handleChatFileLink}
-                                                            forceSenderLabel={isHumanReadonly}
-                                                        />
-                                                    );
-                                                });
-                                            })()}
-                                        </div>
-                                        {showHistoryScrollBtn && (
-                                            <button onClick={scrollHistoryToBottom} style={{ position: 'absolute', bottom: '20px', right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
-                                        )}
-                                    </>
                                 ) : (
-                                    /* ── Live WebSocket chat (own session) ── */
-                                    <div {...chatDropProps} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
-                                        {/* Drop overlay */}
-                                        {isChatDragging && (
-                                            <div className="drop-zone-overlay">
-                                                <div className="drop-zone-overlay__icon"><IconPaperclip size={48} /></div>
-                                                <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
-                                            </div>
-                                        )}
-                                        <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-                                            {chatMessages.length === 0 && (
-                                                <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
-                                                    <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
-                                                    <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>
-                                                    <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>
-                                                </div>
-                                            )}
-                                            {(() => {
-                                                const grouped = groupMessagesForDisplay(chatMessages);
+                                    /* ── Unified chat view (writable + read-only) ── */
+                                    (() => {
+                                        const writable = isWritableSession(activeSession);
+                                        const isA2A = activeSession.source_channel === 'agent' || activeSession.participant_type === 'agent';
+                                        const isHumanReadonly = !writable && !isA2A && !activeSession.is_group;
+                                        const thisAgentName = (agent as any)?.name;
+                                        const thisAgentPid = !writable && isA2A && thisAgentName
+                                            ? (chatMessages.find((m: any) => m.sender_name === thisAgentName) as any)?.participant_id
+                                            : null;
+                                        const userLabel = activeSession.username || 'User';
+                                        const agentLabel = (agent as any)?.name || 'Agent';
 
-                                                return grouped.map((entry, entryIdx) => {
-                                                    if (entry.type === 'analysis_group') {
-                                                        // Group is considered running if it has a running tool,
-                                                        // or if it's the very last entry and the agent is still active
-                                                        const isLastEntry = entryIdx === grouped.length - 1;
-                                                        const hasRunningTool = entry.items.some(
-                                                            it => it.type === 'tool' && it.status === 'running'
-                                                        );
-                                                        const groupIsRunning = hasRunningTool || (isLastEntry && (isWaiting || isStreaming));
-                                                        return (
-                                                            <AnalysisCard
-                                                                key={`ag-${entry.key}`}
-                                                                items={entry.items}
-                                                                t={t}
-                                                                expanded={!!toolGroupExpandedRef.current.get(entry.key)}
-                                                                onToggle={() => toggleToolGroup(entry.key)}
-                                                                isGroupRunning={groupIsRunning}
-                                                            />
-                                                        );
-                                                    }
-                                                    const { msg, i } = entry;
-                                                    // All remaining messages have real content; render as chat bubbles
-                                                    return (
-                                                        <ChatMessageItem
-                                                            key={i}
-                                                            msg={msg}
-                                                            i={i}
-                                                            isLeft={msg.role === 'assistant'}
-                                                            t={t}
-                                                            senderLabel={msg.role === 'assistant' ? ((agent as any)?.name || 'Agent') : (currentUser?.display_name || undefined)}
-                                                            avatarText={msg.role === 'assistant' ? (((agent as any)?.name || 'Agent')[0]) : (currentUser?.display_name?.[0] || undefined)}
-                                                            onFileLink={handleChatFileLink}
-                                                        />
-                                                    );
-                                                });
-                                            })()
-                                            }
-                                            {isWaiting && (
-                                                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
-                                                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
-                                                    <div style={{ padding: '8px 12px', borderRadius: '12px', background: 'var(--bg-secondary)', fontSize: '13px' }}>
-                                                        <div className="thinking-indicator">
-                                                            <div className="thinking-dots">
-                                                                <span /><span /><span />
-                                                            </div>
-                                                            <span style={{ color: 'var(--text-tertiary)', fontSize: '13px' }}>{t('agent.chat.thinking', 'Thinking...')}</span>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-                                            <div ref={chatEndRef} />
-                                        </div>
-                                        {showScrollBtn && (
-                                            <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
-                                        )}
-                                        {agentExpired ? (
-                                            <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
-                                                <span>u23f8</span>
-                                                <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
-                                            </div>
-                                        ) : !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
-                                            <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
-                                                Connecting...
-                                            </div>
-                                        ) : null}
-                                        {tokenSummary && (
-                                            <div style={{
-                                                display: 'flex', alignItems: 'center', gap: '8px',
-                                                padding: '4px 16px', fontSize: '11px', color: 'var(--text-tertiary)',
-                                                borderTop: '1px solid var(--border-default)',
-                                            }}>
-                                                <span>Context: {(tokenSummary.prompt_tokens / 1000).toFixed(1)}K{tokenSummary.context_window ? ` / ${(tokenSummary.context_window / 1000).toFixed(0)}K` : ''}</span>
-                                                {tokenSummary.context_window && (
-                                                    <div style={{
-                                                        flex: 1, maxWidth: '100px', height: '3px', borderRadius: '2px',
-                                                        background: 'var(--border-default)', overflow: 'hidden',
-                                                    }}>
-                                                        <div style={{
-                                                            width: `${Math.min((tokenSummary.ratio || 0) * 100, 100)}%`,
-                                                            height: '100%', borderRadius: '2px',
-                                                            background: (tokenSummary.ratio || 0) > 0.8
-                                                                ? (tokenSummary.ratio || 0) > 0.95 ? '#ef4444' : '#f59e0b'
-                                                                : 'var(--accent-primary)',
-                                                        }} />
+                                        return (
+                                            <div {...(writable && !isCompanyViewer ? chatDropProps : {})} style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0, overflow: 'hidden' }}>
+                                                {writable && !isCompanyViewer && isChatDragging && (
+                                                    <div className="drop-zone-overlay">
+                                                        <div className="drop-zone-overlay__icon"><IconPaperclip size={48} /></div>
+                                                        <div className="drop-zone-overlay__text">{t('agent.upload.dropToAttach', 'Drop files to attach (max 10)')}</div>
                                                     </div>
                                                 )}
-                                            </div>
-                                        )}
-                                        <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
+                                                <div ref={chatContainerRef} onScroll={handleChatScroll} style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+                                                    {chatMessages.length === 0 && (
+                                                        <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
+                                                            <div style={{ fontSize: '13px', marginBottom: '4px' }}>{activeSession?.title || t('agent.chat.startChat')}</div>
+                                                            {writable && <div style={{ fontSize: '12px' }}>{t('agent.chat.startConversation', { name: agent.name })}</div>}
+                                                            {writable && <div style={{ fontSize: '11px', marginTop: '4px', opacity: 0.7 }}>{t('agent.chat.fileSupport')}</div>}
+                                                        </div>
+                                                    )}
+                                                    {(() => {
+                                                        const grouped = groupMessagesForDisplay(chatMessages);
+                                                        return grouped.map((entry, entryIdx) => {
+                                                            if (entry.type === 'analysis_group') {
+                                                                const isLastEntry = entryIdx === grouped.length - 1;
+                                                                const hasRunningTool = entry.items.some(
+                                                                    it => it.type === 'tool' && it.status === 'running'
+                                                                );
+                                                                const groupIsRunning = writable && (hasRunningTool || (isLastEntry && (isWaiting || isStreaming)));
+                                                                return (
+                                                                    <AnalysisCard
+                                                                        key={`ag-${entry.key}`}
+                                                                        items={entry.items}
+                                                                        t={t}
+                                                                        expanded={!!toolGroupExpandedRef.current.get(entry.key)}
+                                                                        onToggle={() => toggleToolGroup(entry.key)}
+                                                                        isGroupRunning={groupIsRunning}
+                                                                    />
+                                                                );
+                                                            }
+                                                            const { msg, i } = entry;
+                                                            const isLeft = isA2A && thisAgentPid
+                                                                ? msg.participant_id !== thisAgentPid
+                                                                : msg.role === 'assistant';
+                                                            const sLabel = isHumanReadonly
+                                                                ? (isLeft ? agentLabel : userLabel)
+                                                                : (msg.role === 'assistant' ? agentLabel : (currentUser?.display_name || undefined));
+                                                            const aText = isHumanReadonly
+                                                                ? (isLeft ? agentLabel[0] : userLabel[0])
+                                                                : (msg.role === 'assistant' ? agentLabel[0] : (currentUser?.display_name?.[0] || undefined));
+                                                            return (
+                                                                <ChatMessageItem
+                                                                    key={i}
+                                                                    msg={msg}
+                                                                    i={i}
+                                                                    isLeft={isLeft}
+                                                                    t={t}
+                                                                    senderLabel={sLabel}
+                                                                    avatarText={aText}
+                                                                    onFileLink={handleChatFileLink}
+                                                                    forceSenderLabel={isHumanReadonly}
+                                                                    sourceChannel={activeSession?.source_channel}
+                                                                />
+                                                            );
+                                                        });
+                                                    })()}
+                                                    {writable && isWaiting && (
+                                                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', animation: 'fadeIn .2s ease' }}>
+                                                            <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--bg-elevated)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', flexShrink: 0, color: 'var(--text-secondary)', fontWeight: 600 }}>A</div>
+                                                            <div className="chat-waiting-bubble">
+                                                                <div className="thinking-indicator">
+                                                                    <div className="thinking-dots">
+                                                                        <span /><span /><span />
+                                                                    </div>
+                                                                    <span style={{ color: 'var(--accent-primary)', fontSize: '13px', fontWeight: 500 }}>{t('agent.chat.thinking', 'Thinking...')}</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                    <div ref={chatEndRef} />
+                                                </div>
+                                                {showScrollBtn && (
+                                                    <button onClick={scrollToBottom} style={{ position: 'absolute', bottom: `${chatScrollBtnBottom}px`, right: '20px', width: '32px', height: '32px', borderRadius: '50%', background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', boxShadow: 'var(--shadow-sm)', zIndex: 10 }} title="Scroll to bottom">↓</button>
+                                                )}
+                                                {reconnectNotif && (
+                                                    <div style={{
+                                                        padding: '4px 16px',
+                                                        display: 'flex', alignItems: 'center', gap: '6px',
+                                                        fontSize: '11px',
+                                                        background: reconnectNotif === 'restoring' ? 'rgba(59,130,246,0.08)' : 'rgba(16,185,129,0.08)',
+                                                        color: reconnectNotif === 'restoring' ? 'var(--accent-primary)' : 'rgb(5,150,105)',
+                                                        borderTop: `1px solid ${reconnectNotif === 'restoring' ? 'rgba(59,130,246,0.3)' : 'rgba(16,185,129,0.3)'}`,
+                                                        transition: 'all 0.3s ease',
+                                                    }}>
+                                                        {reconnectNotif === 'restoring' ? (
+                                                            <>
+                                                                <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', animation: 'pulse 1.2s ease-in-out infinite' }} />
+                                                                {t('chat.restoringTask', 'Restoring task...')}
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'rgb(5,150,105)' }} />
+                                                                {t('chat.connectionRestored', 'Connection restored')}
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {agentExpired ? (
+                                                    <div style={{ padding: '7px 16px', borderTop: '1px solid rgba(245,158,11,0.3)', background: 'rgba(245,158,11,0.08)', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: 'rgb(180,100,0)' }}>
+                                                        <span>u23f8</span>
+                                                        <span>This Agent has <strong>expired</strong> and is off duty. Contact your admin to extend its service.</span>
+                                                    </div>
+                                                ) : writable && !wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? (
+                                                    <div style={{ padding: '3px 16px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                        <span style={{ display: 'inline-block', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--accent-primary)', opacity: 0.8, animation: 'pulse 1.2s ease-in-out infinite' }} />
+                                                        Connecting...
+                                                    </div>
+                                                ) : null}
+                                                {writable && tokenSummary && (
+                                                    <div style={{
+                                                        display: 'flex', alignItems: 'center', gap: '8px',
+                                                        padding: '4px 16px', fontSize: '11px', color: 'var(--text-tertiary)',
+                                                        borderTop: '1px solid var(--border-default)',
+                                                    }}>
+                                                        <span>Context: {(tokenSummary.prompt_tokens / 1000).toFixed(1)}K{tokenSummary.context_window ? ` / ${(tokenSummary.context_window / 1000).toFixed(0)}K` : ''}</span>
+                                                        {tokenSummary.context_window && (
+                                                            <div style={{
+                                                                flex: 1, maxWidth: '100px', height: '3px', borderRadius: '2px',
+                                                                background: 'var(--border-default)', overflow: 'hidden',
+                                                            }}>
+                                                                <div style={{
+                                                                    width: `${Math.min((tokenSummary.ratio || 0) * 100, 100)}%`,
+                                                                    height: '100%', borderRadius: '2px',
+                                                                    background: (tokenSummary.ratio || 0) > 0.8
+                                                                        ? (tokenSummary.ratio || 0) > 0.95 ? '#ef4444' : '#f59e0b'
+                                                                        : 'var(--accent-primary)',
+                                                                }} />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {writable && (
+                                                <div ref={chatInputAreaRef} className="chat-input-area" style={{ flexShrink: 0 }}>
                                             <div className="chat-composer">
                                             {(chatUploadDrafts.length > 0 || attachedFiles.length > 0) && (
                                                 <div className="chat-composer-attachments">
@@ -4919,7 +5484,7 @@ function AgentDetailInner() {
                                                                     <img className="chat-file-pill__thumb" src={draft.previewUrl} alt="" />
                                                                 ) : (
                                                                     <span className="chat-file-pill__icon">
-                                                                        <IconPaperclip size={14} stroke={1.75} />
+                                                                        <FileIcon name={draft.name} />
                                                                     </span>
                                                                 )}
                                                                 <span className="chat-file-pill__name">{draft.name}</span>
@@ -4945,7 +5510,7 @@ function AgentDetailInner() {
                                                                     <img className="chat-file-pill__thumb" src={file.imageUrl} alt="" />
                                                                 ) : (
                                                                     <span className="chat-file-pill__icon">
-                                                                        <IconPaperclip size={14} stroke={1.75} />
+                                                                        <FileIcon name={file.name} />
                                                                     </span>
                                                                 )}
                                                                 <span className="chat-file-pill__name">{file.name}</span>
@@ -4962,7 +5527,22 @@ function AgentDetailInner() {
                                                     ))}
                                                 </div>
                                             )}
-                                            <div className="chat-composer-input-block">
+                                            {selectedSkills.size > 0 && (
+                                                <div className="chat-skill-pills">
+                                                    {[...selectedSkills].map(skill => (
+                                                        <span key={skill} className="chat-skill-pill">
+                                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 4-3 3L9 4"/><circle cx="12" cy="12" r="9"/></svg>
+                                                            {skill}
+                                                            <button
+                                                                type="button"
+                                                                className="chat-skill-pill__remove"
+                                                                onClick={() => setSelectedSkills(prev => { const next = new Set(prev); next.delete(skill); return next; })}
+                                                            >×</button>
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <div ref={chatInputBlockRef} className="chat-composer-input-block" style={{ position: 'relative' }}>
                                                 <textarea
                                                     ref={chatInputRef}
                                                     className="chat-input"
@@ -4973,6 +5553,18 @@ function AgentDetailInner() {
                                                         const el = e.target;
                                                         el.style.height = 'auto';
                                                         el.style.height = el.scrollHeight + 'px';
+                                                        // Detect @ trigger for skill picker
+                                                        const val = e.target.value;
+                                                        const pos = e.target.selectionStart;
+                                                        const before = val.slice(0, pos);
+                                                        const atMatch = before.match(/@([^\s@]*)$/);
+                                                        if (atMatch) {
+                                                            setSkillAtOpen(true);
+                                                            setSkillAtFilter(atMatch[1]);
+                                                        } else {
+                                                            setSkillAtOpen(false);
+                                                            setSkillAtFilter('');
+                                                        }
                                                     }}
                                                     onKeyDown={e => {
                                                         // Enter sends the message; Shift+Enter inserts a newline
@@ -4981,15 +5573,45 @@ function AgentDetailInner() {
                                                             sendChatMsg();
                                                         }
                                                     }}
-                                                    onPaste={handlePaste}
+                                                    onPaste={isCompanyViewer ? undefined : handlePaste}
                                                     placeholder={!wsConnected && !!currentUser && sessionUserIdStr(activeSession) === viewerUserIdStr() ? 'Connecting...' : t('chat.placeholder')}
                                                     disabled={!wsConnected}
                                                     rows={1}
                                                 />
+                                                {skillAtOpen && (
+                                                    <SkillAtPopup
+                                                        skills={agentSkillList}
+                                                        filter={skillAtFilter}
+                                                        selected={selectedSkills}
+                                                        onSelect={(name) => {
+                                                            // Replace @query with @name in input
+                                                            const pos = chatInputRef.current?.selectionStart ?? chatInput.length;
+                                                            const before = chatInput.slice(0, pos);
+                                                            const after = chatInput.slice(pos);
+                                                            const replaced = before.replace(/@([^\s@]*)$/, `@${name} `) + after;
+                                                            setChatInput(replaced);
+                                                            setSkillAtOpen(false);
+                                                            setSkillAtFilter('');
+                                                            if (!selectedSkills.has(name)) {
+                                                                setSelectedSkills(prev => { const next = new Set(prev); next.add(name); return next; });
+                                                            }
+                                                            chatInputRef.current?.focus();
+                                                        }}
+                                                        onClose={() => { setSkillAtOpen(false); setSkillAtFilter(''); }}
+                                                        anchorRef={chatInputBlockRef}
+                                                    />
+                                                )}
+                                                {(isStreaming || isWaiting) && !chatInput.trim() && (
+                                                    <div className="chat-input-running">
+                                                        <span className="chat-input-running__dot" />
+                                                        <span>{isWaiting ? t('chat.running.thinking', '思考中...') : t('chat.running.processing', '处理中...')}</span>
+                                                    </div>
+                                                )}
                                             </div>
                                             <div className="chat-composer-toolbar">
                                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                                                <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />
+                                                {!isCompanyViewer && <input type="file" multiple ref={fileInputRef} onChange={handleChatFile} style={{ display: 'none' }} />}
+                                                {!isCompanyViewer && (
                                                 <button
                                                     type="button"
                                                     className="chat-composer-btn"
@@ -4999,6 +5621,7 @@ function AgentDetailInner() {
                                                 >
                                                     <IconPaperclip size={16} stroke={1.75} />
                                                 </button>
+                                                )}
                                                 <ModelSwitcher
                                                     value={overrideModelId}
                                                     onChange={handleModelChange}
@@ -5014,17 +5637,51 @@ function AgentDetailInner() {
                                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg>
                                                     <span>{t('chat.mode.webSearch.label', '联网')}</span>
                                                 </button>
-                                                <button
-                                                    type="button"
-                                                    className={`chat-mode-btn${longTaskMode ? ' active' : ''}`}
-                                                    onClick={() => setLongTaskMode(v => !v)}
-                                                    title={longTaskMode ? t('chat.mode.longTask.active', '长任务模式已开启') : t('chat.mode.longTask.inactive', '开启长任务模式：允许深度多步骤工具调用')}
-                                                >
-                                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" /></svg>
-                                                    <span>{t('chat.mode.longTask.label', '长任务')}</span>
-                                                </button>
+                                                <div className="chat-mode-segmented">
+                                                    {([
+                                                        { key: 'auto' as const, label: t('chat.mode.auto.label', '自动') },
+                                                        { key: 'light' as const, label: t('chat.mode.light.label', '轻度') },
+                                                        { key: 'medium' as const, label: t('chat.mode.medium.label', '中度') },
+                                                        { key: 'heavy' as const, label: t('chat.mode.heavy.label', '重度') },
+                                                    ]).map(m => (
+                                                        <button
+                                                            key={m.key}
+                                                            type="button"
+                                                            className={`chat-mode-seg-btn${chatMode === m.key ? ' active' : ''}`}
+                                                            onClick={() => setChatMode(m.key)}
+                                                            title={t(`chat.mode.${m.key}.title`, m.label)}
+                                                        >
+                                                            {m.label}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                                <div ref={skillBtnRef} style={{ position: 'relative' }}>
+                                                    <button
+                                                        type="button"
+                                                        className={`chat-mode-btn${selectedSkills.size > 0 ? ' active' : ''}`}
+                                                        onClick={() => setSkillPickerOpen(v => !v)}
+                                                        title={t('chat.skill.label', '技能')}
+                                                    >
+                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h0"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>
+                                                        <span>{t('chat.skill.label', '技能')}{selectedSkills.size > 0 ? `(${selectedSkills.size})` : ''}</span>
+                                                    </button>
+                                                    {skillPickerOpen && (
+                                                        <SkillPickerPopup
+                                                            skills={agentSkillList}
+                                                            selected={selectedSkills}
+                                                            onToggle={(name) => setSelectedSkills(prev => {
+                                                                const next = new Set(prev);
+                                                                if (next.has(name)) next.delete(name); else next.add(name);
+                                                                return next;
+                                                            })}
+                                                            onClose={() => setSkillPickerOpen(false)}
+                                                            anchorRef={skillBtnRef}
+                                                        />
+                                                    )}
+                                                </div>
                                                 </div>
                                                 <div style={{ flex: 1 }} />
+                                                {!isCompanyViewer && (
                                                 <button
                                                     type="button"
                                                     className="chat-composer-btn"
@@ -5043,6 +5700,7 @@ function AgentDetailInner() {
                                                 >
                                                     <IconFolder size={16} stroke={1.75} />
                                                 </button>
+                                                )}
                                                 {(isStreaming || isWaiting) ? (
                                                     <button
                                                         type="button"
@@ -5076,8 +5734,11 @@ function AgentDetailInner() {
                                             </div>
                                         </div>
                                         </div>
+                                        )}
                                     </div>
-                                )}
+                                );
+                            })()
+                            )}
                                 </div>
                                 <AgentSidePanel
                                     liveState={liveState}
@@ -5085,6 +5746,7 @@ function AgentDetailInner() {
                                     workspaceActivities={workspaceActivities}
                                     workspaceLiveDraft={workspaceLiveDraft}
                                     visible={livePanelVisible}
+                                    readOnly={isCompanyViewer}
                                     onToggle={() => {
                                         if (!livePanelVisible) {
                                             setSidePanelTab('workspace');
