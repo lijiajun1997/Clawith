@@ -244,9 +244,23 @@ export default function Layout() {
     const queryClient = useQueryClient();
     const isChinese = i18n.language?.startsWith('zh');
     // Detect chat page: needs fixed-height main-content for inner scroll to work
-    const isChatPage = !!useMatch('/agents/:id/chat');
-    const { isMobile } = useIsMobile();
+    // Chat is a tab inside AgentDetail (hash-based), not a separate route
     const location = useLocation();
+    // AgentDetail dispatches 'agent-tab-change' custom event via replaceState
+    // (replaceState doesn't trigger hashchange, so we use a custom event)
+    const [agentActiveTab, setAgentActiveTab] = useState<string | null>(() => {
+        const h = window.location.hash.replace('#', '');
+        return h || null;
+    });
+    useEffect(() => {
+        const handler = (e: Event) => setAgentActiveTab((e as CustomEvent).detail);
+        window.addEventListener('agent-tab-change', handler);
+        return () => window.removeEventListener('agent-tab-change', handler);
+    }, []);
+    const isAgentDetail = !!location.pathname.match(/^\/agents\/[^/]+$/);
+    // AgentDetail defaults to 'chat' tab when no hash — treat null as chat
+    const isChatPage = isAgentDetail && (!agentActiveTab || agentActiveTab === 'chat');
+    const { isMobile } = useIsMobile();
     const currentAgentId = location.pathname.match(/^\/agents\/([^/]+)/)?.[1] || '';
 
     const [showAccountSettings, setShowAccountSettings] = useState(false);

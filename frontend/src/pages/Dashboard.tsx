@@ -21,9 +21,6 @@ const ACTIVITY_COLORS: Record<string, string> = {
     chat_reply: '#3b82f6', tool_call: '#8b5cf6', file_written: '#f59e0b',
     schedule_run: '#06b6d4', heartbeat: '#22c55e',
 };
-const TASK_COLORS: Record<string, string> = {
-    pending: '#f59e0b', doing: '#3b82f6', done: '#22c55e',
-};
 
 /* ────── Helpers ────── */
 
@@ -321,38 +318,6 @@ function TokenTopBar({ agents }: { agents: Agent[] }) {
                     />
                 </BarChart>
             </ResponsiveContainer>
-        </div>
-    );
-}
-
-/* ────── Task Pipeline ────── */
-
-function TaskPipeline({ byStatus }: { byStatus: { pending: number; doing: number; done: number } }) {
-    const { t } = useTranslation();
-    const total = byStatus.pending + byStatus.doing + byStatus.done;
-
-    const labels: Record<string, string> = {
-        pending: t('dashboard.task.pending', '待处理'),
-        doing: t('dashboard.task.doing', '进行中'),
-        done: t('dashboard.task.done', '已完成'),
-    };
-
-    return (
-        <div>
-            <div style={{ display: 'flex', height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'var(--bg-tertiary)', marginBottom: '10px' }}>
-                {total > 0 && Object.entries(byStatus).map(([s, c]) => c > 0 ? (
-                    <div key={s} style={{ width: `${(c / total) * 100}%`, background: TASK_COLORS[s], transition: 'width 0.4s' }} />
-                ) : null)}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                {(['pending', 'doing', 'done'] as const).map(s => (
-                    <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px' }}>
-                        <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: TASK_COLORS[s], flexShrink: 0 }} />
-                        <span style={{ color: 'var(--text-secondary)' }}>{labels[s]}</span>
-                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)', marginLeft: 'auto' }}>{byStatus[s as keyof typeof byStatus]}</span>
-                    </div>
-                ))}
-            </div>
         </div>
     );
 }
@@ -706,43 +671,116 @@ function AgentActivityRankChart({ agents, agentRank, timeRange }: {
     );
 }
 
-/* ────── Tool Call Statistics (per-tool calls + success rate) ────── */
+/* ────── Tool Call Statistics (per-tool calls + success rate, day/week/month/total) ────── */
 
-function ToolStatsChart({ toolStats }: { toolStats: { tool: string; calls: number; success: number }[] }) {
-    const data = useMemo(() =>
-        toolStats.map(s => ({
-            tool: s.tool.length > 14 ? s.tool.slice(0, 14) + '..' : s.tool,
-            calls: s.calls,
-            success: s.calls > 0 ? Math.round((s.success / s.calls) * 100) : 100,
-        })),
-        [toolStats],
+type TimePeriod = 'day' | 'week' | 'month' | 'total';
+
+function TimePeriodTabs({ value, onChange }: { value: TimePeriod; onChange: (v: TimePeriod) => void }) {
+    const { t } = useTranslation();
+    const tabs: { key: TimePeriod; label: string }[] = [
+        { key: 'day', label: t('dashboard.rangeDay', '日') },
+        { key: 'week', label: t('dashboard.rangeWeek', '周') },
+        { key: 'month', label: t('dashboard.rangeMonth', '月') },
+        { key: 'total', label: t('dashboard.rangeYear', '累计') },
+    ];
+    return (
+        <div style={{ display: 'flex', gap: '2px', background: 'var(--bg-tertiary)', borderRadius: '4px', padding: '1px' }}>
+            {tabs.map(tab => (
+                <button key={tab.key} onClick={() => onChange(tab.key)} style={{
+                    padding: '1px 6px', fontSize: '10px', borderRadius: '3px', border: 'none', cursor: 'pointer',
+                    background: value === tab.key ? 'var(--bg-primary)' : 'transparent',
+                    color: value === tab.key ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                    fontWeight: value === tab.key ? 600 : 400,
+                }}>{tab.label}</button>
+            ))}
+        </div>
     );
+}
+
+function ToolStatsChart({ toolStats }: { toolStats: { tool: string; calls_day: number; calls_week: number; calls_month: number; calls_total: number; success_day: number; success_week: number; success_month: number; success_total: number }[] }) {
+    const [period, setPeriod] = useState<TimePeriod>('week');
+    const data = useMemo(() => {
+        const callsKey = `calls_${period}` as const;
+        const successKey = `success_${period}` as const;
+        return toolStats.map(s => ({
+            tool: s.tool.length > 14 ? s.tool.slice(0, 14) + '..' : s.tool,
+            calls: s[callsKey],
+            successRate: s[callsKey] > 0 ? Math.round((s[successKey] / s[callsKey]) * 100) : 100,
+        }));
+    }, [toolStats, period]);
 
     if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
 
-    const maxCalls = data[0]?.calls || 1;
+    const maxCalls = Math.max(...data.map(d => d.calls), 1);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-            {data.map(d => (
-                <div key={d.tool} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '10px', color: 'var(--text-secondary)', width: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>{d.tool}</span>
-                    <div style={{ flex: 1, height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
-                        <div style={{
-                            height: '100%', borderRadius: '3px',
-                            width: `${(d.calls / maxCalls) * 100}%`,
-                            background: d.success >= 90 ? '#22c55e' : d.success >= 70 ? '#f59e0b' : '#ef4444',
-                            opacity: 0.7,
-                            transition: 'width 0.3s',
-                        }} />
+        <div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' }}>
+                <TimePeriodTabs value={period} onChange={setPeriod} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                {data.map(d => (
+                    <div key={d.tool} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)', width: '80px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>{d.tool}</span>
+                        <div style={{ flex: 1, height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+                            <div style={{
+                                height: '100%', borderRadius: '3px',
+                                width: `${(d.calls / maxCalls) * 100}%`,
+                                background: d.successRate >= 90 ? '#22c55e' : d.successRate >= 70 ? '#f59e0b' : '#ef4444',
+                                opacity: 0.7,
+                                transition: 'width 0.3s',
+                            }} />
+                        </div>
+                        <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', width: '24px', textAlign: 'right' }}>{d.calls}</span>
+                        <span style={{
+                            fontSize: '9px', fontWeight: 600, width: '28px', textAlign: 'right',
+                            color: d.successRate >= 90 ? '#22c55e' : d.successRate >= 70 ? '#f59e0b' : '#ef4444',
+                        }}>{d.successRate}%</span>
                     </div>
-                    <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', width: '24px', textAlign: 'right' }}>{d.calls}</span>
-                    <span style={{
-                        fontSize: '9px', fontWeight: 600, width: '28px', textAlign: 'right',
-                        color: d.success >= 90 ? '#22c55e' : d.success >= 70 ? '#f59e0b' : '#ef4444',
-                    }}>{d.success}%</span>
-                </div>
-            ))}
+                ))}
+            </div>
+        </div>
+    );
+}
+
+/* ────── Skill Call Statistics ────── */
+
+function SkillCallChart({ skillStats }: { skillStats: { skill_name: string; calls_day: number; calls_week: number; calls_month: number; calls_total: number }[] }) {
+    const [period, setPeriod] = useState<TimePeriod>('week');
+    const data = useMemo(() => {
+        const key = `calls_${period}` as const;
+        return skillStats.map(s => ({
+            name: s.skill_name.length > 16 ? s.skill_name.slice(0, 16) + '..' : s.skill_name,
+            calls: s[key],
+        }));
+    }, [skillStats, period]);
+
+    if (data.length === 0) return <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center', padding: '12px' }}>暂无数据</div>;
+
+    const maxCalls = Math.max(...data.map(d => d.calls), 1);
+
+    return (
+        <div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' }}>
+                <TimePeriodTabs value={period} onChange={setPeriod} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                {data.map(d => (
+                    <div key={d.name} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)', width: '90px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 0 }}>{d.name}</span>
+                        <div style={{ flex: 1, height: '6px', borderRadius: '3px', overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+                            <div style={{
+                                height: '100%', borderRadius: '3px',
+                                width: `${(d.calls / maxCalls) * 100}%`,
+                                background: '#8b5cf6',
+                                opacity: 0.7,
+                                transition: 'width 0.3s',
+                            }} />
+                        </div>
+                        <span style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', width: '28px', textAlign: 'right' }}>{d.calls}</span>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
@@ -1150,6 +1188,12 @@ export default function Dashboard() {
         refetchInterval: 30000,
     });
 
+    const { data: onlineData } = useQuery({
+        queryKey: ['online-users'],
+        queryFn: () => fetchJson<any>('/dashboard/online-users').catch(() => null),
+        refetchInterval: 15000,
+    });
+
     // Chart range toggles
     const [activityRange, setActivityRange] = useState<'day' | 'week' | 'month'>('week');
     const [tokenRange, setTokenRange] = useState<'week' | 'month' | 'year'>('month');
@@ -1258,10 +1302,11 @@ export default function Dashboard() {
             ) : (
                 <>
                     {/* ── KPI Row ── */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '16px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px', marginBottom: '16px' }}>
                         <KpiCard icon={Icons.bot} label={t('dashboard.stats.agents', '数字员工')} value={totalAgents} sub={t('dashboard.stats.online', { count: activeAgents })} accent={activeAgents > 0 ? 'var(--success)' : undefined} />
                         <KpiCard icon={Icons.tasks} label={t('dashboard.stats.activeTasks', '进行中任务')} value={pendingTasks} sub={t('dashboard.stats.completedToday', { count: completedToday })} />
                         <KpiCard icon={Icons.zap} label={t('dashboard.stats.todayTokens', '今日 Token')} value={formatTokens(totalTokensToday)} sub={`${t('dashboard.stats.monthTokens', '本月')}: ${formatTokens(totalTokensMonth)}`} />
+                        <KpiCard icon={Icons.users} label={t('dashboard.stats.onlineUsers', '在线员工')} value={onlineData?.online_users ?? 0} sub={`${onlineData?.active_agents ?? 0} ${t('dashboard.stats.activeAgents', '个Agent活跃')}`} accent={(onlineData?.online_users ?? 0) > 0 ? 'var(--success)' : undefined} />
                         <KpiCard icon={Icons.heartbeat} label={t('dashboard.stats.heartbeat', '心跳监控')} value={heartbeatAgents} sub={`${heartbeatAgents} / ${totalAgents} ${t('dashboard.stats.enabled', '已启用')}`} accent={heartbeatAgents > 0 ? 'var(--success)' : undefined} />
                     </div>
 
@@ -1300,7 +1345,9 @@ export default function Dashboard() {
                                     }).map(agent => (
                                         <AgentRow key={agent.id} agent={agent}
                                             pendingTasks={tasksByAgent.get(agent.id) || []}
-                                            recentActivity={dashboardSummary?.recent_activities.filter(a => a.agent_id === agent.id) || []}
+                                            recentActivity={dashboardSummary?.per_agent_latest?.[agent.id]
+                                                ? [dashboardSummary.per_agent_latest[agent.id]]
+                                                : (dashboardSummary?.recent_activities.filter(a => a.agent_id === agent.id) || [])}
                                         />
                                     ))}
                                 </div>
@@ -1407,9 +1454,9 @@ export default function Dashboard() {
                                     <FileDeliveryChart dailyStats={dashboardSummary?.daily_stats || []} range={deliveryRange} />
                                 </SectionCard>
 
-                                {/* Task Pipeline */}
-                                <SectionCard title={t('dashboard.taskPipeline', '任务状态分布')} icon={Icons.tasks}>
-                                    <TaskPipeline byStatus={taskSummary?.by_status || { pending: 0, doing: 0, done: 0 }} />
+                                {/* Skill Call Statistics */}
+                                <SectionCard title={t('dashboard.skillCallStats', '技能调用统计')} icon={Icons.tool}>
+                                    <SkillCallChart skillStats={dashboardSummary?.skill_call_stats || []} />
                                 </SectionCard>
                             </div>
                         </div>
@@ -1425,11 +1472,6 @@ export default function Dashboard() {
                             {/* Token Top 5 */}
                             <SidebarChart title={t('dashboard.tokenRank', 'Token 排行')}>
                                 <TokenTopBar agents={agents} />
-                            </SidebarChart>
-
-                            {/* Task Pipeline */}
-                            <SidebarChart title={t('dashboard.taskPipeline', '任务流水线')}>
-                                <TaskPipeline byStatus={taskSummary?.by_status || { pending: 0, doing: 0, done: 0 }} />
                             </SidebarChart>
 
                             {/* Activity Types */}

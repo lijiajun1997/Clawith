@@ -10,6 +10,8 @@ import { saveAccentColor, getSavedAccentColor, resetAccentColor, PRESET_COLORS }
 import UserManagement from './UserManagement';
 import InvitationCodes from './InvitationCodes';
 import LinearCopyButton from '../components/LinearCopyButton';
+import SkillIcon from '../components/SkillIcon';
+import IconPicker from '../components/IconPicker';
 // API helpers for enterprise endpoints
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     const token = localStorage.getItem('token');
@@ -1032,6 +1034,146 @@ function EnterpriseKBBrowser({ onRefresh }: { onRefresh: () => void; refreshKey:
     return <FileBrowser api={kbAdapter} features={{ upload: true, newFolder: true, edit: true, delete: true, directoryNavigation: true }} onRefresh={onRefresh} />;
 }
 
+// ─── Skill Cards Grid for Enterprise ─────────────────
+function SkillCardsGrid({ adapter, onEdit, onRefresh }: { adapter: any; onEdit: (skill: any) => void; onRefresh: () => void }) {
+    const { data: skills = [], isLoading } = useQuery({
+        queryKey: ['enterprise-skills'],
+        queryFn: () => skillApi.list(),
+    });
+
+    if (isLoading) return <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-tertiary)', fontSize: '13px' }}>加载技能...</div>;
+    if (skills.length === 0) return null;
+
+    return (
+        <div style={{ marginBottom: '16px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '10px' }}>
+                技能概览 ({skills.length})
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px' }}>
+                {skills.map((skill: any) => (
+                    <div
+                        key={skill.id}
+                        style={{
+                            padding: '12px', borderRadius: '8px',
+                            border: '1px solid var(--border-subtle)', background: 'var(--bg-primary)',
+                            display: 'flex', alignItems: 'center', gap: '10px',
+                            transition: 'border-color 0.15s',
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent-primary)'}
+                        onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-subtle)'}
+                    >
+                        <SkillIcon icon={skill.icon || 'IconPackages'} size={28} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{skill.name}</div>
+                            <div style={{ display: 'flex', gap: '4px', marginTop: '2px', alignItems: 'center' }}>
+                                {skill.category && (
+                                    <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '3px', background: 'var(--accent-subtle)', color: 'var(--accent-text)' }}>{skill.category}</span>
+                                )}
+                            </div>
+                        </div>
+                        <button
+                            className="btn btn-ghost"
+                            style={{ fontSize: '11px', padding: '3px 8px', flexShrink: 0 }}
+                            onClick={() => onEdit(skill)}
+                        >
+                            编辑
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+// ─── Skill Edit Modal ─────────────────────────────────
+const SKILL_CATEGORIES = ['办公', '审计', '咨询', '其他'];
+
+function SkillEditModal({ skill, form, saving, showIconPicker, onChangeForm, onSave, onClose, onOpenIconPicker, onCloseIconPicker, onIconChange }: {
+    skill: any; form: any; saving: boolean; showIconPicker: boolean;
+    onChangeForm: (field: string, value: any) => void;
+    onSave: () => void; onClose: () => void;
+    onOpenIconPicker: () => void; onCloseIconPicker: () => void;
+    onIconChange: (icon: string) => void;
+}) {
+    return (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} onClick={onClose} />
+            <div style={{
+                position: 'relative', background: 'var(--bg-primary)', borderRadius: '12px',
+                width: '520px', maxWidth: '95vw', maxHeight: '85vh', overflowY: 'auto',
+                border: '1px solid var(--border-default)', boxShadow: '0 16px 48px rgba(0,0,0,0.2)',
+                padding: '24px',
+            }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px' }}>编辑技能</h3>
+                    <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '16px', color: 'var(--text-secondary)' }}>✕</button>
+                </div>
+
+                {/* Icon */}
+                <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>图标</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <SkillIcon icon={form.icon} size={40} />
+                        <button className="btn btn-secondary" style={{ fontSize: '12px' }} onClick={onOpenIconPicker}>
+                            选择图标
+                        </button>
+                    </div>
+                </div>
+
+                {/* Name */}
+                <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>名称</label>
+                    <input className="input" value={form.name} onChange={e => onChangeForm('name', e.target.value)} style={{ width: '100%', fontSize: '13px' }} />
+                </div>
+
+                {/* Description */}
+                <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>描述</label>
+                    <textarea className="input" value={form.description} onChange={e => onChangeForm('description', e.target.value)} rows={3} style={{ width: '100%', fontSize: '13px', resize: 'vertical' }} />
+                </div>
+
+                {/* Category */}
+                <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>分类</label>
+                    <select className="input" value={form.category} onChange={e => onChangeForm('category', e.target.value)} style={{ width: '100%', fontSize: '13px' }}>
+                        {SKILL_CATEGORIES.map(cat => (
+                            <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                    </select>
+                </div>
+
+                {/* Author & Version */}
+                <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                    <div style={{ flex: 1 }}>
+                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>作者</label>
+                        <input className="input" value={form.author} onChange={e => onChangeForm('author', e.target.value)} placeholder="可选" style={{ width: '100%', fontSize: '13px' }} />
+                    </div>
+                    <div style={{ width: '120px' }}>
+                        <label style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'block', marginBottom: '6px' }}>版本</label>
+                        <input className="input" value={form.version} onChange={e => onChangeForm('version', e.target.value)} style={{ width: '100%', fontSize: '13px' }} />
+                    </div>
+                </div>
+
+                {/* Actions */}
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '20px', paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+                    <button className="btn btn-secondary" onClick={onClose} style={{ fontSize: '13px' }}>取消</button>
+                    <button className="btn btn-primary" onClick={onSave} disabled={saving || !form.name.trim()} style={{ fontSize: '13px' }}>
+                        {saving ? '保存中...' : '保存'}
+                    </button>
+                </div>
+
+                {/* Icon Picker */}
+                <IconPicker
+                    value={form.icon}
+                    onChange={onIconChange}
+                    open={showIconPicker}
+                    onClose={onCloseIconPicker}
+                />
+            </div>
+        </div>
+    );
+}
+
 // ─── Skills Tab ────────────────────────────────────
 function SkillsTab() {
     const { t } = useTranslation();
@@ -1059,6 +1201,11 @@ function SkillsTab() {
     const [savingClawhubKey, setSavingClawhubKey] = useState(false);
     const [skillsView, setSkillsView] = useState<'registry' | 'deployment'>('registry');
     const [overwriteConfirm, setOverwriteConfirm] = useState<{ type: 'clawhub' | 'url' | 'zip'; payload: any } | null>(null);
+    // Skill edit modal state
+    const [editSkill, setEditSkill] = useState<any | null>(null);
+    const [editForm, setEditForm] = useState({ name: '', description: '', category: '其他', icon: 'IconPackages', author: '', version: '1.0.0' });
+    const [savingSkill, setSavingSkill] = useState(false);
+    const [showIconPicker, setShowIconPicker] = useState(false);
 
     const showToast = (message: string, type: 'success' | 'error' = 'success') => {
         setToast({ message, type });
@@ -1408,6 +1555,23 @@ function SkillsTab() {
                 </div>
             )}
 
+            {/* Skill cards grid with edit buttons */}
+            <SkillCardsGrid
+                adapter={adapter}
+                onEdit={(skill) => {
+                    setEditSkill(skill);
+                    setEditForm({
+                        name: skill.name || '',
+                        description: skill.description || '',
+                        category: skill.category || '其他',
+                        icon: skill.icon || 'IconPackages',
+                        author: skill.author || '',
+                        version: skill.version || '1.0.0',
+                    });
+                }}
+                onRefresh={() => setRefreshKey(k => k + 1)}
+            />
+
             <FileBrowser
                 key={refreshKey}
                 api={adapter}
@@ -1415,6 +1579,35 @@ function SkillsTab() {
                 title={t('agent.skills.skillFiles', 'Skill Files')}
                 onRefresh={() => setRefreshKey(k => k + 1)}
             />
+
+            {/* Skill Edit Modal */}
+            {editSkill && (
+                <SkillEditModal
+                    skill={editSkill}
+                    form={editForm}
+                    saving={savingSkill}
+                    showIconPicker={showIconPicker}
+                    onChangeForm={(field, value) => setEditForm(f => ({ ...f, [field]: value }))}
+                    onSave={async () => {
+                        setSavingSkill(true);
+                        try {
+                            await skillApi.update(editSkill.id, editForm);
+                            showToast('技能已保存');
+                            setEditSkill(null);
+                            setRefreshKey(k => k + 1);
+                        } catch (e: any) {
+                            showToast(e.message || '保存失败', 'error');
+                        }
+                        setSavingSkill(false);
+                    }}
+                    onClose={() => setEditSkill(null)}
+                    onOpenIconPicker={() => setShowIconPicker(true)}
+                    onCloseIconPicker={() => setShowIconPicker(false)}
+                    onIconChange={(icon: string) => {
+                        setEditForm(f => ({ ...f, icon }));
+                    }}
+                />
+            )}
 
             {/* Toast */}
             {toast && (
@@ -1713,10 +1906,14 @@ function SkillsDeploymentView() {
         try {
             const sk = data?.skills.find(s => s.id === skillId);
             const result = await skillApi.deployment.update({ skill_id: skillId, agent_ids: agentIds });
-            showToast(t('enterprise.skillDeployment.updateSuccess', {
-                skill: sk?.name || '',
-                count: result.updated,
-            }));
+            if (result.errors?.length) {
+                showToast(`${t('enterprise.skillDeployment.updateSuccess', { skill: sk?.name || '', count: result.updated })} — ${result.errors.join('; ')}`, 'error');
+            } else {
+                showToast(t('enterprise.skillDeployment.updateSuccess', {
+                    skill: sk?.name || '',
+                    count: result.updated,
+                }));
+            }
             loadData();
         } catch (e: any) {
             showToast(e.message || 'Update failed', 'error');
@@ -1729,6 +1926,7 @@ function SkillsDeploymentView() {
         setOperating(true);
         try {
             let totalUpdated = 0;
+            const allErrors: string[] = [];
             for (const skill of data.skills) {
                 const outdatedAgents = skill.agent_deployments
                     .filter((d: any) => d.deployed && d.is_latest === false)
@@ -1736,9 +1934,14 @@ function SkillsDeploymentView() {
                 if (outdatedAgents.length > 0) {
                     const result = await skillApi.deployment.update({ skill_id: skill.id, agent_ids: outdatedAgents });
                     totalUpdated += result.updated;
+                    if (result.errors?.length) allErrors.push(...result.errors);
                 }
             }
-            showToast(t('enterprise.skillDeployment.updateAllSuccess'));
+            if (allErrors.length) {
+                showToast(`${t('enterprise.skillDeployment.updateAllSuccess')} (${totalUpdated}) — ${allErrors.join('; ')}`, 'error');
+            } else {
+                showToast(t('enterprise.skillDeployment.updateAllSuccess'));
+            }
             loadData();
         } catch (e: any) {
             showToast(e.message || 'Update failed', 'error');
@@ -2257,7 +2460,7 @@ function BroadcastSection() {
 export default function EnterpriseSettings() {
     const { t } = useTranslation();
     const qc = useQueryClient();
-    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites'>('info');
+    const [activeTab, setActiveTab] = useState<'llm' | 'org' | 'info' | 'approvals' | 'audit' | 'tools' | 'skills' | 'quotas' | 'users' | 'invites' | 'pages'>('info');
 
     // Track selected tenant as state so page refreshes on company switch
     const [selectedTenantId, setSelectedTenantId] = useState(localStorage.getItem('current_tenant_id') || '');
@@ -2615,6 +2818,10 @@ export default function EnterpriseSettings() {
         mutationFn: ({ id, data }: { id: string; data: any }) => fetchJson(`/enterprise/llm-models/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
         onSuccess: () => { qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] }); setShowAddModel(false); setEditingModelId(null); },
     });
+    const setDefaultModel = useMutation({
+        mutationFn: (id: string) => fetchJson(`/enterprise/llm-models/${id}/set-default`, { method: 'POST' }),
+    });
+
     const deleteModel = useMutation({
         mutationFn: async ({ id, force = false }: { id: string; force?: boolean }) => {
             const url = force ? `/enterprise/llm-models/${id}?force=true` : `/enterprise/llm-models/${id}`;
@@ -2652,6 +2859,18 @@ export default function EnterpriseSettings() {
             fetchJson(`/enterprise/approvals/${id}/resolve`, { method: 'POST', body: JSON.stringify({ action }) }),
         onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals', selectedTenantId] }),
     });
+
+    // ─── Published Pages
+    const { data: publishedPages = [] } = useQuery({
+        queryKey: ['published-pages', selectedTenantId],
+        queryFn: () => fetchJson<any[]>('/pages/list'),
+        enabled: activeTab === 'pages',
+    });
+    const unpublishPage = useMutation({
+        mutationFn: (pageId: string) => fetchJson(`/pages/${pageId}`, { method: 'DELETE' }),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ['published-pages', selectedTenantId] }),
+    });
+    const [unpublishTarget, setUnpublishTarget] = useState<any | null>(null);
 
     // ─── Audit Logs
     const BG_ACTIONS = ['supervision_tick', 'supervision_fire', 'supervision_error', 'schedule_tick', 'schedule_fire', 'schedule_error', 'heartbeat_tick', 'heartbeat_fire', 'heartbeat_error', 'server_startup'];
@@ -2706,9 +2925,9 @@ export default function EnterpriseSettings() {
                 </div>
 
                 <div className="tabs">
-                    {(['info', 'llm', 'tools', 'skills', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit'] as const).map(tab => (
+                    {(['info', 'llm', 'tools', 'skills', 'invites', 'quotas', 'users', 'org', 'approvals', 'audit', 'pages'] as const).map(tab => (
                         <div key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
-                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : t(`enterprise.tabs.${tab}`)}
+                            {tab === 'quotas' ? t('enterprise.tabs.quotas', 'Quotas') : tab === 'users' ? t('enterprise.tabs.users', 'Users') : tab === 'invites' ? t('enterprise.tabs.invites', 'Invitations') : tab === 'pages' ? t('enterprise.tabs.pages', 'Published Sites') : t(`enterprise.tabs.${tab}`)}
                         </div>
                     ))}
                 </div>
@@ -3004,6 +3223,18 @@ export default function EnterpriseSettings() {
                                                         transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                                                     }} />
                                                 </button>
+                                                {currentTenant?.default_model_id === m.id ? (
+                                                    <span className="badge" style={{ background: 'rgba(245,158,11,0.15)', color: 'rgb(245,158,11)', fontSize: '10px', fontWeight: 600 }}>{t('enterprise.llm.defaultModel')}</span>
+                                                ) : (
+                                                    <button className="btn btn-ghost" style={{ fontSize: '11px', color: 'var(--text-tertiary)' }} onClick={() => {
+                                                        setDefaultModel.mutate(m.id, {
+                                                            onSuccess: () => {
+                                                                qc.invalidateQueries({ queryKey: ['tenant', selectedTenantId] });
+                                                                qc.invalidateQueries({ queryKey: ['llm-models', selectedTenantId] });
+                                                            },
+                                                        });
+                                                    }}>{t('enterprise.llm.setDefault')}</button>
+                                                )}
                                                 {m.supports_vision && <span className="badge" style={{ background: 'rgba(99,102,241,0.15)', color: 'rgb(99,102,241)', fontSize: '10px' }}>Vision</span>}
                                                 {(m as any).context_window_size && <span className="badge" style={{ background: 'rgba(16,185,129,0.15)', color: 'rgb(16,185,129)', fontSize: '10px' }}>{((m as any).context_window_size / 1000).toFixed(0)}K ctx</span>}
                                                 <button className="btn btn-ghost" onClick={() => {
@@ -4446,6 +4677,81 @@ Write a brief "next cycle seed" at the bottom of \`memory/reflections.md\` for c
 
                 {/* ── Invitation Codes Tab ── */}
                 {activeTab === 'invites' && <InvitationCodes />}
+
+                {/* ── Published Pages Tab ── */}
+                {activeTab === 'pages' && (
+                    <div style={{ padding: '16px' }}>
+                        {publishedPages.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
+                                {t('enterprise.pages.noPages')}
+                            </div>
+                        ) : (
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                <thead>
+                                    <tr style={{ borderBottom: '2px solid var(--border-color)', textAlign: 'left' }}>
+                                        <th style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('enterprise.pages.title')}</th>
+                                        <th style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('enterprise.pages.publisher')}</th>
+                                        <th style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('enterprise.pages.agent')}</th>
+                                        <th style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600, textAlign: 'right' }}>{t('enterprise.pages.views')}</th>
+                                        <th style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600 }}>{t('enterprise.pages.publishedAt')}</th>
+                                        <th style={{ padding: '10px 12px', color: 'var(--text-secondary)', fontWeight: 600, textAlign: 'center' }}>{t('enterprise.pages.actions')}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {publishedPages.map((page: any) => (
+                                        <tr key={page.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                                            <td style={{ padding: '10px 12px' }}>
+                                                <a href={page.url} target="_blank" rel="noopener noreferrer"
+                                                    style={{ color: 'var(--accent-primary)', textDecoration: 'none', fontWeight: 500 }}
+                                                >
+                                                    {page.title || page.short_id}
+                                                </a>
+                                            </td>
+                                            <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>{page.publisher_name}</td>
+                                            <td style={{ padding: '10px 12px', color: 'var(--text-secondary)' }}>{page.agent_name}</td>
+                                            <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{page.view_count}</td>
+                                            <td style={{ padding: '10px 12px', color: 'var(--text-tertiary)', fontSize: '12px', whiteSpace: 'nowrap' }}>
+                                                {page.created_at ? new Date(page.created_at).toLocaleString() : '-'}
+                                            </td>
+                                            <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                                                <button className="btn btn-ghost" style={{ fontSize: '12px', padding: '4px 12px', color: 'var(--color-error, #ef4444)' }}
+                                                    onClick={() => setUnpublishTarget(page)}
+                                                >{t('enterprise.pages.unpublish')}</button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                )}
+
+                {/* ── Unpublish Confirm Modal ── */}
+                {unpublishTarget && (
+                    <div style={{
+                        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                        background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+                    }} onClick={() => setUnpublishTarget(null)}>
+                        <div style={{
+                            background: 'var(--bg-primary)', borderRadius: '12px', padding: '24px', width: '90%', maxWidth: '420px',
+                            boxShadow: '0 10px 40px rgba(0,0,0,0.3)', border: '1px solid var(--border-subtle)',
+                        }} onClick={(e) => e.stopPropagation()}>
+                            <h3 style={{ marginBottom: '12px', fontSize: '15px' }}>{t('enterprise.pages.unpublish')}</h3>
+                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: '20px' }}>
+                                {t('enterprise.pages.unpublishConfirm', { title: unpublishTarget.title || unpublishTarget.short_id })}
+                            </p>
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                                <button className="btn btn-ghost" onClick={() => setUnpublishTarget(null)}>{t('common.cancel', '取消')}</button>
+                                <button className="btn btn-primary" style={{ background: 'var(--color-error, #ef4444)' }}
+                                    disabled={unpublishPage.isPending}
+                                    onClick={() => { unpublishPage.mutate(unpublishTarget.id, { onSuccess: () => setUnpublishTarget(null) }); }}
+                                >
+                                    {unpublishPage.isPending ? '...' : t('enterprise.pages.unpublish')}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Batch Tool Agent Manager Modal */}

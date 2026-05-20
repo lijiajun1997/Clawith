@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { agentApi, channelApi, enterpriseApi, skillApi } from '../services/api';
+import { agentApi, channelApi, enterpriseApi, skillApi, tenantApi } from '../services/api';
 import { useAuthStore } from '../stores';
 import ChannelConfig from '../components/ChannelConfig';
 import LinearCopyButton from '../components/LinearCopyButton';
+import SkillIcon from '../components/SkillIcon';
 const STEPS = ['basicInfo', 'personality', 'skills', 'permissions', 'channel'] as const;
 const OPENCLAW_STEPS = ['basicInfo', 'permissions'] as const;
 
@@ -115,6 +116,13 @@ export default function AgentCreate() {
         queryFn: enterpriseApi.llmModels,
     });
 
+    // Fetch tenant for default model
+    const { data: myTenant } = useQuery({
+        queryKey: ['my-tenant'],
+        queryFn: tenantApi.me,
+        staleTime: 5 * 60 * 1000,
+    });
+
     // Fetch templates
     const { data: templates = [] } = useQuery({
         queryKey: ['templates'],
@@ -124,7 +132,7 @@ export default function AgentCreate() {
     // Fetch global skills for step 3
     const { data: globalSkills = [] } = useQuery({
         queryKey: ['global-skills'],
-        queryFn: skillApi.list,
+        queryFn: () => skillApi.list(),
     });
 
     // Auto-select default skills
@@ -148,15 +156,16 @@ export default function AgentCreate() {
         }
     }, [currentUser]);
 
-    // Auto-select first enabled model
+    // Auto-select default model or first enabled model
     useEffect(() => {
         if (!form.primary_model_id && models.length > 0) {
             const enabled = (models as any[]).filter((m: any) => m.enabled);
             if (enabled.length > 0) {
-                setForm(prev => ({ ...prev, primary_model_id: enabled[enabled.length - 1].id }));
+                const defaultModel = myTenant?.default_model_id && enabled.find((m: any) => m.id === myTenant.default_model_id);
+                setForm(prev => ({ ...prev, primary_model_id: defaultModel ? defaultModel.id : enabled[enabled.length - 1].id }));
             }
         }
-    }, [models]);
+    }, [models, myTenant]);
 
     // Auto-select "个人助手" template
     useEffect(() => {
@@ -557,7 +566,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
 
     // ── Native mode: original multi-step wizard ──
     return (
-        <div>
+        <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 64px)' }}>
             <div className="page-header">
                 <h1 className="page-title">{t('nav.newAgent')}</h1>
             </div>
@@ -585,6 +594,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                 </div>
             )}
 
+            {/* Scrollable content area */}
+            <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingBottom: '80px' }}>
             <div className="card" style={{ maxWidth: '640px' }}>
                 {/* Step 1: Basic Info + Model */}
                 {step === 0 && (
@@ -776,7 +787,7 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                                                 }
                                             }}
                                         />
-                                        <div style={{ fontSize: '18px' }}>{skill.icon}</div>
+                                        <SkillIcon icon={skill.icon} size={28} />
                                         <div style={{ flex: 1 }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                                 <span style={{ fontWeight: 500, fontSize: '13px' }}>{skill.name}</span>
@@ -975,6 +986,8 @@ For humans, the message is delivered via their available channel (e.g. Feishu).`
                 </div>
             )}
             {!selectedModel && <div style={{ marginBottom: '80px' }}></div>}
+
+            </div>{/* end scrollable content area */}
 
             {/* Navigation — sticky footer at the bottom */}
             <div style={{

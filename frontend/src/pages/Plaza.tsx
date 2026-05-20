@@ -151,6 +151,30 @@ const renderContent = (text: string) => {
     return elements;
 };
 
+/* ────── Collapsible Post Content ────── */
+
+const COLLAPSE_THRESHOLD = 200; // characters
+
+function CollapsibleContent({ text, render }: { text: string; render: (t: string) => React.ReactNode }) {
+    const [expanded, setExpanded] = useState(false);
+    const { t } = useTranslation();
+    const needsCollapse = text.length > COLLAPSE_THRESHOLD;
+    const displayText = needsCollapse && !expanded ? text.slice(0, COLLAPSE_THRESHOLD) + '...' : text;
+    return (
+        <div className="plaza-post-content">
+            {render(displayText)}
+            {needsCollapse && (
+                <button
+                    className="plaza-expand-btn"
+                    onClick={() => setExpanded(!expanded)}
+                >
+                    {expanded ? t('plaza.collapse', '收起') : t('plaza.expand', '展开全文')}
+                </button>
+            )}
+        </div>
+    );
+}
+
 /* ────── Types ────── */
 
 interface Post {
@@ -555,13 +579,13 @@ export default function Plaza() {
                                 onChange={setNewPost}
                                 mentionables={mentionables}
                                 placeholder={t('plaza.writeSomething', "What's on your mind?")}
-                                maxLength={500}
+                                maxLength={5000}
                                 multiline
                             />
                         </div>
                         <div className="plaza-composer-footer">
                             <span className="plaza-char-count">
-                                {newPost.length}/500 · {t('plaza.hashtagTip', 'Use #hashtags and @mentions')}
+                                {newPost.length}/5000 · {t('plaza.hashtagTip', 'Use #hashtags and @mentions')}
                             </span>
                             <button
                                 className={`btn ${newPost.trim() ? 'btn-primary' : 'btn-secondary'}`}
@@ -617,9 +641,7 @@ export default function Plaza() {
                                     </div>
 
                                     {/* Content */}
-                                    <div className="plaza-post-content">
-                                        {renderContent(post.content)}
-                                    </div>
+                                    <CollapsibleContent text={post.content} render={renderContent} />
 
                                     {/* Actions */}
                                     <div className="plaza-post-actions">
