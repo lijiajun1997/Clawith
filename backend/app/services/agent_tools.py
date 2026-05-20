@@ -4263,7 +4263,8 @@ async def _read_document(
             content = await _extract_docx(file_path)
 
         elif ext == ".xlsx":
-            content = _extract_xlsx(file_path, start, count)
+            from app.core.async_utils import run_sync
+            content = await run_sync(_extract_xlsx, file_path, start, count, timeout=60)
 
         elif ext == ".pptx":
             content, page_info = _extract_pptx(file_path, start, count)
@@ -4319,6 +4320,21 @@ async def _read_document(
         return f"❌ Document read failed: {str(e)[:200]}"
 
 
+def _extract_pdf_sync(file_path: Path, start: int, count: int) -> tuple[str, str]:
+    """Synchronous PDF text extraction — runs in thread pool."""
+    import pdfplumber
+    text_parts = []
+    with pdfplumber.open(str(file_path)) as pdf:
+        total_pages = len(pdf.pages)
+        sp = max(1, start)
+        ep = min(total_pages, sp + count - 1)
+        for i, page in enumerate(pdf.pages[sp - 1:ep]):
+            text_parts.append(f"--- Page {sp + i} ---\n{page.extract_text() or ''}")
+    extracted = "\n\n".join(text_parts)
+    page_info = f" (pages {sp}-{ep} of {total_pages})"
+    return extracted, page_info
+
+
 async def _read_pdf(
     ws: Path, file_path: Path, ocr_config: dict,
     start: int = 1, count: int = 50,
@@ -4327,7 +4343,9 @@ async def _read_pdf(
 
     Returns (content, page_info, used_cache).
     """
-    import pdfplumber
+    ocr_url = ocr_config.get("ocr_url", "http://localhost:6008/ocr/file")
+    ocr_api_key = ocr_config.get("ocr_api_key", "")
+    ocr_enabled = ocr_config.get("ocr_enabled", False)
 
     # Check cache first
     md_path = _get_converted_md_path(ws, file_path)
@@ -4337,23 +4355,36 @@ async def _read_pdf(
             logger.info(f"[ReadDocument] Using cached PDF: {md_path.name}")
             return cached, " (from cached OCR result)", True
 
-    # Extract with pdfplumber
-    text_parts = []
-    with pdfplumber.open(str(file_path)) as pdf:
-        total_pages = len(pdf.pages)
-        sp = max(1, start)
-        ep = min(total_pages, sp + count - 1)
-        for i, page in enumerate(pdf.pages[sp - 1:ep]):
-            text_parts.append(f"--- Page {sp + i} ---\n{page.extract_text() or ''}")
+    # If OCR enabled, go directly to OCR (skip pdfplumber for scanned PDFs)
+    if ocr_enabled and ocr_url:
+        try:
+            from app.services.text_extractor import extract_text_with_ocr
 
-    extracted = "\n\n".join(text_parts)
-    page_info = f" (pages {sp}-{ep} of {total_pages})"
+            ocr_text = await extract_text_with_ocr(
+                file_path.read_bytes(), file_path.name,
+                ocr_url=ocr_url,
+                ocr_api_key=ocr_api_key,
+            )
+            if ocr_text and len(ocr_text.strip()) > 50:
+                logger.info(f"[ReadDocument] OCR used for PDF: {file_path.name} ({len(ocr_text)} chars)")
+                _save_converted_md(ws, file_path, ocr_text)
+                return ocr_text, "", False
+        except Exception as e:
+            logger.warning(f"[ReadDocument] OCR failed, falling back to pdfplumber: {e}")
 
-    # If text is sparse, try OCR automatically
-    total_text = sum(len(p.split("--- Page")[-1].strip()) for p in text_parts)
-    ocr_url = ocr_config.get("ocr_url", "http://localhost:6008/ocr/file")
-    ocr_api_key = ocr_config.get("ocr_api_key", "")
-    if total_text < 100 and ocr_url:
+    # Fallback: extract with pdfplumber
+    from app.core.async_utils import run_sync
+    try:
+        extracted, page_info = await run_sync(_extract_pdf_sync, file_path, start, count, timeout=60)
+    except Exception as e:
+        return f"(PDF text extraction failed: {e})", "", False
+
+    if not extracted or not extracted.strip():
+        return "(PDF is empty or text extraction failed)", page_info, False
+
+    # If text is sparse (< 500 chars), try OCR as fallback
+    total_text = len(extracted.replace("--- Page", "").strip())
+    if total_text < 500 and ocr_url:
         try:
             from app.services.text_extractor import extract_text_with_ocr
 
@@ -4363,13 +4394,13 @@ async def _read_pdf(
                 ocr_api_key=ocr_api_key,
             )
             if ocr_text and len(ocr_text) > total_text:
-                logger.info(f"[ReadDocument] OCR used for scanned PDF: {file_path.name}")
+                logger.info(f"[ReadDocument] OCR fallback used for sparse PDF: {file_path.name}")
+                _save_converted_md(ws, file_path, ocr_text)
                 return ocr_text, page_info, False
         except Exception as e:
             logger.warning(f"[ReadDocument] OCR fallback failed: {e}")
-            return f"(PDF is empty or text extraction failed)\n⚠️ OCR service unavailable. Try call_model with vision.", page_info, False
 
-    return extracted or "(PDF is empty or text extraction failed)", page_info, False
+    return extracted, page_info, False
 
 
 async def _extract_docx(file_path: Path) -> str:
@@ -11618,28 +11649,71 @@ async def _execute_concurrent_calls(
 
 
 async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, creator_id: uuid.UUID | None = None) -> str:
-    """统一 Word 文档处理工具 - 支持 50+ 操作"""
+    """统一 Word 文档处理工具 - 支持 50+ 操作，编辑操作默认启用修订模式"""
     import os
     from pathlib import Path
     from app.config import get_settings
 
     settings = get_settings()
 
-    # 获取 agent 的根目录（不包含 workspace 子目录）
     if agent_id:
         agent_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
         agent_root.mkdir(parents=True, exist_ok=True)
     else:
-        # 如果没有 agent_id，使用临时目录
         import tempfile
         agent_root = Path(tempfile.gettempdir())
 
-    # 切换到 agent 根目录（让 agent 自己决定是否使用 workspace 子目录）
     original_cwd = os.getcwd()
     os.chdir(str(agent_root))
 
+    # Actions that modify the document — will get Track Changes post-processing
+    EDIT_ACTIONS = {
+        "add_paragraph", "add_heading", "add_table", "add_picture", "add_page_break",
+        "add_table_of_contents", "delete_paragraph", "search_and_replace",
+        "insert_header_near_text", "insert_paragraph_near_text", "insert_list_near_text",
+        "replace_paragraph_block_below_header", "replace_block_between_manual_anchors",
+        "format_text", "create_custom_style", "format_table",
+        "set_cell_shading", "apply_alternating_rows", "highlight_header",
+        "merge_cells", "merge_cells_horizontal", "merge_cells_vertical",
+        "set_cell_alignment", "set_table_alignment", "set_column_width",
+        "set_column_widths", "set_table_width", "auto_fit_columns",
+        "format_cell_text", "set_cell_padding",
+        "add_footnote", "add_footnote_after_text", "add_footnote_before_text",
+        "add_footnote_enhanced", "add_endnote", "customize_footnote_style",
+        "delete_footnote", "add_footnote_robust", "delete_footnote_robust",
+        "protect_document", "unprotect_document",
+    }
+
+    ALL_VALID_ACTIONS = [
+        # Document operations
+        "create_document", "get_document_info", "get_document_text", "get_document_outline",
+        "list_documents", "copy_document", "get_document_xml",
+        # Content operations
+        "add_paragraph", "add_heading", "add_table", "add_picture", "add_page_break",
+        "add_table_of_contents", "delete_paragraph", "search_and_replace",
+        "insert_header_near_text", "insert_paragraph_near_text", "insert_list_near_text",
+        "replace_paragraph_block_below_header", "replace_block_between_manual_anchors",
+        # Format operations
+        "create_custom_style", "format_text", "format_table",
+        "set_cell_shading", "apply_alternating_rows", "highlight_header",
+        "merge_cells", "merge_cells_horizontal", "merge_cells_vertical",
+        "set_cell_alignment", "set_table_alignment",
+        "set_column_width", "set_column_widths", "set_table_width", "auto_fit_columns",
+        "format_cell_text", "set_cell_padding",
+        # Protection operations
+        "protect_document", "unprotect_document",
+        # Footnote operations
+        "add_footnote", "add_footnote_after_text", "add_footnote_before_text",
+        "add_footnote_enhanced", "add_endnote", "customize_footnote_style",
+        "delete_footnote", "add_footnote_robust", "delete_footnote_robust",
+        "validate_footnotes",
+        # Extended operations
+        "get_paragraph_text", "find_text", "convert_to_pdf",
+        # Comment operations
+        "get_all_comments", "get_comments_by_author", "get_comments_for_paragraph",
+    ]
+
     try:
-        # 导入 Word MCP Server 工具
         from app.services.word_document_server.tools import document_tools, content_tools, format_tools, protection_tools
         from app.services.word_document_server.tools import footnote_tools, extended_document_tools, comment_tools
 
@@ -11667,11 +11741,17 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
         if not action:
             return json.dumps({
                 "success": False,
-                "error": "action is required",
-                "valid_actions": ["create_document", "get_document_info", "get_document_text", "copy_document", "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace", "create_custom_style", "format_text", "set_cell_alignment", "merge_cells", "protect_document", "unprotect_document", "get_usage_guide", "find_text", "convert_to_pdf", "get_all_comments", "get_comments_by_author", "get_comments_for_paragraph"]
+                "error": "action is required. 请先 read_file('skills/word-advanced/SKILL.md') 查看完整操作列表和参数说明。",
+                "valid_actions": ALL_VALID_ACTIONS,
             }, ensure_ascii=False)
 
-        # Document Operations
+        # Helper: apply Track Changes post-processing for edit actions
+        def _apply_track_changes(filepath: str):
+            if action in EDIT_ACTIONS and os.path.exists(filepath):
+                from app.services.word_document_server.utils.document_utils import post_process_track_changes
+                post_process_track_changes(filepath)
+
+        # ── Document Operations ──
         if action == "create_document":
             title = arguments.get("title")
             author = arguments.get("author")
@@ -11686,136 +11766,347 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
             result = await document_tools.get_document_text(filename)
             return result
 
-        elif action == "copy_document":
-            new_filename = arguments.get("new_filename")
-            result = await document_tools.copy_document(filename, new_filename)
-            return f"Document copied to {new_filename}"
+        elif action == "get_document_outline":
+            result = await document_tools.get_document_outline(filename)
+            return result
 
-        # Content Operations
+        elif action == "list_documents":
+            directory = arguments.get("directory", ".")
+            result = await document_tools.list_available_documents(directory)
+            return result
+
+        elif action == "copy_document":
+            new_filename = arguments.get("output_filename", arguments.get("new_filename"))
+            result = await document_tools.copy_document(filename, new_filename)
+            return result
+
+        elif action == "get_document_xml":
+            result = await document_tools.get_document_xml_tool(filename)
+            return result
+
+        # ── Content Operations ──
         elif action == "add_paragraph":
-            text = arguments.get("text")
-            style = arguments.get("style")
-            font_name = arguments.get("font_name")
-            font_size = arguments.get("font_size")
-            bold = arguments.get("bold")
-            italic = arguments.get("italic")
-            color = arguments.get("color")
-            result = await content_tools.add_paragraph(filename, text, style, font_name, font_size, bold, italic, color)
-            return f"Paragraph added to {filename}"
+            result = await content_tools.add_paragraph(
+                filename, arguments.get("text"), arguments.get("style"),
+                arguments.get("font_name"), arguments.get("font_size"),
+                arguments.get("bold"), arguments.get("italic"), arguments.get("color"))
+            _apply_track_changes(filename)
+            return result
 
         elif action == "add_heading":
-            text = arguments.get("text")
-            level = arguments.get("level", 1)
-            result = await content_tools.add_heading(filename, text, level)
-            return f"Heading '{text}' (level {level}) added to {filename}"
+            result = await content_tools.add_heading(
+                filename, arguments.get("text"), arguments.get("level", 1),
+                arguments.get("font_name"), arguments.get("font_size"),
+                arguments.get("bold"), arguments.get("italic"), arguments.get("border_bottom"))
+            _apply_track_changes(filename)
+            return result
 
         elif action == "add_table":
-            rows = arguments.get("rows")
-            cols = arguments.get("cols")
-            data = arguments.get("data")
-            result = await content_tools.add_table(filename, rows, cols, data)
-            return f"Table ({rows}x{cols}) added to {filename}"
+            result = await content_tools.add_table(
+                filename, arguments.get("rows"), arguments.get("cols"), arguments.get("data"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_picture":
+            result = await content_tools.add_picture(
+                filename, arguments.get("image_path"), arguments.get("width"))
+            _apply_track_changes(filename)
+            return result
 
         elif action == "add_page_break":
             result = await content_tools.add_page_break(filename)
-            return f"Page break added to {filename}"
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_table_of_contents":
+            result = await content_tools.add_table_of_contents(
+                filename, arguments.get("title", "Table of Contents"), arguments.get("max_level", 3))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "delete_paragraph":
+            result = await content_tools.delete_paragraph(filename, arguments.get("paragraph_index"))
+            _apply_track_changes(filename)
+            return result
 
         elif action == "search_and_replace":
-            search_text = arguments.get("search_text")
-            replace_text = arguments.get("replace_text")
-            result = await content_tools.search_and_replace(filename, search_text, replace_text)
-            return f"Replaced '{search_text}' with '{replace_text}'"
+            result = await content_tools.search_and_replace(
+                filename, arguments.get("search_text", arguments.get("find_text")),
+                arguments.get("replace_text"))
+            _apply_track_changes(filename)
+            return result
 
-        # Format Operations
+        elif action == "insert_header_near_text":
+            result = await content_tools.insert_header_near_text_tool(
+                filename, arguments.get("target_text"), arguments.get("header_title", ""),
+                arguments.get("position", "after"), arguments.get("header_style", "Heading 1"),
+                arguments.get("target_paragraph_index"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "insert_paragraph_near_text":
+            result = await content_tools.insert_line_or_paragraph_near_text_tool(
+                filename, arguments.get("target_text"), arguments.get("line_text", ""),
+                arguments.get("position", "after"), arguments.get("line_style"),
+                arguments.get("target_paragraph_index"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "insert_list_near_text":
+            result = await content_tools.insert_numbered_list_near_text_tool(
+                filename, arguments.get("target_text"), arguments.get("list_items"),
+                arguments.get("position", "after"), arguments.get("target_paragraph_index"),
+                arguments.get("bullet_type", "bullet"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "replace_paragraph_block_below_header":
+            result = await content_tools.replace_paragraph_block_below_header_tool(
+                filename, arguments.get("header_text"), arguments.get("new_paragraphs", []))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "replace_block_between_manual_anchors":
+            result = await content_tools.replace_block_between_manual_anchors_tool(
+                filename, arguments.get("start_anchor_text"), arguments.get("new_paragraphs", []),
+                arguments.get("end_anchor_text"), new_paragraph_style=arguments.get("new_paragraph_style"))
+            _apply_track_changes(filename)
+            return result
+
+        # ── Format Operations ──
         elif action == "create_custom_style":
-            style_name = arguments.get("style_name")
-            style_type = arguments.get("style_type")
-            font_name = arguments.get("font_name")
-            font_size = arguments.get("font_size")
-            bold = arguments.get("bold")
-            result = await format_tools.create_custom_style(filename, style_name, style_type, font_name, font_size, bold)
-            return f"Custom style '{style_name}' created"
+            result = await format_tools.create_custom_style(
+                filename, arguments.get("style_name"), arguments.get("style_type"),
+                arguments.get("font_name"), arguments.get("font_size"), arguments.get("bold"))
+            _apply_track_changes(filename)
+            return result
 
         elif action == "format_text":
-            target_text = arguments.get("target_text")
-            font_name = arguments.get("font_name")
-            font_size = arguments.get("font_size")
-            bold = arguments.get("bold")
-            italic = arguments.get("italic")
-            color = arguments.get("color")
-            result = await format_tools.format_text(filename, target_text, font_name, font_size, bold, italic, color)
-            return f"Text formatted: {target_text}"
+            result = await format_tools.format_text(
+                filename, arguments.get("paragraph_index", 0), arguments.get("start_pos", 0),
+                arguments.get("end_pos", 0), arguments.get("bold"), arguments.get("italic"),
+                arguments.get("underline"), arguments.get("color"), arguments.get("font_size"),
+                arguments.get("font_name"))
+            _apply_track_changes(filename)
+            return result
 
-        elif action == "set_cell_alignment":
-            table_index = arguments.get("table_index", 0)
-            row_index = arguments.get("row_index")
-            col_index = arguments.get("col_index")
-            alignment = arguments.get("alignment")
-            result = await format_tools.set_cell_alignment(filename, table_index, row_index, col_index, alignment)
-            return f"Cell alignment set to {alignment}"
+        elif action == "format_table":
+            result = await format_tools.format_table(
+                filename, arguments.get("table_index", 0), arguments.get("has_header_row"),
+                arguments.get("border_style"), arguments.get("shading"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_cell_shading":
+            result = await format_tools.set_table_cell_shading(
+                filename, arguments.get("table_index", 0), arguments.get("row_index"),
+                arguments.get("col_index"), arguments.get("fill_color"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "apply_alternating_rows":
+            result = await format_tools.apply_table_alternating_rows(
+                filename, arguments.get("table_index", 0), arguments.get("color1", "FFFFFF"),
+                arguments.get("color2", "F2F2F2"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "highlight_header":
+            result = await format_tools.highlight_table_header(
+                filename, arguments.get("table_index", 0), arguments.get("header_color", "4472C4"),
+                arguments.get("text_color", "FFFFFF"))
+            _apply_track_changes(filename)
+            return result
 
         elif action == "merge_cells":
-            table_index = arguments.get("table_index", 0)
-            row_start = arguments.get("row_start")
-            row_end = arguments.get("row_end")
-            col_start = arguments.get("col_start")
-            col_end = arguments.get("col_end")
-            result = await format_tools.merge_cells(filename, table_index, row_start, row_end, col_start, col_end)
-            return f"Cells merged: ({row_start},{col_start}) to ({row_end},{col_end})"
+            result = await format_tools.merge_table_cells(
+                filename, arguments.get("table_index", 0), arguments.get("start_row"),
+                arguments.get("start_col"), arguments.get("end_row"), arguments.get("end_col"))
+            _apply_track_changes(filename)
+            return result
 
-        # Protection Operations
+        elif action == "merge_cells_horizontal":
+            result = await format_tools.merge_table_cells_horizontal(
+                filename, arguments.get("table_index", 0), arguments.get("row_index"),
+                arguments.get("start_col"), arguments.get("end_col"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "merge_cells_vertical":
+            result = await format_tools.merge_table_cells_vertical(
+                filename, arguments.get("table_index", 0), arguments.get("col_index"),
+                arguments.get("start_row"), arguments.get("end_row"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_cell_alignment":
+            result = await format_tools.set_table_cell_alignment(
+                filename, arguments.get("table_index", 0), arguments.get("row_index"),
+                arguments.get("col_index"), arguments.get("horizontal", "left"),
+                arguments.get("vertical", "top"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_table_alignment":
+            result = await format_tools.set_table_alignment_all(
+                filename, arguments.get("table_index", 0), arguments.get("horizontal", "left"),
+                arguments.get("vertical", "top"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_column_width":
+            result = await format_tools.set_table_column_width(
+                filename, arguments.get("table_index", 0), arguments.get("col_index"),
+                arguments.get("width"), arguments.get("width_type", "points"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_column_widths":
+            result = await format_tools.set_table_column_widths(
+                filename, arguments.get("table_index", 0), arguments.get("widths"),
+                arguments.get("width_type", "points"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_table_width":
+            result = await format_tools.set_table_width(
+                filename, arguments.get("table_index", 0), arguments.get("width"),
+                arguments.get("width_type", "points"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "auto_fit_columns":
+            result = await format_tools.auto_fit_table_columns(filename, arguments.get("table_index", 0))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "format_cell_text":
+            result = await format_tools.format_table_cell_text(
+                filename, arguments.get("table_index", 0), arguments.get("row_index"),
+                arguments.get("col_index"), arguments.get("text_content"), arguments.get("bold"),
+                arguments.get("italic"), arguments.get("underline"), arguments.get("color"),
+                arguments.get("font_size"), arguments.get("font_name"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "set_cell_padding":
+            result = await format_tools.set_table_cell_padding(
+                filename, arguments.get("table_index", 0), arguments.get("row_index"),
+                arguments.get("col_index"), arguments.get("top"), arguments.get("bottom"),
+                arguments.get("left"), arguments.get("right"), arguments.get("unit", "points"))
+            _apply_track_changes(filename)
+            return result
+
+        # ── Protection Operations ──
         elif action == "protect_document":
-            password = arguments.get("password")
-            protection_type = arguments.get("protection_type", "read_only")
-            result = await protection_tools.protect_document(filename, password, protection_type)
-            return f"Document protected with {protection_type}"
+            result = await protection_tools.protect_document(filename, arguments.get("password"))
+            return result
 
         elif action == "unprotect_document":
-            password = arguments.get("password")
-            result = await protection_tools.unprotect_document(filename, password)
-            return f"Document unprotected"
+            result = await protection_tools.unprotect_document(filename, arguments.get("password"))
+            return result
 
-        # Extended Operations
-        elif action == "get_usage_guide":
-            result = await extended_document_tools.get_usage_guide()
+        # ── Footnote Operations ──
+        elif action == "add_footnote":
+            result = await footnote_tools.add_footnote_to_document(
+                filename, arguments.get("paragraph_index", 0), arguments.get("footnote_text"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_footnote_after_text":
+            result = await footnote_tools.add_footnote_after_text(
+                filename, arguments.get("search_text"), arguments.get("footnote_text"),
+                arguments.get("output_filename"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_footnote_before_text":
+            result = await footnote_tools.add_footnote_before_text(
+                filename, arguments.get("search_text"), arguments.get("footnote_text"),
+                arguments.get("output_filename"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_footnote_enhanced":
+            result = await footnote_tools.add_footnote_enhanced(
+                filename, arguments.get("paragraph_index", 0), arguments.get("footnote_text"),
+                arguments.get("output_filename"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_endnote":
+            result = await footnote_tools.add_endnote_to_document(
+                filename, arguments.get("paragraph_index", 0), arguments.get("footnote_text"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "customize_footnote_style":
+            result = await footnote_tools.customize_footnote_style(
+                filename, arguments.get("numbering_format", "1, 2, 3"),
+                arguments.get("start_number", 1), arguments.get("font_name"), arguments.get("font_size"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "delete_footnote":
+            result = await footnote_tools.delete_footnote_from_document(
+                filename, arguments.get("footnote_id"), arguments.get("search_text"),
+                arguments.get("output_filename"))
+            _apply_track_changes(filename)
+            return result
+
+        elif action == "add_footnote_robust":
+            result = await footnote_tools.add_footnote_robust_tool(
+                filename, arguments.get("search_text"), arguments.get("paragraph_index"),
+                arguments.get("footnote_text"))
+            _apply_track_changes(filename)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "delete_footnote_robust":
+            result = await footnote_tools.delete_footnote_robust_tool(
+                filename, arguments.get("footnote_id"), arguments.get("search_text"),
+                arguments.get("clean_orphans", True))
+            _apply_track_changes(filename)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        elif action == "validate_footnotes":
+            result = await footnote_tools.validate_footnotes_tool(filename)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        # ── Extended Operations ──
+        elif action == "get_paragraph_text":
+            result = await extended_document_tools.get_paragraph_text_from_document(
+                filename, arguments.get("paragraph_index", 0))
             return result
 
         elif action == "find_text":
-            search_text = arguments.get("search_text")
-            result = await extended_document_tools.find_text(filename, search_text)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            result = await extended_document_tools.find_text_in_document(
+                filename, arguments.get("search_text", arguments.get("text_to_find")),
+                arguments.get("match_case", True), arguments.get("whole_word", False))
+            return result
 
         elif action == "convert_to_pdf":
-            result = await extended_document_tools.convert_to_pdf(filename)
-            return f"Document converted to PDF: {result}"
+            result = await extended_document_tools.convert_to_pdf(
+                filename, arguments.get("output_filename"))
+            return result
 
-        # Comment Operations
+        # ── Comment Operations ──
         elif action == "get_all_comments":
             result = await comment_tools.get_all_comments(filename)
             return result
 
         elif action == "get_comments_by_author":
-            author = arguments.get("author", "")
-            result = await comment_tools.get_comments_by_author(filename, author)
+            result = await comment_tools.get_comments_by_author(filename, arguments.get("author", ""))
             return result
 
         elif action == "get_comments_for_paragraph":
-            paragraph_index = arguments.get("paragraph_index", 0)
-            result = await comment_tools.get_comments_for_paragraph(filename, paragraph_index)
+            result = await comment_tools.get_comments_for_paragraph(filename, arguments.get("paragraph_index", 0))
             return result
 
         else:
             return json.dumps({
                 "success": False,
-                "error": f"Unknown action: {action}",
-                "available_actions": [
-                    "create_document", "get_document_info", "get_document_text", "copy_document",
-                    "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace",
-                    "create_custom_style", "format_text", "set_cell_alignment", "merge_cells",
-                    "protect_document", "unprotect_document",
-                    "get_usage_guide", "find_text", "convert_to_pdf",
-                    "get_all_comments", "get_comments_by_author", "get_comments_for_paragraph"
-                ]
+                "error": f"Unknown action: {action}. 请先 read_file('skills/word-advanced/SKILL.md') 查看完整操作列表和参数说明，然后重试。",
+                "available_actions": ALL_VALID_ACTIONS,
             }, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -11827,7 +12118,6 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
         }, ensure_ascii=False, indent=2)
 
     finally:
-        # 恢复原始工作目录
         os.chdir(original_cwd)
 
 
@@ -11847,70 +12137,80 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
         import tempfile
         agent_root = Path(tempfile.gettempdir())
 
-    original_cwd = os.getcwd()
-    os.chdir(str(agent_root))
-
-    try:
-        import openpyxl
-        from openpyxl import load_workbook
-        from openpyxl.utils import column_index_from_string, range_boundaries
-        import json as jsonlib
-
-        action = arguments.get("action")
-        # Accept both "filename" and "file_path" parameter names
-        filename = arguments.get("filename", "") or arguments.get("file_path", "")
-
-        # Auto-correct filename: workspace/ prefix → full directory search
-        if filename and not os.path.exists(filename) and not filename.startswith("workspace/"):
-            ws_path = os.path.join("workspace", filename)
-            if os.path.exists(ws_path):
-                filename = ws_path
-                arguments["filename"] = filename
+    # Resolve filename to absolute path before entering thread pool
+    filename = arguments.get("filename", "") or arguments.get("file_path", "")
+    if filename:
+        abs_candidate = agent_root / filename
+        if abs_candidate.exists():
+            filename = str(abs_candidate)
+        else:
+            ws_candidate = agent_root / "workspace" / filename
+            if ws_candidate.exists():
+                filename = str(ws_candidate)
             else:
                 basename = os.path.basename(filename)
                 if basename:
                     for match in agent_root.resolve().rglob(basename):
                         if match.is_file():
-                            try:
-                                filename = str(match.relative_to(agent_root.resolve()))
-                            except ValueError:
-                                filename = str(match)
-                            arguments["filename"] = filename
+                            filename = str(match)
                             break
+        arguments["filename"] = filename
 
-        # Action aliases: tool definition uses short names, implementation uses long names
-        ACTION_ALIASES = {
-            "create": "create_workbook",
-            "read_range": "read_range",
-            "read_cell": "read_cell",
-            "write_range": "write_range",
-            "write_cell": "write_cell",
-            "set_formula": "set_formula",
-            "rename_sheet": "rename_sheet",
-        }
-        effective_action = ACTION_ALIASES.get(action, action)
+    from app.core.async_utils import run_sync
+    return await run_sync(
+        _excel_advanced_sync, arguments, str(agent_root), timeout=120,
+    )
 
-        VALID_ACTIONS = [
-            "create", "create_workbook", "read_workbook", "read_range", "read_cell",
-            "write_data", "write_range", "write_cell", "set_formula",
-            "add_sheet", "list_sheets", "delete_sheet", "rename_sheet",
-            "read_comments",
-        ]
 
-        if not action:
-            return json.dumps({
-                "success": False,
-                "error": "action is required",
-                "valid_actions": VALID_ACTIONS,
-            }, ensure_ascii=False)
+def _excel_advanced_sync(arguments: dict, agent_root_str: str) -> str:
+    """Synchronous Excel operations — runs in thread pool."""
+    import os
+    from pathlib import Path
+    import json as jsonlib
+    import openpyxl
+    from openpyxl import load_workbook
+    from openpyxl.utils import column_index_from_string, range_boundaries
+    import re as _re
 
-        if effective_action not in ("create_workbook",) and not filename:
-            return json.dumps({"success": False, "error": "filename (or file_path) is required"}, ensure_ascii=False)
+    agent_root = Path(agent_root_str)
 
+    action = arguments.get("action")
+    filename = arguments.get("filename", "") or arguments.get("file_path", "")
+
+    # Action aliases: tool definition uses short names, implementation uses long names
+    ACTION_ALIASES = {
+        "create": "create_workbook",
+        "read_range": "read_range",
+        "read_cell": "read_cell",
+        "write_range": "write_range",
+        "write_cell": "write_cell",
+        "set_formula": "set_formula",
+        "rename_sheet": "rename_sheet",
+    }
+    effective_action = ACTION_ALIASES.get(action, action)
+
+    VALID_ACTIONS = [
+        "create", "create_workbook", "read_workbook", "read_range", "read_cell",
+        "write_data", "write_range", "write_cell", "set_formula",
+        "add_sheet", "list_sheets", "delete_sheet", "rename_sheet",
+        "read_comments",
+    ]
+
+    if not action:
+        return json.dumps({
+            "success": False,
+            "error": "action is required. 请先 read_file('skills/excel-advanced/SKILL.md') 查看完整操作列表和参数说明。",
+            "valid_actions": VALID_ACTIONS,
+        }, ensure_ascii=False)
+
+    if effective_action not in ("create_workbook",) and not filename:
+        return json.dumps({"success": False, "error": "filename (or file_path) is required"}, ensure_ascii=False)
+
+    try:
         # Helper: resolve file and load workbook
         def _loadwb(data_only=False):
             if not filename or not os.path.exists(filename):
-                hint = _build_not_found_hint(Path(str(agent_root)), filename or "")
+                hint = _build_not_found_hint(agent_root, filename or "")
                 return None, hint
             return load_workbook(filename, data_only=data_only), None
 
@@ -12055,6 +12355,13 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
             else:
                 wb = openpyxl.Workbook()
             ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+            from openpyxl.cell.cell import MergedCell
+            target = ws[cell_ref]
+            if isinstance(target, MergedCell):
+                for mrange in ws.merged_cells.ranges:
+                    if cell_ref in mrange:
+                        ws.unmerge_cells(str(mrange))
+                        break
             ws[cell_ref] = value
             wb.save(filename)
             return f"✅ Written {value!r} to {cell_ref} in {filename}"
@@ -12108,7 +12415,11 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
             sheet_name = arguments.get("sheet_name", "Sheet1")
             wb = load_workbook(filename) if os.path.exists(filename) else openpyxl.Workbook()
             if sheet_name in wb.sheetnames:
-                return json.dumps({"success": False, "error": f"Sheet '{sheet_name}' already exists. Existing: {wb.sheetnames}"}, ensure_ascii=False)
+                base = sheet_name
+                idx = 2
+                while f"{base}_{idx}" in wb.sheetnames:
+                    idx += 1
+                sheet_name = f"{base}_{idx}"
             wb.create_sheet(sheet_name)
             wb.save(filename)
             return f"✅ Sheet '{sheet_name}' added to {filename}"
@@ -12188,8 +12499,8 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
         else:
             return json.dumps({
                 "success": False,
-                "error": f"Unknown action: {action}",
-                "valid_actions": VALID_ACTIONS,
+                "error": f"Unknown action: {action}. 请先 read_file('skills/excel-advanced/SKILL.md') 查看完整操作列表和参数说明，然后重试。",
+                "available_actions": VALID_ACTIONS,
             }, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -12199,9 +12510,6 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
             "error": str(e),
             "error_type": type(e).__name__
         }, ensure_ascii=False, indent=2)
-
-    finally:
-        os.chdir(original_cwd)
 
 
 async def fetch_advanced(arguments: dict, agent_id: uuid.UUID | None = None, creator_id: uuid.UUID | None = None) -> str:

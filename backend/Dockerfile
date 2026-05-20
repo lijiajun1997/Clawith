@@ -28,7 +28,8 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debia
     sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 curl shadowsocks-libev gosu nodejs npm \
-        libpango-1.0-0 libpangocairo-1.0-0 libgobject-2.0-0 libglib2.0-0 libharfbuzz0b libfontconfig1 libfreetype6 && \
+        libpango-1.0-0 libpangocairo-1.0-0 libgobject-2.0-0 libglib2.0-0 libharfbuzz0b libfontconfig1 libfreetype6 \
+        libreoffice-writer-nogui libreoffice-calc-nogui && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from deps stage

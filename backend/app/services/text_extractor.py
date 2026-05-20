@@ -203,7 +203,7 @@ async def extract_text_with_ocr(
         if ocr_api_key:
             headers["Authorization"] = f"Bearer {ocr_api_key}"
 
-        timeout = 60  # OCR can be slow
+        timeout = max(120, min(300, len(file_bytes) // 100_000 * 30))  # Scale with file size
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(ocr_url, files=files, headers=headers)
 
