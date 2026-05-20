@@ -179,8 +179,28 @@ def _safe_path(agent_id: uuid.UUID, rel_path: str) -> Path:
     return full
 
 
+_TEXT_EXTS = {
+    ".txt", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs",
+    ".css", ".scss", ".sass", ".less",
+    ".sh", ".bash", ".zsh", ".fish", ".bat", ".ps1",
+    ".sql", ".prisma",
+    ".java", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx",
+    ".go", ".rs", ".rb", ".php", ".pl", ".lua", ".r", ".swift", ".kt", ".kts", ".scala",
+    ".dart", ".ex", ".exs", ".erl", ".hrl", ".elm", ".clj", ".cljs", ".cljc", ".edn",
+    ".tf", ".tfvars", ".proto", ".graphql", ".gql",
+    ".vue", ".svelte", ".astro",
+    ".html", ".htm",
+}
+
+_TEXT_NAMES = {
+    "dockerfile", "makefile", "license", "changelog", "readme",
+}
+
+
 def _file_kind(path: str) -> str:
     ext = Path(path).suffix.lower()
+    name = Path(path).name.lower()
     if ext in {".md", ".markdown"}: return "markdown"
     if ext == ".csv": return "csv"
     if ext in {".html", ".htm"}: return "html"
@@ -188,7 +208,8 @@ def _file_kind(path: str) -> str:
     if ext in {".xlsx", ".xls"}: return "xlsx"
     if ext in {".docx", ".doc"}: return "docx"
     if ext in {".pptx", ".ppt"}: return "pptx"
-    if ext in {".txt", ".log", ".json"}: return "text"
+    if ext in _TEXT_EXTS: return "text"
+    if name in _TEXT_NAMES: return "text"
     if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}: return "image"
     return "binary"
 
@@ -308,33 +329,8 @@ def _collect_all_files(agent_id: uuid.UUID, base_dir: Path | None = None) -> lis
 
 
 async def _invalidate_recent_cache(agent_id: uuid.UUID) -> None:
-    """Delete the recent-files cache for an agent."""
-    try:
-        r = await get_redis()
-        await r.delete(f"recent_files:{agent_id}")
-    except Exception:
-        pass
-
-
-async def _get_recent_cached(agent_id: uuid.UUID) -> list[dict] | None:
-    """Return cached recent files list or None if cache miss."""
-    try:
-        r = await get_redis()
-        raw = await r.get(f"recent_files:{agent_id}")
-        if raw:
-            return json.loads(raw)
-    except Exception:
-        pass
-    return None
-
-
-async def _set_recent_cache(agent_id: uuid.UUID, files: list[dict], ttl: int = 30) -> None:
-    """Cache recent files list with TTL in seconds."""
-    try:
-        r = await get_redis()
-        await r.set(f"recent_files:{agent_id}", json.dumps(files), ex=ttl)
-    except Exception:
-        pass
+    """No-op placeholder — recent files now tracked via DB. Kept for transition."""
+    pass
 
 
 @router.get("/recent", response_model=dict)
@@ -348,34 +344,34 @@ async def get_recent_files(
 ):
     """Get recently modified files from agent workspace.
 
-    Redis-cached for 30s. Cache invalidated on file write/delete/upload.
-    File scanning runs in a thread pool to avoid blocking the event loop.
+    Queries the recent_files table (DB-backed, indexed) instead of
+    filesystem scanning. Falls back to filesystem scan if no DB records.
     """
     await check_agent_access(db, current_user, agent_id)
 
     limit = min(max(1, limit), 100)
     offset = max(0, offset)
 
-    # Try cache first
-    cached = await _get_recent_cached(agent_id)
-    if cached is not None:
-        all_files = cached
-    else:
-        from app.core.async_utils import run_sync
-        base = _agent_base_dir(agent_id)
-        raw = await run_sync(_collect_recent_files, base, agent_id, timeout=10)
-        all_files = [f.model_dump() for f in raw]
-        await _set_recent_cache(agent_id, all_files)
+    from app.services.recent_file_tracker import get_recent_files as query_recent
+    files, total = await query_recent(db, agent_id=agent_id, limit=limit, offset=offset, exclude_code=exclude_code)
 
-    if exclude_code:
-        all_files = [f for f in all_files if not _is_code_file(f.get("name", ""))]
-
-    all_files.sort(key=lambda f: float(f.get("modified_at") or 0), reverse=True)
-    total = len(all_files)
-    paginated_files = all_files[offset:offset + limit]
+    # Fallback to filesystem scan if DB has no records yet (cold start)
+    if total == 0 and offset == 0:
+        try:
+            from app.core.async_utils import run_sync
+            base = _agent_base_dir(agent_id)
+            raw = await run_sync(_collect_recent_files, base, agent_id, timeout=10)
+            all_files = [f.model_dump() for f in raw]
+            if exclude_code:
+                all_files = [f for f in all_files if not _is_code_file(f.get("name", ""))]
+            all_files.sort(key=lambda f: float(f.get("modified_at") or 0), reverse=True)
+            total = len(all_files)
+            files = all_files[offset:offset + limit]
+        except Exception:
+            pass
 
     return {
-        "files": paginated_files,
+        "files": files,
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -572,16 +568,31 @@ async def download_file(
     agent_id: uuid.UUID,
     path: str,
     token: str = "",
+    sign: str = "",
+    expires: str = "",
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db),
 ):
     """Download / serve a file from the agent workspace (browser-friendly).
-    
-    Auth via Bearer header OR `token` query parameter (for <img> tags).
-    """
-    from app.core.security import decode_access_token
 
-    # Resolve JWT token from either Bearer header or query param
+    Auth via (in priority order):
+    1. HMAC-signed URL  — ``?sign=...&expires=...``  (ideal for chat / external links)
+    2. Bearer header     — ``Authorization: Bearer <jwt>``
+    3. token query param — ``?token=<jwt>``  (legacy / <img> tags)
+    """
+    from app.core.security import decode_access_token, verify_download_signature
+
+    # Priority 1: HMAC-signed download URL (no DB lookup required for auth)
+    if sign and expires:
+        if verify_download_signature(str(agent_id), path, sign, expires):
+            target = _safe_path(agent_id, path)
+            if not target.exists() or not target.is_file():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+            return FileResponse(path=str(target), filename=target.name)
+        else:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired download link")
+
+    # Priority 2 & 3: JWT-based auth
     jwt_token = None
     if credentials:
         jwt_token = credentials.credentials
@@ -613,6 +624,8 @@ async def download_folder(
     agent_id: uuid.UUID,
     path: str,
     token: str = "",
+    sign: str = "",
+    expires: str = "",
     credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False)),
     db: AsyncSession = Depends(get_db),
 ):
@@ -624,7 +637,17 @@ async def download_folder(
     - Maximum total size: 100 MB
     - Maximum recursion depth: 50 levels (prevents zip bombs)
     """
-    from app.core.security import decode_access_token
+    from app.core.security import decode_access_token, verify_download_signature
+
+    # Priority 1: HMAC-signed download URL
+    if sign and expires:
+        if verify_download_signature(str(agent_id), path, sign, expires):
+            target = _safe_path(agent_id, path)
+            if not target.exists() or not target.is_dir():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found")
+            return await _zip_and_stream_folder(target, path)
+        else:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired download link")
 
     # Resolve JWT token from either Bearer header or query param
     jwt_token = None
@@ -784,6 +807,18 @@ async def write_file(
         logger.warning(f"[FileWrite] Failed to send WebSocket notification: {e}")
 
     await _invalidate_recent_cache(agent_id)
+
+    # Track recent file (fire-and-forget)
+    try:
+        from app.services.recent_file_tracker import track_file_fire_and_forget
+        track_file_fire_and_forget(
+            agent_id=agent_id, path=path,
+            operation="write", actor_type="user",
+            actor_id=current_user.id, file_size=len(data.content) if data.content else 0,
+        )
+    except Exception:
+        pass
+
     return {"status": "ok", "path": result.path, "revision_id": result.revision_id}
 
 
@@ -897,6 +932,18 @@ async def delete_file(
         target.unlink()
 
     await _invalidate_recent_cache(agent_id)
+
+    # Track file deletion (fire-and-forget)
+    try:
+        from app.services.recent_file_tracker import track_file_fire_and_forget
+        track_file_fire_and_forget(
+            agent_id=agent_id, path=path,
+            operation="delete", actor_type="user",
+            actor_id=current_user.id,
+        )
+    except Exception:
+        pass
+
     return {"status": "ok", "path": path}
 
 
@@ -1044,6 +1091,19 @@ async def import_skill_to_agent(
         written.append(f.path)
 
     await _invalidate_recent_cache(agent_id)
+
+    # Track skill files (fire-and-forget)
+    try:
+        from app.services.recent_file_tracker import track_file_fire_and_forget
+        for wp in written:
+            track_file_fire_and_forget(
+                agent_id=agent_id, path=f"skills/{skill.folder_name}/{wp}",
+                operation="write", actor_type="user",
+                actor_id=current_user.id, file_size=0,
+            )
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "skill_name": skill.name,
@@ -1266,6 +1326,18 @@ async def upload_file_to_workspace(
             extracted_path = str(txt_file.resolve().relative_to(base_abs))
 
     await _invalidate_recent_cache(agent_id)
+
+    # Track recent file (fire-and-forget)
+    try:
+        from app.services.recent_file_tracker import track_file_fire_and_forget
+        track_file_fire_and_forget(
+            agent_id=agent_id, path=f"{normalized_path}/{filename}",
+            operation="upload", actor_type="user",
+            actor_id=current_user.id, file_size=len(content),
+        )
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "path": f"{path}/{filename}",

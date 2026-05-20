@@ -3,8 +3,14 @@
 Loads soul, memory, skills summary, and relationships from the agent's
 workspace files and composes a comprehensive system prompt.
 
-Static parts (soul, skills, relationships, company info, channel tools, timezone)
-are cached in Redis with per-key invalidation on write operations.
+File-backed parts (soul, skills, relationships) use mtime-based cache validation:
+before serving cached content, the source file/directory mtime is checked.
+If the source changed, the cache auto-refreshes — no explicit invalidation needed.
+A short TTL (5 min) acts as safety net against orphaned keys.
+
+DB-derived parts (base identity, channels, timezone) use explicit invalidation
+with a long TTL (24 h) since their source changes rarely.
+
 Dynamic parts (memory, focus, triggers, time, current user) are always fresh.
 """
 
@@ -28,7 +34,11 @@ _CTX_RELS_KEY = "agent:ctx:rels:{agent_id}"
 _CTX_COMPANY_KEY = "agent:ctx:company:{agent_id}"
 _CTX_CHANNELS_KEY = "agent:ctx:channels:{agent_id}"
 _CTX_TZ_KEY = "agent:ctx:tz:{agent_id}"
-_CTX_TTL = 3600  # 1 hour safety net; active invalidation on write
+
+# Differentiated TTLs
+_CTX_TTL_STABLE = 86400   # 24 h — rarely-changing content (base, channels, company, tz)
+_CTX_TTL_MUTABLE = 300    # 5 min safety net — file-backed content validated by mtime
+_CTX_TTL_MEDIUM = 600     # 10 min — mixed-source content (company: DB + file)
 
 
 def _agent_workspace(agent_id: uuid.UUID) -> Path:
@@ -189,12 +199,47 @@ async def _get_cached(key: str) -> str | None:
         return None
 
 
-async def _set_cached(key: str, value: str, ttl: int = _CTX_TTL) -> None:
+async def _set_cached(key: str, value: str, ttl: int = _CTX_TTL_STABLE) -> None:
     """Store a value in Redis with TTL. Silent on failure."""
     try:
         from app.core.events import get_redis
         r = await get_redis()
         await r.setex(key, ttl, value)
+    except Exception:
+        pass
+
+
+# ── Mtime-based cache helpers ─────────────────────────────────
+# For file-backed content, we store {"mt": <source_mtime_int>, "val": "<content>"}
+# so the cache auto-invalidates when the underlying file changes.
+
+
+async def _get_cached_mtime(key: str, source: Path) -> str | None:
+    """Return cached content only if source mtime matches. None on miss, stale, or error."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        raw = await r.get(key)
+        if raw is None:
+            return None
+        data = json.loads(raw)
+        cached_mtime = data.get("mt")
+        current_mtime = int(source.stat().st_mtime) if source.exists() else 0
+        if cached_mtime == current_mtime:
+            return data.get("val")
+    except Exception:
+        pass
+    return None
+
+
+async def _set_cached_mtime(key: str, value: str, source: Path, ttl: int = _CTX_TTL_MUTABLE) -> None:
+    """Store value with source mtime. Silent on failure."""
+    try:
+        from app.core.events import get_redis
+        r = await get_redis()
+        mtime = int(source.stat().st_mtime) if source.exists() else 0
+        data = json.dumps({"mt": mtime, "val": value})
+        await r.setex(key, ttl, data)
     except Exception:
         pass
 
@@ -489,52 +534,55 @@ async def build_agent_context(agent_id: uuid.UUID, agent_name: str, role_descrip
         except (json.JSONDecodeError, KeyError):
             pass
 
-    # ── Static 3: Company intro + system prompt ──
+    # ── Static 3: Company intro + system prompt (mixed DB + file, medium TTL) ──
     company_key = _CTX_COMPANY_KEY.format(agent_id=aid)
     company_val = await _get_cached(company_key)
     if company_val is None:
         company_val = await _build_company_cache(agent_id, ws_root)
-        await _set_cached(company_key, company_val)
+        await _set_cached(company_key, company_val, ttl=_CTX_TTL_MEDIUM)
     if company_val:
         static_parts.append(company_val)
 
-    # ── Static 4: Soul ──
+    # ── Static 4: Soul (file-backed, mtime-validated) ──
     soul_key = _CTX_SOUL_KEY.format(agent_id=aid)
-    soul_val = await _get_cached(soul_key)
+    soul_src = ws_root / "soul.md"
+    soul_val = await _get_cached_mtime(soul_key, soul_src)
     if soul_val is None:
-        raw = await _read_file_safe_async(ws_root / "soul.md", 2000)
+        raw = await _read_file_safe_async(soul_src, 2000)
         if raw.startswith("# "):
             raw = "\n".join(raw.split("\n")[1:]).strip()
         if raw and raw not in ("_描述你的角色和职责。_", "_Describe your role and responsibilities._"):
             soul_val = f"\n## Personality\n{raw}"
         else:
             soul_val = ""
-        await _set_cached(soul_key, soul_val)
+        await _set_cached_mtime(soul_key, soul_val, soul_src)
     if soul_val:
         static_parts.append(soul_val)
 
-    # ── Static 5: Skills index ──
+    # ── Static 5: Skills index (directory-backed, mtime-validated) ──
     skills_key = _CTX_SKILLS_KEY.format(agent_id=aid)
-    skills_val = await _get_cached(skills_key)
+    skills_src = ws_root / "skills"
+    skills_val = await _get_cached_mtime(skills_key, skills_src)
     if skills_val is None:
         raw = await _load_skills_index_async(agent_id)
         skills_val = f"\n## Skills\n{raw}" if raw else ""
-        await _set_cached(skills_key, skills_val)
+        await _set_cached_mtime(skills_key, skills_val, skills_src)
     if skills_val:
         static_parts.append(skills_val)
 
-    # ── Static 6: Relationships ──
+    # ── Static 6: Relationships (file-backed, mtime-validated) ──
     rels_key = _CTX_RELS_KEY.format(agent_id=aid)
-    rels_val = await _get_cached(rels_key)
+    rels_src = ws_root / "relationships.md"
+    rels_val = await _get_cached_mtime(rels_key, rels_src)
     if rels_val is None:
-        raw = await _read_file_safe_async(ws_root / "relationships.md", 2000)
+        raw = await _read_file_safe_async(rels_src, 2000)
         if raw.startswith("# "):
             raw = "\n".join(raw.split("\n")[1:]).strip()
         if raw and "暂无" not in raw and "None yet" not in raw:
             rels_val = f"\n## Relationships\n{raw}"
         else:
             rels_val = ""
-        await _set_cached(rels_key, rels_val)
+        await _set_cached_mtime(rels_key, rels_val, rels_src)
     if rels_val:
         static_parts.append(rels_val)
 

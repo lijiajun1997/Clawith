@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import IdentityProvider
@@ -36,24 +36,24 @@ class SSOService:
         Returns:
             User if found, None otherwise
         """
-        # 1. Try direct match via Identity join
+        # 1. Try direct match via Identity join (case-insensitive)
         query = (
             select(User)
             .join(User.identity)
-            .where(Identity.email == email)
+            .where(func.lower(Identity.email) == email.lower())
         )
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
-        
+
         result = await db.execute(query)
         user = result.scalar_one_or_none()
-        
+
         if user:
             return user
-            
+
         # 2. If not found and tenant_id is provided, try to find an Identity
         if email:
-            id_query = select(Identity).where(Identity.email == email)
+            id_query = select(Identity).where(func.lower(Identity.email) == email.lower())
             id_result = await db.execute(id_query)
             identity = id_result.scalar_one_or_none()
             if identity:

@@ -14,7 +14,7 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, delete, func
 
 import httpx
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.identity import IdentityProvider
@@ -443,7 +443,7 @@ class BaseOrgSyncAdapter(ABC):
         mobile = _normalize_contact(user.mobile)
 
         if email:
-            user_query = select(User).join(User.identity).where(Identity.email == email)
+            user_query = select(User).join(User.identity).where(func.lower(Identity.email) == email.lower())
             if self.tenant_id:
                 user_query = user_query.where(User.tenant_id == self.tenant_id)
             user_res = await db.execute(user_query)
@@ -541,7 +541,7 @@ class BaseOrgSyncAdapter(ABC):
         email = _normalize_contact(user.email)
         if email:
             result = await db.execute(
-                select(User).join(User.identity).where(Identity.email == email)
+                select(User).join(User.identity).where(func.lower(Identity.email) == email.lower())
             )
             u = result.scalars().first()
             if u: return u

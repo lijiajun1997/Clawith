@@ -28,37 +28,38 @@ class MultimodalHandler:
 
         # 2. 如果是相对路径且agent_id存在，尝试多个解析策略
         if agent_id:
-            agent_workspace = WORKSPACE_ROOT / str(agent_id) / "workspace"
-            if agent_workspace.exists():
-                # 2a. 直接相对路径：workspace/image.png
-                relative_path = agent_workspace / input_path
+            agent_dir = WORKSPACE_ROOT / str(agent_id)
+            agent_workspace = agent_dir / "workspace"
+            search_roots = [agent_workspace, agent_dir] if agent_workspace.exists() else [agent_dir]
+
+            for root in search_roots:
+                # 2a. 直接相对路径
+                relative_path = root / input_path
                 if relative_path.exists() and (allowed_extensions is None or relative_path.suffix.lower() in allowed_extensions):
                     return relative_path
 
-                # 2b. 去掉workspace前缀：image.png -> workspace/image.png
+                # 2b. 去掉workspace前缀
                 if input_path.startswith("workspace/"):
-                    # 去掉workspace前缀重新尝试
                     without_prefix = input_path[len("workspace/"):]
-                    relative_path = agent_workspace / without_prefix
+                    relative_path = root / without_prefix
                     if relative_path.exists() and (allowed_extensions is None or relative_path.suffix.lower() in allowed_extensions):
                         return relative_path
 
-                # 2c. 模糊搜索整个agent workspace下的同名文件
-                filename = path.name
-                matches = list(agent_workspace.rglob(f"*{filename}*"))
-                if allowed_extensions:
-                    matches = [p for p in matches if p.suffix.lower() in allowed_extensions]
+            # 2c. 模糊搜索整个agent目录下的同名文件
+            filename = path.name
+            matches = list(agent_dir.rglob(f"*{filename}*"))
+            if allowed_extensions:
+                matches = [p for p in matches if p.suffix.lower() in allowed_extensions]
 
-                if len(matches) == 1:
-                    return matches[0]
-                elif len(matches) > 1:
-                    # 优先选择完全匹配的文件
-                    exact_matches = [p for p in matches if p.name == filename]
-                    if len(exact_matches) == 1:
-                        return exact_matches[0]
+            if len(matches) == 1:
+                return matches[0]
+            elif len(matches) > 1:
+                exact_matches = [p for p in matches if p.name == filename]
+                if len(exact_matches) == 1:
+                    return exact_matches[0]
 
-                    match_paths = "\n- ".join([str(p) for p in matches])
-                    raise RuntimeError(f"找到多个匹配文件，请明确路径：\n- {match_paths}")
+                match_paths = "\n- ".join([str(p) for p in matches])
+                raise RuntimeError(f"找到多个匹配文件，请明确路径：\n- {match_paths}")
 
         # 3. 所有尝试都失败
         raise FileNotFoundError(f"文件不存在: {input_path}\n请确认路径是否正确，支持绝对路径或相对于agent workspace的相对路径")

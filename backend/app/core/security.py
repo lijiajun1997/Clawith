@@ -230,3 +230,42 @@ def require_role(*allowed_roles: str):
         return current_user
     return _check
 
+
+# ── Download URL signing (HMAC-SHA256) ──────────────────────────
+
+import hashlib
+import hmac
+import time
+
+
+def sign_download_url(agent_id: str, path: str, ttl_seconds: int = 86400) -> str:
+    """Generate a signed download URL query string fragment.
+
+    Appends ``&sign=...&expires=...`` parameters that the /download endpoint
+    can verify without requiring a JWT.  Default TTL is 24 hours.
+
+    Returns just the query parameter string (no leading ``?``) so callers can
+    append it to an existing query string.
+    """
+    expires = int(time.time()) + ttl_seconds
+    raw = f"{agent_id}:{path}:{expires}"
+    s = get_settings()
+    key = (s.JWT_SECRET_KEY or s.SECRET_KEY).encode("utf-8")
+    sig = hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"sign={sig}&expires={expires}"
+
+
+def verify_download_signature(agent_id: str, path: str, sign: str, expires: str) -> bool:
+    """Verify a signed download URL has not expired and the signature is valid."""
+    try:
+        expires_ts = int(expires)
+    except (ValueError, TypeError):
+        return False
+    if time.time() > expires_ts:
+        return False
+    raw = f"{agent_id}:{path}:{expires_ts}"
+    s = get_settings()
+    key = (s.JWT_SECRET_KEY or s.SECRET_KEY).encode("utf-8")
+    expected = hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sign)
+

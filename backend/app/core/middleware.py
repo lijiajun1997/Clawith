@@ -25,7 +25,7 @@ def get_io_semaphore() -> asyncio.Semaphore:
 
 
 # Paths that should bypass the timeout (long-polling, WebSocket upgrade, streaming)
-_TIMEOUT_SKIP_PREFIXES = ("/ws/", "/api/ws/", "/api/agents/", "/health")
+_TIMEOUT_SKIP_PREFIXES = ("/ws/", "/api/ws/", "/api/agents/", "/health", "/api/chat/upload", "/api/skills/deployment/")
 _TIMEOUT_SKIP_EXACT = ("/api/health",)
 
 DEFAULT_REQUEST_TIMEOUT = 60.0  # seconds
@@ -72,14 +72,16 @@ class TraceIdMiddleware(BaseHTTPMiddleware):
             response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
             response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             # CSP: allow inline styles and images from same origin; block inline scripts
-            response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; "
-                "script-src 'self'; "
-                "style-src 'self' 'unsafe-inline'; "
-                "img-src 'self' data: blob:; "
-                "connect-src 'self' ws: wss:; "
-                "frame-ancestors 'none'"
-            )
+            # Skip if the route handler already set its own CSP (e.g. published pages)
+            if "Content-Security-Policy" not in response.headers:
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; "
+                    "script-src 'self'; "
+                    "style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data: blob:; "
+                    "connect-src 'self' ws: wss:; "
+                    "frame-ancestors 'none'"
+                )
 
             logger.info(f"<-- {request.method} {request.url.path} {response.status_code} {duration:.3f}s")
             return response

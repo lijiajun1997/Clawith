@@ -384,6 +384,12 @@ async def get_session_messages(
                 entry["toolArgs"] = data.get("args")
                 entry["toolStatus"] = data.get("status", "done")
                 entry["toolResult"] = data.get("result", "")
+                if data.get("reasoning_content"):
+                    entry["thinking"] = data["reasoning_content"]
+                if data.get("file_preview"):
+                    entry["file_preview"] = data["file_preview"]
+                if data.get("live_preview"):
+                    entry["live_preview"] = data["live_preview"]
             except Exception:
                 pass
             if sender_name:

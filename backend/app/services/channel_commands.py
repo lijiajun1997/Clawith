@@ -219,6 +219,17 @@ async def detect_and_handle_command(
 
         rewritten = f"[{skill_name}] {rest}"
         logger.info(f"[ChannelCmd] Skill injected: {skill_name}")
+
+        # Track skill invocation via channel command
+        try:
+            from app.services.activity_logger import log_activity
+            await log_activity(
+                agent_id, "skill_call",
+                f"Skill invoked via channel: {skill_name}",
+                detail={"skill_name": skill_name, "source": "channel_command"},
+            )
+        except Exception:
+            pass
         return True, None, rewritten
 
     # Unknown /-command → pass through to LLM

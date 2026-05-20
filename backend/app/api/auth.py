@@ -12,7 +12,7 @@ from app.core.rate_limit import auth_rate_limit
 
 from app.core.background import spawn_background_fn
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, create_refresh_token, decode_refresh_token, get_authenticated_user, get_current_user, hash_password, verify_password
@@ -185,7 +185,7 @@ async def register_init(
     # submitted email. Under normal circumstances this should never trigger
     # (find_or_create_identity no longer uses username as a lookup key), but
     # this guard protects against future regressions.
-    if identity.email and identity.email != data.email:
+    if identity.email and identity.email.lower() != data.email.lower():
         logger.warning(
             "[REGISTER_INIT] Identity email mismatch: submitted=%s returned=%s — rejecting",
             data.email,
@@ -372,7 +372,7 @@ async def _handle_normal_register(data: UserRegister, db: AsyncSession, settings
     # Defense-in-depth: verify the returned identity actually belongs to the
     # submitted email. Should be unreachable after the username-lookup fix, but
     # acts as a safety net against future regressions.
-    if identity.email and identity.email != data.email:
+    if identity.email and identity.email.lower() != data.email.lower():
         logger.warning(
             "[REGISTER_LEGACY] Identity email mismatch: submitted=%s returned=%s — rejecting",
             data.email,
@@ -439,11 +439,12 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
     from app.models.tenant import Tenant
     from app.models.user import Identity, User
 
-    # 1. Query Identity
+    # 1. Query Identity (case-insensitive for email/username)
+    lower_id = data.login_identifier.lower()
     query = select(Identity).where(
-        (Identity.email == data.login_identifier) |
+        (func.lower(Identity.email) == lower_id) |
         (Identity.phone == data.login_identifier) |
-        (Identity.username == data.login_identifier)
+        (func.lower(Identity.username) == lower_id)
     )
     result = await db.execute(query)
     identity = result.scalar_one_or_none()

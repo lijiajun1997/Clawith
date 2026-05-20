@@ -9,7 +9,7 @@ import uuid
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password
@@ -330,12 +330,12 @@ class ChannelUserService:
         else:
             username = f"{channel_type}_{external_user_id[:12]}"
 
-        # Ensure unique username within tenant
+        # Ensure unique username within tenant (case-insensitive)
         from app.models.user import User, Identity
         query = (
             select(User)
             .join(User.identity)
-            .where(Identity.username == username)
+            .where(func.lower(Identity.username) == username.lower())
         )
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)
@@ -432,12 +432,12 @@ async def get_platform_user_by_org_member(
     else:
         username = f"{channel_type}_{org_member.id.hex[:12]}"
 
-    # Ensure unique username within tenant
+    # Ensure unique username within tenant (case-insensitive)
     from app.models.user import User, Identity
     query = (
         select(User)
         .join(User.identity)
-        .where(Identity.username == username)
+        .where(func.lower(Identity.username) == username.lower())
     )
     if agent_tenant_id:
         query = query.where(User.tenant_id == agent_tenant_id)

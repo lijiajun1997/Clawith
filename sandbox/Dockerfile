@@ -6,9 +6,13 @@ FROM nikolaik/python-nodejs:python3.12-nodejs22-slim
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
     sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true
 
-# 安装系统工具 + OfficeCLI 依赖
+# 安装系统工具 + OfficeCLI 依赖 + 中文字体（PDF 生成必需）
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl libicu-dev && \
+    apt-get install -y --no-install-recommends \
+        curl libicu-dev \
+        fonts-noto-cjk \
+        fontconfig && \
+    fc-cache -fv && \
     rm -rf /var/lib/apt/lists/*
 
 # 安装 OfficeCLI（AI 原生 Office 文档 CLI — .docx/.xlsx/.pptx）

@@ -2760,6 +2760,11 @@ async def execute_tool(
         if tool_name == "install_skill" and isinstance(result, str) and result.startswith("✅"):
             await _invalidate_context_cache(agent_id, "skills/")
 
+        # Normalize: ensure JSON error results get ❌ prefix for success-rate tracking
+        if isinstance(result, str) and result and not result.startswith("❌"):
+            if result.startswith("{") and '"success": false' in result[:300]:
+                result = "❌ " + result
+
         # Log tool call activity (skip noisy read operations)
         if tool_name not in ("list_files", "read_file", "read_document"):
             from app.services.activity_logger import log_activity
@@ -2775,7 +2780,7 @@ async def execute_tool(
         return result
     except Exception as e:
         logger.exception(f"[Tool] Execution failed: {tool_name}")
-        return f"Tool execution error ({tool_name}): {type(e).__name__}: {str(e)[:200]}"
+        return f"❌ Tool execution error ({tool_name}): {type(e).__name__}: {str(e)[:200]}"
 
 
 async def _web_search(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
@@ -3276,7 +3281,7 @@ async def _duckduckgo_search_tool(arguments: dict) -> str:
     """Standalone DuckDuckGo search tool (no API key required)."""
     query = arguments.get("query", "").strip()
     if not query:
-        return "Please provide search keywords"
+        return "❌ Please provide search keywords"
     max_results = min(arguments.get("max_results", 5), 10)
     return await _search_duckduckgo(query, max_results)
 
@@ -3285,51 +3290,51 @@ async def _tavily_search_tool(arguments: dict, agent_id: uuid.UUID | None = None
     """Standalone Tavily search tool (API key read from per-tool config)."""
     query = arguments.get("query", "").strip()
     if not query:
-        return "Please provide search keywords"
+        return "❌ Please provide search keywords"
     config = await _get_tool_config(agent_id, "tavily_search") or {}
     api_key = config.get("api_key", "").strip()
     if not api_key:
-        return "Tavily API key is required. Set it in the tool settings."
+        return "❌ Tavily API key is required. Set it in the tool settings."
     max_results = min(arguments.get("max_results", 5), 10)
     try:
         return await _search_tavily(query, api_key, max_results)
     except Exception as e:
-        return f"Tavily search error: {str(e)[:200]}"
+        return f"❌ Tavily search error: {str(e)[:200]}"
 
 
 async def _google_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
     """Standalone Google Custom Search tool (API key read from per-tool config)."""
     query = arguments.get("query", "").strip()
     if not query:
-        return "Please provide search keywords"
+        return "❌ Please provide search keywords"
     config = await _get_tool_config(agent_id, "google_search") or {}
     api_key = config.get("api_key", "").strip()
     if not api_key:
-        return "Google Search API key is required (format: API_KEY:SEARCH_ENGINE_ID). Set it in the tool settings."
+        return "❌ Google Search API key is required (format: API_KEY:SEARCH_ENGINE_ID). Set it in the tool settings."
     # Allow per-call language override; fall back to tool config, then default
     language = arguments.get("language") or config.get("language", "en")
     max_results = min(arguments.get("max_results", 5), 10)
     try:
         return await _search_google(query, api_key, max_results, language)
     except Exception as e:
-        return f"Google search error: {str(e)[:200]}"
+        return f"❌ Google search error: {str(e)[:200]}"
 
 
 async def _bing_search_tool(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
     """Standalone Bing Web Search tool (API key read from per-tool config)."""
     query = arguments.get("query", "").strip()
     if not query:
-        return "Please provide search keywords"
+        return "❌ Please provide search keywords"
     config = await _get_tool_config(agent_id, "bing_search") or {}
     api_key = config.get("api_key", "").strip()
     if not api_key:
-        return "Bing Search API key is required. Set it in the tool settings."
+        return "❌ Bing Search API key is required. Set it in the tool settings."
     language = arguments.get("language") or config.get("language", "en-US")
     max_results = min(arguments.get("max_results", 5), 10)
     try:
         return await _search_bing(query, api_key, max_results, language)
     except Exception as e:
-        return f"Bing search error: {str(e)[:200]}"
+        return f"❌ Bing search error: {str(e)[:200]}"
 
 
 async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
@@ -3345,7 +3350,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
     accompany_msg = arguments.get("message", "")
     member_name = (arguments.get("member_name") or "").strip()
     if not rel_path:
-        return "Error: file_path is required"
+        return "❌file_path is required"
 
     # Resolve file path within agent workspace (with workspace/ + full-search auto-correction)
     file_path = _auto_resolve_with_workspace_fallback(ws, rel_path)
@@ -3357,7 +3362,7 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
             if str(alt).startswith(str(ws_resolved)) and alt.exists():
                 file_path = alt
     if not file_path.exists():
-        return "Error: " + _build_not_found_hint(ws, rel_path)
+        return "❌" + _build_not_found_hint(ws, rel_path)
 
     # Priority 1: explicit recipient - resolve member across channels
     if member_name:
@@ -3401,7 +3406,9 @@ async def _send_channel_file(agent_id: uuid.UUID, ws: Path, arguments: dict) -> 
             "and BASE_URL is not configured. The file has been saved but the user cannot "
             "receive it. Ask the admin to configure BASE_URL or check channel integration."
         )
-    download_url = f"{base_url}/api/agents/{aid}/files/download?path={file_rel}"
+    from app.core.security import sign_download_url
+    _signed = sign_download_url(aid, file_rel)
+    download_url = f"{base_url}/api/agents/{aid}/files/download?path={file_rel}&{_signed}"
     msg = f"File ready for download: [{file_path.name}]({download_url})"
     if accompany_msg:
         msg = accompany_msg + "\n\n" + msg
@@ -3515,7 +3522,9 @@ async def _send_file_via_feishu(agent_id, config, file_path: Path, member_name: 
         if message:
             parts.append(message)
         if base_url:
-            dl_url = f"{base_url}/api/agents/{agent_id}/files/download?path={_rel}"
+            from app.core.security import sign_download_url
+            _signed = sign_download_url(str(agent_id), _rel)
+            dl_url = f"{base_url}/api/agents/{agent_id}/files/download?path={_rel}&{_signed}"
             parts.append(f"{file_path.name}\n{dl_url}")
         parts.append(f"File upload failed ({e}). If you need direct file sending, enable im:resource permission in Feishu.")
         try:
@@ -3945,12 +3954,12 @@ def _list_files(ws: Path, rel_path: str, tenant_id: str | None = None) -> str:
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         target = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(target).startswith(str(enterprise_root)):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
     else:
         target = (ws / rel_path) if rel_path else ws
         target = target.resolve()
         if not str(target).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
 
     if not target.exists():
         return f"Directory not found: {rel_path or '/'}"
@@ -4149,7 +4158,7 @@ async def _read_file(
     if err:
         return err
     if not file_path.exists():
-        return f"File not found: {rel_path}"
+        return f"❌ File not found: {rel_path}"
 
     try:
         _ocr_md_rel = None
@@ -4204,7 +4213,7 @@ async def _read_file(
         end = min(total_lines, start + limit)
 
         if start >= total_lines:
-            return f"Offset {offset} exceeds file length ({total_lines} lines total)"
+            return f"❌ Offset {offset} exceeds file length ({total_lines} lines total)"
 
         result = [f"{i+1:6}\t{line}" for i, line in enumerate(lines[start:end], start=start)]
         output = f"📄 {rel_path} (lines {start+1}-{end} of {total_lines})\n" + "\n".join(result)
@@ -4218,7 +4227,7 @@ async def _read_file(
         return output
 
     except Exception as e:
-        return f"Read failed: {e}"
+        return f"❌ Read failed: {e}"
 
 
 async def _read_document(
@@ -4235,7 +4244,7 @@ async def _read_document(
     if err:
         return err
     if not file_path.exists():
-        return f"File not found: {rel_path}"
+        return f"❌ File not found: {rel_path}"
 
     ext = file_path.suffix.lower()
     max_chars = min(max_chars, 50000)
@@ -4282,7 +4291,7 @@ async def _read_document(
                 return f"⚠️ {rel_path} is an image file. Enable OCR in Read File tool settings, or use call_model with vision."
 
         else:
-            return f"Unsupported format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV, images (with OCR)"
+            return f"❌ Unsupported format: {ext}. Supported: PDF, DOCX, XLSX, PPTX, TXT, MD, CSV, images (with OCR)"
 
         if not content or not content.strip():
             return "(Document is empty or text extraction failed)"
@@ -4305,9 +4314,9 @@ async def _read_document(
         return content + md_hint
 
     except ImportError as e:
-        return f"Missing dependency: {e}. Install: pip install pdfplumber python-docx openpyxl python-pptx"
+        return f"❌ Missing dependency: {e}. Install: pip install pdfplumber python-docx openpyxl python-pptx"
     except Exception as e:
-        return f"Document read failed: {str(e)[:200]}"
+        return f"❌ Document read failed: {str(e)[:200]}"
 
 
 async def _read_pdf(
@@ -4473,33 +4482,33 @@ def _write_file(ws: Path, rel_path: str, content: str, tenant_id: str | None = N
             enterprise_root = (WORKSPACE_ROOT / "enterprise_info").resolve()
         sub = rel_path[len("enterprise_info"):].lstrip("/")
         if not sub:
-            return "Write failed: please provide a file path under enterprise_info/, e.g. enterprise_info/knowledge_base/report.md"
+            return "❌ Write failed: please provide a file path under enterprise_info/, e.g. enterprise_info/knowledge_base/report.md"
         file_path = (enterprise_root / sub).resolve()
         if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()
         if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
         return f"✅ Written to {rel_path} ({len(content)} chars)"
     except Exception as e:
-        return f"Write failed: {e}"
+        return f"❌ Write failed: {e}"
 
 
 def _delete_file(ws: Path, rel_path: str) -> str:
     protected = {"tasks.json", "soul.md"}
     if rel_path.strip("/") in protected:
-        return f"{rel_path} cannot be deleted (protected)"
+        return f"❌ {rel_path} cannot be deleted (protected)"
 
     file_path = (ws / rel_path).resolve()
     if not str(file_path).startswith(str(ws.resolve())):
-        return "Access denied for this path"
+        return "❌ Access denied for this path"
     if not file_path.exists():
-        return f"File not found: {rel_path}"
+        return f"❌ File not found: {rel_path}"
 
     try:
         if file_path.is_dir():
@@ -4510,7 +4519,63 @@ def _delete_file(ws: Path, rel_path: str) -> str:
             file_path.unlink()
             return f"✅ Deleted {rel_path}"
     except Exception as e:
-        return f"Delete failed: {e}"
+        return f"❌ Delete failed: {e}"
+
+def _normalize_for_match(text: str) -> str:
+    """Normalize whitespace for fuzzy matching: tabs→spaces, strip trailing ws, CRLF→LF."""
+    text = text.replace("\r\n", "\n").replace("\t", "    ")
+    return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
+def _replace_normalized(content: str, old_string: str, new_string: str, replace_all: bool) -> str:
+    """Replace old_string in content using normalized matching, preserving original formatting."""
+    norm_content = _normalize_for_match(content)
+    norm_old = _normalize_for_match(old_string)
+
+    # Find all match positions in normalized content
+    positions = []
+    start = 0
+    while True:
+        pos = norm_content.find(norm_old, start)
+        if pos == -1:
+            break
+        positions.append(pos)
+        start = pos + 1
+        if not replace_all:
+            break
+
+    if not positions:
+        return content
+
+    # Map normalized positions back to original content via line-level alignment
+    orig_lines = content.splitlines(keepends=True)
+    norm_lines = _normalize_for_match(content).split("\n")
+    old_norm_lines = _normalize_for_match(old_string).split("\n")
+
+    replaced_lines = set()
+    for line_idx in range(len(orig_lines)):
+        if line_idx in replaced_lines:
+            continue
+        # Check if a window starting at this line matches the normalized old_string
+        if line_idx + len(old_norm_lines) > len(norm_lines):
+            continue
+        window_norm = "\n".join(norm_lines[line_idx:line_idx + len(old_norm_lines)])
+        if window_norm == "\n".join(old_norm_lines):
+            # Replace these lines with new_string, preserving the newline style of the original
+            new_lines = new_string.splitlines(keepends=True)
+            if new_lines and not new_lines[-1].endswith("\n"):
+                # Preserve trailing newline from original if present
+                last_orig = orig_lines[line_idx + len(old_norm_lines) - 1] if line_idx + len(old_norm_lines) - 1 < len(orig_lines) else ""
+                if last_orig.endswith("\n"):
+                    new_lines[-1] += "\n"
+            orig_lines[line_idx:line_idx + len(old_norm_lines)] = new_lines
+            replaced_lines.update(range(line_idx, line_idx + len(old_norm_lines)))
+            # Update norm_lines to stay in sync
+            norm_lines[line_idx:line_idx + len(old_norm_lines)] = _normalize_for_match(new_string).split("\n")
+            if not replace_all:
+                break
+
+    return "".join(orig_lines)
 
 
 def _edit_file(
@@ -4552,11 +4617,11 @@ def _edit_file(
             return f"❌ Cannot edit directory: {rel_path}. Provide a file path."
         file_path = (enterprise_root / sub).resolve()
         if not str(file_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
     else:
         file_path = (ws / rel_path).resolve()
         if not str(file_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
 
     if not file_path.exists():
         return f"❌ File not found: {rel_path}. Use list_files or find_files to locate the file first."
@@ -4564,14 +4629,37 @@ def _edit_file(
         return f"❌ Not a file: {rel_path}"
 
     try:
-        content = file_path.read_text(encoding="utf-8")
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            for _enc in ("utf-8-sig", "latin-1", "gbk"):
+                try:
+                    content = file_path.read_text(encoding=_enc)
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    continue
+            else:
+                return f"❌ Cannot decode {rel_path}: not valid UTF-8. Try converting the file encoding first."
         lines = content.splitlines(keepends=True)
         total_lines = len(lines)
 
         # === Mode 1: String replacement ===
         if has_old:
             if old_string not in content:
-                # Try to find similar content for hint
+                # Try normalized matching: strip trailing whitespace, unify tabs/spaces, normalize line endings
+                normalized_content = _normalize_for_match(content)
+                normalized_old = _normalize_for_match(old_string)
+                if normalized_old in normalized_content:
+                    count = normalized_content.count(normalized_old)
+                    if count > 1 and not replace_all:
+                        return (
+                            f"❌ 'old_string' matches {count} times (after whitespace normalization). "
+                            f"Use replace_all=true or provide more surrounding context."
+                        )
+                    new_content = _replace_normalized(content, old_string, new_string, replace_all)
+                    file_path.write_text(new_content, encoding="utf-8")
+                    return f"✅ Replaced {count} occurrence(s) in {rel_path} (fuzzy: whitespace normalized)"
+                # No match even after normalization — show similar content hint
                 hint = _find_similar_lines(content, old_string, rel_path)
                 return hint
             count = content.count(old_string)
@@ -4620,37 +4708,45 @@ def _edit_file(
                 return f"✅ Inserted {len(insert_lines)} line(s) after line {insert_after_line} in {rel_path}"
 
     except Exception as e:
-        return f"Edit failed: {e}"
+        return f"❌ Edit failed: {e}"
 
 
 def _find_similar_lines(content: str, old_string: str, rel_path: str) -> str:
-    """When old_string exact match fails, find similar lines and return a helpful hint."""
+    """When old_string exact match fails, find similar content using difflib multi-line matching."""
+    import difflib
+
     lines = content.splitlines()
-    stripped_query = old_string.strip()
-    query_words = set(stripped_query.lower().split())
-
-    best_idx = -1
-    best_score = 0
-    for i, line in enumerate(lines):
-        # Score by word overlap
-        line_lower = line.lower()
-        overlap = sum(1 for w in query_words if w in line_lower)
-        if overlap > best_score:
-            best_score = overlap
-            best_idx = i
-
+    old_lines = old_string.splitlines()
     base_msg = (
         f"❌ 'old_string' not found in {rel_path}.\n"
         f"   → Use read_file path=\"{rel_path}\" to view current content, then retry with exact text."
     )
 
-    if best_idx >= 0 and best_score > 0:
+    if not old_lines or not lines:
+        return base_msg
+
+    # Multi-line sliding window matching with SequenceMatcher
+    window_size = len(old_lines)
+    best_idx = -1
+    best_ratio = 0.0
+
+    for i in range(max(1, len(lines) - window_size + 1)):
+        window = lines[i:i + window_size]
+        matcher = difflib.SequenceMatcher(None,
+                                          [l.strip() for l in old_lines],
+                                          [l.strip() for l in window])
+        ratio = matcher.ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_idx = i
+
+    if best_idx >= 0 and best_ratio > 0.4:
         start = max(0, best_idx - 2)
-        end = min(len(lines), best_idx + 3)
+        end = min(len(lines), best_idx + window_size + 2)
         ctx = "\n".join(f"     {j+1} | {lines[j]}" for j in range(start, end))
         return (
             f"{base_msg}\n"
-            f"   Similar content near line {best_idx + 1}:\n{ctx}"
+            f"   Best match near line {best_idx + 1} (similarity: {best_ratio:.0%}):\n{ctx}"
         )
 
     return base_msg
@@ -4672,7 +4768,7 @@ async def _search_files_async(
 
     search_path = (ws / path).resolve() if path and path != "." else ws
     if not str(search_path).startswith(str(ws.resolve())):
-        return "Access denied for this path"
+        return "❌ Access denied for this path"
     if not search_path.exists():
         return f"Directory not found: {path}"
 
@@ -4771,12 +4867,12 @@ def _search_files_disk(ws: Path, pattern: str, path: str = ".", file_pattern: st
         sub = path[len("enterprise_info"):].lstrip("/")
         search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(search_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
         ws_for_relative = enterprise_root
     else:
         search_path = (ws / path).resolve() if path and path != "." else ws
         if not str(search_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
         ws_for_relative = ws
 
     if not search_path.exists():
@@ -4874,12 +4970,12 @@ def _find_files(ws: Path, pattern: str, path: str = ".", tenant_id: str | None =
         sub = path[len("enterprise_info"):].lstrip("/")
         search_path = (enterprise_root / sub).resolve() if sub else enterprise_root
         if not str(search_path).startswith(str(enterprise_root)):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
         ws_for_relative = enterprise_root
     else:
         search_path = (ws / path).resolve() if path and path != "." else ws
         if not str(search_path).startswith(str(ws.resolve())):
-            return "Access denied for this path"
+            return "❌ Access denied for this path"
         ws_for_relative = ws
 
     if not search_path.exists():
@@ -4994,7 +5090,7 @@ async def _find_files_async(ws: Path, pattern: str, path: str = ".", tenant_id: 
 
     search_path = (ws / path).resolve() if path and path != "." else ws
     if not str(search_path).startswith(str(ws.resolve())):
-        return "Access denied for this path"
+        return "❌ Access denied for this path"
     if not search_path.exists():
         return f"Directory not found: {path}"
 
@@ -6192,31 +6288,14 @@ async def _send_message_to_agent(from_agent_id: uuid.UUID, args: dict) -> str:
                 )
                 target = fuzzy_result.scalars().first()
             if not target:
-                # Only show agents from relationships, not all agents
-                rel_r = await db.execute(
-                    select(AgentModel.name).join(
-                        AgentAgentRelationship,
-                        (AgentAgentRelationship.target_agent_id == AgentModel.id) & (AgentAgentRelationship.agent_id == from_agent_id)
-                    )
-                )
-                rel_names = [n for (n,) in rel_r.all()]
-                return f"❌ No agent found matching '{agent_name}'. Your connected colleagues: {', '.join(rel_names) if rel_names else 'none — ask your administrator to set up relationships'}"
+                return f"❌ No agent found matching '{agent_name}'. Please check the agent name and try again."
 
 
             # Check if target agent has expired
             if target.is_expired or (target.expires_at and datetime.now(timezone.utc) >= target.expires_at):
                 return f"⚠️ {target.name} is currently unavailable — their service period has ended. Please contact the platform administrator."
 
-            # Enforce relationship: only allow communication with agents in relationships
-            # (AgentAgentRelationship is imported at module level — no local import needed)
-            rel_check = await db.execute(
-                select(AgentAgentRelationship.id).where(
-                    ((AgentAgentRelationship.agent_id == from_agent_id) & (AgentAgentRelationship.target_agent_id == target.id))
-                    | ((AgentAgentRelationship.agent_id == target.id) & (AgentAgentRelationship.target_agent_id == from_agent_id))
-                ).limit(1)
-            )
-            if not rel_check.scalar_one_or_none():
-                return f"❌ You do not have a relationship with {target.name}. Only agents in your relationship list can be contacted. Ask your administrator to add a relationship if needed."
+            # No relationship required — any same-tenant agent can be reached by name
 
             src_part_r = await db.execute(select(Participant).where(Participant.type == "agent", Participant.ref_id == from_agent_id))
             src_participant = src_part_r.scalar_one_or_none()
@@ -6726,7 +6805,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
 
     content = arguments.get("content", "").strip()
     if not content:
-        return "Error: Post content cannot be empty."
+        return "❌Post content cannot be empty."
     if len(content) > 5000:
         content = content[:5000]
 
@@ -6736,7 +6815,7 @@ async def _plaza_create_post(agent_id: uuid.UUID, arguments: dict) -> str:
             ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
             if not agent:
-                return "Error: Agent not found."
+                return "❌Agent not found."
 
             post = PlazaPost(
                 author_id=agent_id,
@@ -6791,14 +6870,14 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
     post_id = arguments.get("post_id", "")
     content = arguments.get("content", "").strip()
     if not content:
-        return "Error: Comment content cannot be empty."
+        return "❌Comment content cannot be empty."
     if len(content) > 2000:
         content = content[:2000]
 
     try:
         pid = uuid.UUID(str(post_id))
     except Exception:
-        return "Error: Invalid post_id format."
+        return "❌Invalid post_id format."
 
     try:
         async with async_session() as db:
@@ -6806,13 +6885,13 @@ async def _plaza_add_comment(agent_id: uuid.UUID, arguments: dict) -> str:
             pr = await db.execute(select(PlazaPost).where(PlazaPost.id == pid))
             post = pr.scalar_one_or_none()
             if not post:
-                return "Error: Post not found."
+                return "❌Post not found."
 
             # Get agent name
             ar = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
             agent = ar.scalar_one_or_none()
             if not agent:
-                return "Error: Agent not found."
+                return "❌Agent not found."
 
             comment = PlazaComment(
                 post_id=pid,
@@ -8206,7 +8285,7 @@ def _check_feishu_err(resp: dict) -> str | None:
                 "or you can try: click **「分享」** (Share) button -> invite the bot app directly.\n"
                 "---"
             )
-        return f"Failed: API Error {code} - {msg}"
+        return f"❌API Error {code} - {msg}"
     return None
 
 async def _bitable_list_tables(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -8215,11 +8294,11 @@ async def _bitable_list_tables(agent_id: uuid.UUID, arguments: dict) -> str:
     parsed = _parse_feishu_url(url)
     app_token = await _resolve_bitable_app_token(agent_id, parsed)
     if not app_token:
-        return "Failed: Could not extract Bitable app_token from the URL (also could not resolve wiki_token)."
+        return "❌Could not extract Bitable app_token from the URL (also could not resolve wiki_token)."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
         
     from app.services.feishu_service import feishu_service
     try:
@@ -8236,7 +8315,7 @@ async def _bitable_list_tables(agent_id: uuid.UUID, arguments: dict) -> str:
         bitable_url = await _get_feishu_bitable_url(tenant_token, app_token)
         return "OK: Tables in this Bitable:\n" + "\n".join(lines) + f"\n\n🔗 多维表格链接: {bitable_url}"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 async def _bitable_create_app(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -8247,13 +8326,13 @@ async def _bitable_create_app(agent_id: uuid.UUID, arguments: dict) -> str:
     """
     name = arguments.get("name", "").strip()
     if not name:
-        return "Failed: Missing required argument 'name' — please provide a name for the new Bitable."
+        return "❌Missing required argument 'name' — please provide a name for the new Bitable."
 
     folder_token = arguments.get("folder_token", "").strip()
 
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
 
     from app.services.feishu_service import feishu_service
     try:
@@ -8268,7 +8347,7 @@ async def _bitable_create_app(agent_id: uuid.UUID, arguments: dict) -> str:
         bitable_url = app_info.get("url", "")
         default_table_id = app_info.get("default_table_id", "")
         if not app_token:
-            return f"Failed: Bitable created but could not extract app_token from response: {resp}"
+            return f"❌Bitable created but could not extract app_token from response: {resp}"
 
         # Fallback URL resolution if the API didn't return one
         if not bitable_url:
@@ -8285,7 +8364,7 @@ async def _bitable_create_app(agent_id: uuid.UUID, arguments: dict) -> str:
             result += f"\nDefault Table ID: {default_table_id}"
         return result
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 async def _bitable_list_fields(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -8298,9 +8377,9 @@ async def _bitable_list_fields(agent_id: uuid.UUID, arguments: dict) -> str:
     table_id = table_id or parsed.get("table_id")
     
     if not app_token:
-        return "Failed: Could not extract Bitable app_token from the URL."
+        return "❌Could not extract Bitable app_token from the URL."
     if not table_id:
-        return "Failed: table_id is required. Provide it as a parameter or include it in the URL."
+        return "❌table_id is required. Provide it as a parameter or include it in the URL."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     from app.services.feishu_service import feishu_service
@@ -8315,7 +8394,7 @@ async def _bitable_list_fields(agent_id: uuid.UUID, arguments: dict) -> str:
         lines = [f"- {f.get('field_name')} (type: {f.get('type')}, ID: {f.get('field_id')})" for f in fields]
         return "OK: Fields in this table:\n" + "\n".join(lines)
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 async def _bitable_query_records(agent_id: uuid.UUID, arguments: dict) -> str:
     """Query records (rows) from a Bitable table, with optional FQL filter."""
@@ -8329,7 +8408,7 @@ async def _bitable_query_records(agent_id: uuid.UUID, arguments: dict) -> str:
     table_id = table_id or parsed.get("table_id")
     
     if not app_token or not table_id:
-        return "Failed: Could not resolve app_token or table_id from the provided parameters/URL."
+        return "❌Could not resolve app_token or table_id from the provided parameters/URL."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     from app.services.feishu_service import feishu_service
@@ -8357,7 +8436,7 @@ async def _bitable_query_records(agent_id: uuid.UUID, arguments: dict) -> str:
             lines.append(f"Record {r.get('record_id')}: {json.dumps(r.get('fields', {}), ensure_ascii=False)}")
         return "OK: Query results:\n" + "\n".join(lines)
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 async def _bitable_create_record(agent_id: uuid.UUID, arguments: dict) -> str:
     """Create a new record (row) in a Bitable table."""
@@ -8370,13 +8449,13 @@ async def _bitable_create_record(agent_id: uuid.UUID, arguments: dict) -> str:
     table_id = table_id or parsed.get("table_id")
     
     if not app_token or not table_id:
-        return "Failed: Could not resolve app_token or table_id from the provided parameters/URL."
+        return "❌Could not resolve app_token or table_id from the provided parameters/URL."
         
     import json
     try:
         fields = json.loads(fields_str)
     except json.JSONDecodeError:
-        return "Failed: The 'fields' parameter is not valid JSON."
+        return "❌The 'fields' parameter is not valid JSON."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     from app.services.feishu_service import feishu_service
@@ -8395,7 +8474,7 @@ async def _bitable_create_record(agent_id: uuid.UUID, arguments: dict) -> str:
             f"🔗 多维表格链接: {bitable_url}"
         )
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 async def _bitable_update_record(agent_id: uuid.UUID, arguments: dict) -> str:
     """Update an existing record in a Bitable table by record_id."""
@@ -8409,13 +8488,13 @@ async def _bitable_update_record(agent_id: uuid.UUID, arguments: dict) -> str:
     table_id = table_id or parsed.get("table_id")
     
     if not app_token or not table_id or not record_id:
-        return "Failed: Missing required parameters. Need app_token (from URL), table_id, and record_id."
+        return "❌Missing required parameters. Need app_token (from URL), table_id, and record_id."
         
     import json
     try:
         fields = json.loads(fields_str)
     except json.JSONDecodeError:
-        return "Failed: The 'fields' parameter is not valid JSON."
+        return "❌The 'fields' parameter is not valid JSON."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     from app.services.feishu_service import feishu_service
@@ -8434,7 +8513,7 @@ async def _bitable_update_record(agent_id: uuid.UUID, arguments: dict) -> str:
             f"🔗 多维表格链接: {bitable_url}"
         )
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 async def _bitable_delete_record(agent_id: uuid.UUID, arguments: dict) -> str:
     """Delete a record from a Bitable table by record_id."""
@@ -8447,7 +8526,7 @@ async def _bitable_delete_record(agent_id: uuid.UUID, arguments: dict) -> str:
     table_id = table_id or parsed.get("table_id")
     
     if not app_token or not table_id or not record_id:
-        return "Failed: Missing required parameters. Need app_token (from URL), table_id, and record_id."
+        return "❌Missing required parameters. Need app_token (from URL), table_id, and record_id."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     from app.services.feishu_service import feishu_service
@@ -8461,7 +8540,7 @@ async def _bitable_delete_record(agent_id: uuid.UUID, arguments: dict) -> str:
         bitable_url = await _get_feishu_bitable_url(tenant_token, app_token, table_id)
         return f"OK: Record {record_id} deleted successfully.\n🔗 多维表格链接: {bitable_url}"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 # ─── Feishu Document Tools ──────────────────────────────────────────
@@ -8487,11 +8566,11 @@ async def _feishu_read_doc(agent_id: uuid.UUID, arguments: dict) -> str:
     parsed = _parse_feishu_url(url)
     doc_token = await _resolve_docx_document_token(agent_id, parsed)
     if not doc_token:
-        return "Failed: Could not extract Document token from the URL."
+        return "❌Could not extract Document token from the URL."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
         
     from app.services.feishu_service import feishu_service
     try:
@@ -8504,7 +8583,7 @@ async def _feishu_read_doc(agent_id: uuid.UUID, arguments: dict) -> str:
             return "OK: Document is empty or content is unavailable."
         return f"OK: Document Content:\n{content}"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 async def _feishu_create_doc(agent_id: uuid.UUID, arguments: dict) -> str:
     """Create a new blank Feishu Docx."""
@@ -8513,7 +8592,7 @@ async def _feishu_create_doc(agent_id: uuid.UUID, arguments: dict) -> str:
     
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
         
     from app.services.feishu_service import feishu_service
     try:
@@ -8528,23 +8607,23 @@ async def _feishu_create_doc(agent_id: uuid.UUID, arguments: dict) -> str:
         url = await _get_feishu_tenant_doc_url(tenant_token, doc_id)
         return f"OK: Document created perfectly. Document ID: {doc_id}\nURL: {url}"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 async def _feishu_append_doc(agent_id: uuid.UUID, arguments: dict) -> str:
     """Append text to the bottom of a Feishu Docx."""
     url = arguments.get("url", "")
     content = arguments.get("content", "")
     if not content:
-        return "Failed: Content to append cannot be empty."
+        return "❌Content to append cannot be empty."
         
     parsed = _parse_feishu_url(url)
     doc_token = await _resolve_docx_document_token(agent_id, parsed)
     if not doc_token:
-        return "Failed: Could not extract Document token from the URL."
+        return "❌Could not extract Document token from the URL."
         
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
         
     from app.services.feishu_service import feishu_service
     try:
@@ -8555,7 +8634,7 @@ async def _feishu_append_doc(agent_id: uuid.UUID, arguments: dict) -> str:
         
         return "OK: Content appended successfully to the end of the document."
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 # ─── Feishu Wiki Tools ───────────────────────────────────────────────────────
 
@@ -8667,12 +8746,12 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
         document_token = parsed.get("document_token", parsed.get("wiki_token", ""))
         
     if not document_token:
-        return "Failed: Missing required argument 'document_token'"
+        return "❌Missing required argument 'document_token'"
     max_chars = min(int(arguments.get("max_chars", 6000)), 20000)
 
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
 
     from app.services.feishu_service import feishu_service
     tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
@@ -8704,17 +8783,17 @@ async def _feishu_doc_read(agent_id: uuid.UUID, arguments: dict) -> str:
 
         return f"📄 **Document content** (`{document_token}`):\n\n{content}{truncated}{wiki_hint}"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
     title = arguments.get("title", "").strip()
     if not title:
-        return "Failed: Missing required argument 'title'"
+        return "❌Missing required argument 'title'"
 
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
 
     folder_token = (arguments.get("folder_token") or "").strip()
     wiki_space_id = (arguments.get("wiki_space_id") or "").strip()
@@ -8828,7 +8907,7 @@ async def _feishu_doc_create(agent_id: uuid.UUID, arguments: dict) -> str:
             f"下一步：调用 feishu_doc_append(document_token=\"{doc_token}\", content=\"...\") 写入正文内容。"
         )
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 def _parse_inline_markdown(text: str) -> list[dict]:
@@ -9005,13 +9084,13 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
         
     content = arguments.get("content", "").strip()
     if not document_token:
-        return "Failed: Missing required argument 'document_token'"
+        return "❌Missing required argument 'document_token'"
     if not content:
-        return "Failed: Missing required argument 'content'"
+        return "❌Missing required argument 'content'"
 
     app_id, app_secret = await _get_feishu_credentials(agent_id)
     if not app_id or not app_secret:
-        return "Failed: Feishu app credentials not configured for this agent."
+        return "❌Feishu app credentials not configured for this agent."
 
     from app.services.feishu_service import feishu_service
     tenant_token = await feishu_service.get_tenant_access_token(app_id, app_secret)
@@ -9055,7 +9134,7 @@ async def _feishu_doc_append(agent_id: uuid.UUID, arguments: dict) -> str:
             f"🔗 文档直链（原文发给用户，勿修改）：{doc_url}"
         )
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 # ─── Feishu Drive Share (All File Types) ────────────────────────────────────────
@@ -9732,7 +9811,7 @@ async def _feishu_approval_create(agent_id: uuid.UUID, arguments: dict) -> str:
         instance_code = resp.get("data", {}).get("instance_code", "")
         return f"✅ 审批发起成功！\n审批实例 ID: `{instance_code}`"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -9757,7 +9836,7 @@ async def _feishu_approval_query(agent_id: uuid.UUID, arguments: dict) -> str:
         
         return f"✅ 查询完成。共发现 {len(instance_codes)} 个符合条件的审批实例。\n实例列表: {instance_codes}"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
@@ -9779,7 +9858,7 @@ async def _feishu_approval_get(agent_id: uuid.UUID, arguments: dict) -> str:
         import json
         return f"✅ 审批实例查询结果:\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
     except Exception as e:
-        return f"Failed: {str(e)[:300]}"
+        return f"❌{str(e)[:300]}"
 
 
 # ─── Feishu User Search ───────────────────────────────────────────────────────
@@ -9954,7 +10033,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
 
     path = arguments.get("path", "")
     if not path:
-        return "Missing required argument 'path'"
+        return "❌ Missing required argument'path'"
 
     # Validate file extension
     if not path.lower().endswith((".html", ".htm")):
@@ -9965,7 +10044,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
     if not str(full_path).startswith(str(ws.resolve())):
         return "Path traversal not allowed"
     if not full_path.exists() or not full_path.is_file():
-        return f"File not found: {path}"
+        return f"❌ File not found: {path}"
 
     # Extract title from HTML
     try:
@@ -10003,7 +10082,7 @@ async def _publish_page(agent_id: uuid.UUID, user_id: uuid.UUID, ws: Path, argum
             db.add(page)
             await db.commit()
     except Exception as e:
-        return f"Failed to publish: {e}"
+        return f"❌ Failed to publish: {e}"
 
     # Build public URL.
     # _publish_page is called from a tool handler — there is no HTTP request
@@ -10060,7 +10139,7 @@ async def _list_published_pages(agent_id: uuid.UUID) -> str:
             lines.append("")
         return "\n".join(lines)
     except Exception as e:
-        return f"Failed to list pages: {e}"
+        return f"❌ Failed to list pages: {e}"
 
 
 # ─── AgentBay Tool Handlers ─────────────────────────────────────
@@ -10348,7 +10427,7 @@ async def _search_clawhub(agent_id: uuid.UUID, arguments: dict) -> str:
     import httpx
     query = arguments.get("query", "").strip()
     if not query:
-        return "Missing required argument 'query'"
+        return "❌ Missing required argument'query'"
 
     # Resolve tenant ClawHub API key
     from app.api.skills import _get_clawhub_key
@@ -10464,7 +10543,12 @@ async def _install_skill(agent_id: uuid.UUID, ws: Path, arguments: dict) -> str:
             if not str(file_path).startswith(str(base.resolve())):
                 continue  # safety: skip path traversal
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(f["content"], encoding="utf-8")
+            content = f["content"]
+            if content.startswith("__B64__:"):
+                import base64 as _b64
+                file_path.write_bytes(_b64.b64decode(content[7:]))
+            else:
+                file_path.write_text(content, encoding="utf-8")
             written.append(f["path"])
 
         return f"✅ Skill '{folder_name}' installed successfully ({len(written)} files written to skills/{folder_name}/).\n\nFiles: {', '.join(written)}"
@@ -10486,7 +10570,7 @@ async def _agentbay_browser_extract(agent_id: Optional[uuid.UUID], ws: Path, arg
     selector = arguments.get("selector", "")
 
     if not instruction.strip():
-        return "Missing required argument 'instruction'"
+        return "❌ Missing required argument'instruction'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10519,7 +10603,7 @@ async def _agentbay_browser_observe(agent_id: Optional[uuid.UUID], ws: Path, arg
     selector = arguments.get("selector", "")
 
     if not instruction.strip():
-        return "Missing required argument 'instruction'"
+        return "❌ Missing required argument'instruction'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10560,9 +10644,9 @@ async def _agentbay_browser_login(agent_id: Optional[uuid.UUID], ws: Path, argum
     login_config = arguments.get("login_config", "")
 
     if not url.strip():
-        return "Missing required argument 'url'"
+        return "❌ Missing required argument'url'"
     if not login_config.strip():
-        return "Missing required argument 'login_config' (JSON string with api_key + skill_id)"
+        return "❌ Missing required argument'login_config' (JSON string with api_key + skill_id)"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10593,7 +10677,7 @@ async def _agentbay_command_exec(agent_id: Optional[uuid.UUID], ws: Path, argume
     cwd = arguments.get("cwd", "")
 
     if not command.strip():
-        return "Missing required argument 'command'"
+        return "❌ Missing required argument'command'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10755,7 +10839,7 @@ async def _agentbay_computer_input_text(agent_id: Optional[uuid.UUID], ws: Path,
 
     text = arguments.get("text", "")
     if not text:
-        return "Missing required argument 'text'"
+        return "❌ Missing required argument'text'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10782,7 +10866,7 @@ async def _agentbay_computer_press_keys(agent_id: Optional[uuid.UUID], ws: Path,
     hold = arguments.get("hold", False)
 
     if not keys:
-        return "Missing required argument 'keys'"
+        return "❌ Missing required argument'keys'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10911,7 +10995,7 @@ async def _agentbay_computer_start_app(agent_id: Optional[uuid.UUID], ws: Path, 
     work_dir = arguments.get("work_dir", "")
 
     if not cmd.strip():
-        return "Missing required argument 'cmd'"
+        return "❌ Missing required argument'cmd'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -10995,7 +11079,7 @@ async def _agentbay_computer_activate_window(agent_id: Optional[uuid.UUID], ws: 
 
     window_id = arguments.get("window_id")
     if window_id is None:
-        return "Missing required argument 'window_id'"
+        return "❌ Missing required argument'window_id'"
 
     try:
         _session_id = arguments.pop("_session_id", "")
@@ -11029,7 +11113,7 @@ async def _agentbay_computer_list_visible_apps(agent_id: Optional[uuid.UUID], ws
                 return "No visible applications running."
             apps_str = json.dumps(apps, ensure_ascii=False, indent=2)
             return f"Visible applications ({len(apps)}):\n\n{apps_str[:3000]}"
-        return f"Failed to list applications: {result.get('error_message', 'Unknown error')}"
+        return f"❌ Failed to list applications: {result.get('error_message', 'Unknown error')}"
     except RuntimeError as e:
         return f"{str(e)}"
     except Exception as e:
@@ -11060,7 +11144,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
     session_id = arguments.pop("_session_id", "")
 
     if not all([from_type, from_path, to_type, to_path]):
-        return "Missing required parameters: from_type, from_path, to_type, to_path"
+        return "❌ Missing required parameters: from_type, from_path, to_type, to_path"
 
     # Reject no-op transfers
     if from_type == "workspace" and to_type == "workspace":
@@ -11086,7 +11170,7 @@ async def _agentbay_file_transfer(agent_id: Optional[uuid.UUID], ws: Path, argum
                 return err
             import os
             if not os.path.exists(local_path):
-                return f"File not found in workspace: {from_path}"
+                return f"❌ File not found in workspace: {from_path}"
             client = await get_agentbay_client_for_agent(agent_id, to_type, session_id=session_id)
             result = await asyncio.to_thread(
                 client._session.file_system.upload_file,
@@ -11584,7 +11668,7 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
             return json.dumps({
                 "success": False,
                 "error": "action is required",
-                "valid_actions": ["create_document", "get_document_info", "get_document_text", "copy_document", "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace", "create_custom_style", "format_text", "set_cell_alignment", "merge_cells", "protect_document", "unprotect_document", "get_usage_guide", "find_text", "convert_to_pdf"]
+                "valid_actions": ["create_document", "get_document_info", "get_document_text", "copy_document", "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace", "create_custom_style", "format_text", "set_cell_alignment", "merge_cells", "protect_document", "unprotect_document", "get_usage_guide", "find_text", "convert_to_pdf", "get_all_comments", "get_comments_by_author", "get_comments_for_paragraph"]
             }, ensure_ascii=False)
 
         # Document Operations
@@ -11705,6 +11789,21 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
             result = await extended_document_tools.convert_to_pdf(filename)
             return f"Document converted to PDF: {result}"
 
+        # Comment Operations
+        elif action == "get_all_comments":
+            result = await comment_tools.get_all_comments(filename)
+            return result
+
+        elif action == "get_comments_by_author":
+            author = arguments.get("author", "")
+            result = await comment_tools.get_comments_by_author(filename, author)
+            return result
+
+        elif action == "get_comments_for_paragraph":
+            paragraph_index = arguments.get("paragraph_index", 0)
+            result = await comment_tools.get_comments_for_paragraph(filename, paragraph_index)
+            return result
+
         else:
             return json.dumps({
                 "success": False,
@@ -11714,7 +11813,8 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
                     "add_paragraph", "add_heading", "add_table", "add_page_break", "search_and_replace",
                     "create_custom_style", "format_text", "set_cell_alignment", "merge_cells",
                     "protect_document", "unprotect_document",
-                    "get_usage_guide", "find_text", "convert_to_pdf"
+                    "get_usage_guide", "find_text", "convert_to_pdf",
+                    "get_all_comments", "get_comments_by_author", "get_comments_for_paragraph"
                 ]
             }, ensure_ascii=False, indent=2)
 
@@ -11732,33 +11832,33 @@ async def word_advanced(arguments: dict, agent_id: uuid.UUID | None = None, crea
 
 
 async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> str:
-    """统一 Excel 处理工具 - 整合了原有的 10 个 Excel 工具"""
+    """统一 Excel 处理工具"""
     import os
     from pathlib import Path
     from app.config import get_settings
+    import re as _re
 
     settings = get_settings()
 
-    # 获取 agent 的根目录（不包含 workspace 子目录）
     if agent_id:
         agent_root = Path(settings.AGENT_DATA_DIR) / str(agent_id)
         agent_root.mkdir(parents=True, exist_ok=True)
     else:
-        # 如果没有 agent_id，使用临时目录
         import tempfile
         agent_root = Path(tempfile.gettempdir())
 
-    # 切换到 agent 根目录（让 agent 自己决定是否使用 workspace 子目录）
     original_cwd = os.getcwd()
     os.chdir(str(agent_root))
 
     try:
         import openpyxl
         from openpyxl import load_workbook
+        from openpyxl.utils import column_index_from_string, range_boundaries
         import json as jsonlib
 
         action = arguments.get("action")
-        filename = arguments.get("filename", "")
+        # Accept both "filename" and "file_path" parameter names
+        filename = arguments.get("filename", "") or arguments.get("file_path", "")
 
         # Auto-correct filename: workspace/ prefix → full directory search
         if filename and not os.path.exists(filename) and not filename.startswith("workspace/"):
@@ -11767,7 +11867,6 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
                 filename = ws_path
                 arguments["filename"] = filename
             else:
-                # Full search: find basename anywhere in agent directory
                 basename = os.path.basename(filename)
                 if basename:
                     for match in agent_root.resolve().rglob(basename):
@@ -11779,170 +11878,318 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
                             arguments["filename"] = filename
                             break
 
+        # Action aliases: tool definition uses short names, implementation uses long names
+        ACTION_ALIASES = {
+            "create": "create_workbook",
+            "read_range": "read_range",
+            "read_cell": "read_cell",
+            "write_range": "write_range",
+            "write_cell": "write_cell",
+            "set_formula": "set_formula",
+            "rename_sheet": "rename_sheet",
+        }
+        effective_action = ACTION_ALIASES.get(action, action)
+
+        VALID_ACTIONS = [
+            "create", "create_workbook", "read_workbook", "read_range", "read_cell",
+            "write_data", "write_range", "write_cell", "set_formula",
+            "add_sheet", "list_sheets", "delete_sheet", "rename_sheet",
+            "read_comments",
+        ]
+
         if not action:
             return json.dumps({
                 "success": False,
                 "error": "action is required",
-                "valid_actions": ["create_workbook", "read_workbook", "write_data", "add_sheet", "list_sheets", "delete_sheet"]
+                "valid_actions": VALID_ACTIONS,
             }, ensure_ascii=False)
 
-        # 创建工作簿
-        if action == "create_workbook":
+        if effective_action not in ("create_workbook",) and not filename:
+            return json.dumps({"success": False, "error": "filename (or file_path) is required"}, ensure_ascii=False)
+
+        # Helper: resolve file and load workbook
+        def _loadwb(data_only=False):
+            if not filename or not os.path.exists(filename):
+                hint = _build_not_found_hint(Path(str(agent_root)), filename or "")
+                return None, hint
+            return load_workbook(filename, data_only=data_only), None
+
+        def _fmt_cell(v):
+            if v is None:
+                return ""
+            if isinstance(v, float) and v.is_integer():
+                return str(int(v))
+            return str(v)
+
+        def _read_threaded_comments(xlsx_path: str, sheet_filter: str | None = None, wb_obj=None) -> list:
+            """解析新版线程批注 (Threaded Comments)，兼容无此 XML 的情况"""
+            import zipfile
+            import xml.etree.ElementTree as ET
+            import re as _re
+
+            results = []
+            if not xlsx_path or not os.path.exists(xlsx_path):
+                return results
+
+            def _lookup_cell_value(sname: str, ref: str) -> str:
+                if not wb_obj or not ref:
+                    return ""
+                try:
+                    ws = wb_obj[sname] if sname in wb_obj.sheetnames else None
+                    if ws:
+                        return _fmt_cell(ws[ref].value)
+                except Exception:
+                    pass
+                return ""
+
+            try:
+                with zipfile.ZipFile(xlsx_path, "r") as zf:
+                    # 建立 sheetId -> sheet名 映射
+                    sheet_id_to_name: dict[str, str] = {}
+                    try:
+                        wb_xml = zf.read("xl/workbook.xml")
+                        wb_root = ET.fromstring(wb_xml)
+                        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+                        sheets = wb_root.findall(".//s:sheet", ns)
+                        for idx, s in enumerate(sheets, 1):
+                            sheet_id_to_name[str(idx)] = s.get("name", f"Sheet{idx}")
+                    except Exception:
+                        pass
+
+                    # 遍历 threadedComment XML 文件
+                    tc_files = [n for n in zf.namelist() if n.startswith("xl/threadedComment/") and n.endswith(".xml")]
+                    for tc_file in tc_files:
+                        m = _re.search(r"threadedComment(\d+)", tc_file)
+                        if not m:
+                            continue
+                        sheet_num = m.group(1)
+                        sname = sheet_id_to_name.get(sheet_num, f"Sheet{sheet_num}")
+                        if sheet_filter and sname != sheet_filter:
+                            continue
+
+                        try:
+                            tc_xml = zf.read(tc_file)
+                            tc_root = ET.fromstring(tc_xml)
+                            # 构建作者 id -> 名字 映射
+                            author_map: dict[str, str] = {}
+                            for p in tc_root.findall(".//{http://schemas.microsoft.com/office/spreadsheetml/2017/threadedcomments}person"):
+                                pid = p.get("id", "")
+                                disp = p.get("displayName", "")
+                                author_map[pid] = disp
+
+                            tc_ns = {"tc": "http://schemas.microsoft.com/office/spreadsheetml/2017/threadedcomments"}
+                            for tc in tc_root.findall(".//tc:threadedComment", tc_ns):
+                                ref = tc.get("ref", "")
+                                author_id = tc.get("personId", "")
+                                dt = tc.get("dt", "")
+                                # 提取文本
+                                text_elem = tc.find("tc:text", tc_ns)
+                                text = text_elem.text if text_elem is not None and text_elem.text else ""
+                                results.append({
+                                    "sheet": sname,
+                                    "cell": ref,
+                                    "cell_value": _lookup_cell_value(sname, ref),
+                                    "type": "threaded_comment",
+                                    "author": author_map.get(author_id, ""),
+                                    "text": text.strip(),
+                                    "date": dt,
+                                })
+                        except Exception:
+                            continue
+            except (zipfile.BadZipFile, KeyError):
+                pass
+            return results
+
+        # ── create / create_workbook ──
+        if effective_action == "create_workbook":
             filename = filename or "new_workbook.xlsx"
             wb = openpyxl.Workbook()
             wb.save(filename)
-            return f"Workbook {filename} created successfully"
+            return f"✅ Workbook {filename} created successfully"
 
-        # 读取工作簿
-        elif action == "read_workbook":
-            if not filename or not os.path.exists(filename):
-                hint = _build_not_found_hint(Path(str(agent_root)), filename or "")
-                return json.dumps({"success": False, "error": hint}, ensure_ascii=False)
-
-            wb = load_workbook(filename, data_only=True)
+        # ── read_workbook (full read) ──
+        elif effective_action == "read_workbook":
+            wb, err = _loadwb(data_only=True)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
             result = {}
+            for sn in wb.sheetnames:
+                ws = wb[sn]
+                result[sn] = [[_fmt_cell(c) for c in row] for row in ws.iter_rows(values_only=True)]
+            return json.dumps({"success": True, "filename": filename, "sheets": result}, ensure_ascii=False, indent=2)
 
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                sheet_data = []
+        # ── read_cell ──
+        elif effective_action == "read_cell":
+            cell_ref = arguments.get("cell", "")
+            sheet_name = arguments.get("sheet_name")
+            wb, err = _loadwb(data_only=True)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+            val = ws[cell_ref].value if cell_ref else None
+            return json.dumps({"success": True, "cell": cell_ref, "value": _fmt_cell(val)}, ensure_ascii=False)
 
-                for row in ws.iter_rows(values_only=True):
-                    row_data = []
-                    for cell in row:
-                        if cell is None:
-                            row_data.append("")
-                        elif isinstance(cell, float):
-                            # 智能格式化数字：移除不必要的小数
-                            if cell.is_integer():
-                                row_data.append(str(int(cell)))
-                            else:
-                                row_data.append(str(cell))
-                        else:
-                            row_data.append(str(cell))
-                    sheet_data.append(row_data)
+        # ── read_range ──
+        elif effective_action == "read_range":
+            cell_range = arguments.get("range", "")
+            sheet_name = arguments.get("sheet_name")
+            wb, err = _loadwb(data_only=True)
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+            if cell_range:
+                rows = [[_fmt_cell(c.value) for c in row] for row in ws[cell_range]]
+            else:
+                rows = [[_fmt_cell(c) for c in row] for row in ws.iter_rows(values_only=True)]
+            return json.dumps({"success": True, "range": cell_range or "all", "data": rows}, ensure_ascii=False)
 
-                result[sheet_name] = sheet_data
-
-            return json.dumps({
-                "success": True,
-                "filename": filename,
-                "sheets": result
-            }, ensure_ascii=False, indent=2)
-
-        # 写入数据
-        elif action == "write_data":
-            if not filename:
-                return json.dumps({
-                    "success": False,
-                    "error": "filename is required"
-                }, ensure_ascii=False)
-
+        # ── write_cell ──
+        elif effective_action == "write_cell":
+            cell_ref = arguments.get("cell", "")
+            value = arguments.get("value")
             sheet_name = arguments.get("sheet_name", "Sheet")
-            data = arguments.get("data", [])
-            start_row = arguments.get("start_row", 1)
-            start_col = arguments.get("start_col", 1)
-
-            # 加载或创建工作簿
+            if not cell_ref:
+                return json.dumps({"success": False, "error": "cell is required (e.g. 'A1')"}, ensure_ascii=False)
             if os.path.exists(filename):
                 wb = load_workbook(filename)
             else:
                 wb = openpyxl.Workbook()
+            ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+            ws[cell_ref] = value
+            wb.save(filename)
+            return f"✅ Written {value!r} to {cell_ref} in {filename}"
 
-            # 获取或创建工作表
-            if sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
+        # ── write_data / write_range ──
+        elif effective_action in ("write_data", "write_range"):
+            sheet_name = arguments.get("sheet_name", "Sheet")
+            data = arguments.get("data", [])
+            start_row = arguments.get("start_row", 1)
+            start_col = arguments.get("start_col", 1)
+            cell_range = arguments.get("range", "")
+            if os.path.exists(filename):
+                wb = load_workbook(filename)
             else:
-                ws = wb.create_sheet(sheet_name)
-
-            # 写入数据
+                wb = openpyxl.Workbook()
+            ws = wb[sheet_name] if sheet_name in wb.sheetnames else (wb.create_sheet(sheet_name) if sheet_name != "Sheet" else wb.active)
+            if cell_range:
+                # Parse range and write data into it
+                try:
+                    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+                except Exception:
+                    return json.dumps({"success": False, "error": f"Invalid range: {cell_range}"}, ensure_ascii=False)
+                start_row = min_row
+                start_col = min_col
             for row_idx, row_data in enumerate(data):
                 for col_idx, cell_value in enumerate(row_data):
                     ws.cell(row=start_row + row_idx, column=start_col + col_idx, value=cell_value)
-
             wb.save(filename)
-            return f"Data written to {filename} (sheet: {sheet_name})"
+            return f"✅ Data written to {filename} (sheet: {sheet_name})"
 
-        # 添加工作表
-        elif action == "add_sheet":
-            if not filename:
-                return json.dumps({
-                    "success": False,
-                    "error": "filename is required"
-                }, ensure_ascii=False)
+        # ── set_formula ──
+        elif effective_action == "set_formula":
+            cell_ref = arguments.get("cell", "")
+            formula = arguments.get("formula", "")
+            sheet_name = arguments.get("sheet_name", "Sheet")
+            if not cell_ref or not formula:
+                return json.dumps({"success": False, "error": "cell and formula are required"}, ensure_ascii=False)
+            if not formula.startswith("="):
+                formula = "=" + formula
+            if os.path.exists(filename):
+                wb = load_workbook(filename)
+            else:
+                wb = openpyxl.Workbook()
+            ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
+            ws[cell_ref] = formula
+            wb.save(filename)
+            return f"✅ Formula {formula} set in {cell_ref} of {filename}"
 
+        # ── add_sheet ──
+        elif effective_action == "add_sheet":
             sheet_name = arguments.get("sheet_name", "Sheet1")
-
             wb = load_workbook(filename) if os.path.exists(filename) else openpyxl.Workbook()
-
             if sheet_name in wb.sheetnames:
-                return json.dumps({
-                    "success": False,
-                    "error": f"Sheet {sheet_name} already exists"
-                }, ensure_ascii=False)
-
+                return json.dumps({"success": False, "error": f"Sheet '{sheet_name}' already exists. Existing: {wb.sheetnames}"}, ensure_ascii=False)
             wb.create_sheet(sheet_name)
             wb.save(filename)
+            return f"✅ Sheet '{sheet_name}' added to {filename}"
 
-            return f"Sheet {sheet_name} added to {filename}"
+        # ── list_sheets ──
+        elif effective_action == "list_sheets":
+            wb, err = _loadwb()
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            return json.dumps({"success": True, "filename": filename, "sheets": wb.sheetnames}, ensure_ascii=False, indent=2)
 
-        # 获取工作表列表
-        elif action == "list_sheets":
-            if not filename or not os.path.exists(filename):
-                return json.dumps({
-                    "success": False,
-                    "error": f"File {filename} not found"
-                }, ensure_ascii=False)
+        # ── delete_sheet ──
+        elif effective_action == "delete_sheet":
+            sheet_name = arguments.get("sheet_name")
+            if not sheet_name:
+                return json.dumps({"success": False, "error": "sheet_name is required"}, ensure_ascii=False)
+            wb, err = _loadwb()
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            if sheet_name not in wb.sheetnames:
+                return json.dumps({"success": False, "error": f"Sheet '{sheet_name}' not found. Available: {wb.sheetnames}"}, ensure_ascii=False)
+            if len(wb.sheetnames) == 1:
+                return json.dumps({"success": False, "error": "Cannot delete the only sheet"}, ensure_ascii=False)
+            wb.remove(wb[sheet_name])
+            wb.save(filename)
+            return f"✅ Sheet '{sheet_name}' deleted from {filename}"
 
-            wb = load_workbook(filename)
+        # ── rename_sheet ──
+        elif effective_action == "rename_sheet":
+            old_name = arguments.get("old_name", arguments.get("sheet_name", ""))
+            new_name = arguments.get("new_name", "")
+            if not old_name or not new_name:
+                return json.dumps({"success": False, "error": "old_name (or sheet_name) and new_name are required"}, ensure_ascii=False)
+            wb, err = _loadwb()
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            if old_name not in wb.sheetnames:
+                return json.dumps({"success": False, "error": f"Sheet '{old_name}' not found. Available: {wb.sheetnames}"}, ensure_ascii=False)
+            ws = wb[old_name]
+            ws.title = new_name
+            wb.save(filename)
+            return f"✅ Sheet renamed from '{old_name}' to '{new_name}' in {filename}"
+
+        # ── read_comments ──
+        elif effective_action == "read_comments":
+            wb, err = _loadwb()
+            if err:
+                return json.dumps({"success": False, "error": err}, ensure_ascii=False)
+            sheet_name = arguments.get("sheet_name")
+            comments = []
+            # 旧版注释（Notes）— openpyxl cell.comment
+            for ws_name in wb.sheetnames:
+                if sheet_name and ws_name != sheet_name:
+                    continue
+                ws = wb[ws_name]
+                for row in ws.iter_rows():
+                    for cell in row:
+                        if cell.comment:
+                            comments.append({
+                                "sheet": ws_name,
+                                "cell": cell.coordinate,
+                                "cell_value": _fmt_cell(cell.value),
+                                "type": "note",
+                                "author": cell.comment.author or "",
+                                "text": cell.comment.text or "",
+                            })
+            # 新版线程批注（Threaded Comments）— 解析 ZIP 内 XML
+            threaded = _read_threaded_comments(filename, sheet_name, wb)
+            comments.extend(threaded)
             return json.dumps({
                 "success": True,
                 "filename": filename,
-                "sheets": wb.sheetnames
+                "total_comments": len(comments),
+                "comments": comments,
             }, ensure_ascii=False, indent=2)
-
-        # 删除工作表
-        elif action == "delete_sheet":
-            if not filename or not os.path.exists(filename):
-                return json.dumps({
-                    "success": False,
-                    "error": f"File {filename} not found"
-                }, ensure_ascii=False)
-
-            sheet_name = arguments.get("sheet_name")
-
-            if not sheet_name:
-                return json.dumps({
-                    "success": False,
-                    "error": "sheet_name is required"
-                }, ensure_ascii=False)
-
-            wb = load_workbook(filename)
-
-            if sheet_name not in wb.sheetnames:
-                return json.dumps({
-                    "success": False,
-                    "error": f"Sheet {sheet_name} not found"
-                }, ensure_ascii=False)
-
-            if len(wb.sheetnames) == 1:
-                return json.dumps({
-                    "success": False,
-                    "error": "Cannot delete the only sheet"
-                }, ensure_ascii=False)
-
-            wb.remove(wb[sheet_name])
-            wb.save(filename)
-
-            return f"Sheet {sheet_name} deleted from {filename}"
 
         else:
             return json.dumps({
                 "success": False,
                 "error": f"Unknown action: {action}",
-                "available_actions": [
-                    "create_workbook", "read_workbook", "write_data", "add_sheet",
-                    "list_sheets", "delete_sheet"
-                ]
+                "valid_actions": VALID_ACTIONS,
             }, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -11954,7 +12201,6 @@ async def excel_advanced(arguments: dict, agent_id: uuid.UUID | None = None) -> 
         }, ensure_ascii=False, indent=2)
 
     finally:
-        # 恢复原始工作目录
         os.chdir(original_cwd)
 
 

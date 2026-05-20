@@ -1728,7 +1728,7 @@ BUILTIN_TOOLS = [
     {
         "name": "excel_advanced",
         "display_name": "Excel: Advanced Toolkit",
-        "description": "Unified Excel manipulation toolkit. Create, read, write, format, and manage Excel workbooks with a single tool. Supports 10 operations: create workbook, list/add/delete/rename sheets, read/write cells and ranges, set formulas. Call without parameters to see usage guide.",
+        "description": "Unified Excel manipulation toolkit. Create, read, write, format, and manage Excel workbooks with a single tool. Supports 12 operations: create workbook, list/add/delete/rename sheets, read/write cells and ranges, set formulas, read comments (both legacy notes and threaded comments). Use read_comments action to extract all annotations with cell references, authors, and text content.",
         "category": "file",
         "icon": "📊",
         "is_default": True,
@@ -1737,7 +1737,7 @@ BUILTIN_TOOLS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list_sheets", "add_sheet", "read_cell", "write_cell", "read_range", "write_range", "set_formula", "delete_sheet", "rename_sheet"],
+                    "enum": ["create", "list_sheets", "add_sheet", "read_cell", "write_cell", "read_range", "write_range", "set_formula", "delete_sheet", "rename_sheet", "read_comments"],
                     "description": "Operation to perform. Call without action to see full usage guide with examples."
                 },
                 "file_path": {"type": "string", "description": "Excel file path relative to workspace (e.g., 'reports/data.xlsx')"},
@@ -1759,7 +1759,7 @@ BUILTIN_TOOLS = [
     {
         "name": "word_advanced",
         "display_name": "Word: Advanced Toolkit",
-        "description": "Unified Word document manipulation toolkit. Create, read, edit, format, and manage Word documents with a single tool. Supports 50+ operations: document management, content editing, formatting, tables, footnotes, comments, and more. Call without parameters to see usage guide.",
+        "description": "Unified Word document manipulation toolkit. Create, read, edit, format, and manage Word documents with a single tool. Supports 50+ operations: document management, content editing, formatting, tables, footnotes, comments, and more. Comment operations: get_all_comments (extract all comments with authors and dates), get_comments_by_author (filter by author), get_comments_for_paragraph (comments on a specific paragraph). Call without parameters to see usage guide.",
         "category": "file",
         "icon": "📝",
         "is_default": True,

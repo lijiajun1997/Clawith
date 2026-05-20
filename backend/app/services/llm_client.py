@@ -156,7 +156,7 @@ class LLMStreamChunk:
 
     content: str = ""
     reasoning_content: str = ""
-    tool_call: dict | None = None
+    tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
     is_finished: bool = False
     usage: dict | None = None
@@ -379,11 +379,9 @@ class OpenAICompatibleClient(LLMClient):
                 text, in_think, tag_buffer
             )
 
-        # Tool calls
+        # Tool calls — keep ALL deltas from this chunk
         if delta.get("tool_calls"):
-            for tc_delta in delta["tool_calls"]:
-                chunk.tool_call = tc_delta
-                break  # Return one at a time
+            chunk.tool_calls = delta["tool_calls"]
 
         return chunk, in_think, tag_buffer, json_buffer
 
@@ -530,22 +528,23 @@ class OpenAICompatibleClient(LLMClient):
                             if on_thinking:
                                 await on_thinking(chunk.reasoning_content)
 
-                        if chunk.tool_call:
-                            idx = chunk.tool_call.get("index", 0)
-                            while len(tool_calls_data) <= idx:
-                                tool_calls_data.append({"id": "", "function": {"name": "", "arguments": ""}})
-                            tc = tool_calls_data[idx]
-                            if chunk.tool_call.get("id"):
-                                tc["id"] = chunk.tool_call["id"]
-                            fn_delta = chunk.tool_call.get("function", {})
-                            if fn_delta.get("name"):
-                                tc["function"]["name"] += fn_delta["name"]
-                            if fn_delta.get("arguments") is not None:
-                                arg_chunk = fn_delta["arguments"]
-                                if isinstance(arg_chunk, dict):
-                                    tc["function"]["arguments"] = json.dumps(arg_chunk, ensure_ascii=False)
-                                else:
-                                    tc["function"]["arguments"] += str(arg_chunk)
+                        if chunk.tool_calls:
+                            for tc_delta in chunk.tool_calls:
+                                idx = tc_delta.get("index", 0)
+                                while len(tool_calls_data) <= idx:
+                                    tool_calls_data.append({"id": "", "function": {"name": "", "arguments": ""}})
+                                tc = tool_calls_data[idx]
+                                if tc_delta.get("id"):
+                                    tc["id"] = tc_delta["id"]
+                                fn_delta = tc_delta.get("function", {})
+                                if fn_delta.get("name"):
+                                    tc["function"]["name"] += fn_delta["name"]
+                                if fn_delta.get("arguments") is not None:
+                                    arg_chunk = fn_delta["arguments"]
+                                    if isinstance(arg_chunk, dict):
+                                        tc["function"]["arguments"] = json.dumps(arg_chunk, ensure_ascii=False)
+                                    else:
+                                        tc["function"]["arguments"] += str(arg_chunk)
 
                         if chunk.usage:
                             final_usage = chunk.usage

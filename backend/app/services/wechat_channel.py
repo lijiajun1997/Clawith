@@ -707,13 +707,23 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
             "name": f"WeChat User {from_user_id[:8]}",
             "external_id": from_user_id,
         }
-        platform_user = await channel_user_service.resolve_channel_user(
-            db=db, agent=agent_obj, channel_type="wechat",
-            external_user_id=from_user_id, extra_info=extra_info,
-        )
-        platform_user_id = platform_user.id
+
+        # Parallel: resolve user + detect magic command
         conv_key = str(msg.get("session_id") or from_user_id).strip()
         conv_id = f"wechat_{conv_key}"
+
+        platform_user, (cmd_handled, cmd_reply, cmd_rewritten) = await asyncio.gather(
+            channel_user_service.resolve_channel_user(
+                db=db, agent=agent_obj, channel_type="wechat",
+                external_user_id=from_user_id, extra_info=extra_info,
+            ),
+            detect_and_handle_command(
+                db, agent_id, user_text, conv_id,
+                tenant_id=agent_obj.tenant_id,
+                current_model_id=agent_obj.primary_model_id,
+            ),
+        )
+        platform_user_id = platform_user.id
 
         # ── Magic command detection (/model, /stop, /skill) ──
         cmd_handled, cmd_reply, cmd_rewritten = await detect_and_handle_command(
@@ -808,23 +818,27 @@ async def _process_wechat_message(agent_id: uuid.UUID, msg: dict[str, Any], conf
 
         _cfs_token = _cfs.set(_wechat_file_sender)
 
-        # SDK-standard typing sequence: ack → typing(1) → LLM → typing(2) → reply
+        # Fire ACK + typing in background — don't block LLM startup
         _ilink_uid = str((config.extra_config or {}).get("ilink_user_id") or "").strip()
 
-        try:
-            await send_wechat_text_message(
-                token=_token, base_url=_base_url, to_user_id=from_user_id,
-                context_token=context_token, text="✓ 已收到，正在思考...", route_tag=_route_tag,
-            )
-        except Exception as _ack_err:
-            logger.warning(f"[WeChat] Failed to send ack message: {_ack_err}")
+        async def _send_ack_and_typing():
+            try:
+                await send_wechat_text_message(
+                    token=_token, base_url=_base_url, to_user_id=from_user_id,
+                    context_token=context_token, text="✓ 已收到，正在思考...", route_tag=_route_tag,
+                )
+            except Exception as _ack_err:
+                logger.warning(f"[WeChat] Failed to send ack message: {_ack_err}")
+            if _ilink_uid:
+                try:
+                    await send_wechat_typing(
+                        token=_token, base_url=_base_url, ilink_user_id=_ilink_uid,
+                        context_token=context_token, route_tag=_route_tag,
+                    )
+                except Exception as _typing_err:
+                    logger.warning(f"[WeChat] Failed to send typing: {_typing_err}")
 
-        # Start typing indicator
-        if _ilink_uid:
-            await send_wechat_typing(
-                token=_token, base_url=_base_url, ilink_user_id=_ilink_uid,
-                context_token=context_token, route_tag=_route_tag,
-            )
+        asyncio.create_task(_send_ack_and_typing())
 
         async def _wechat_on_tool_call(evt: dict):
             """Persist tool_call records so Web UI can display them."""

@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, or_, and_
+from sqlalchemy import func, select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -70,9 +70,9 @@ class RegistrationService:
         """
         conflicts = []
 
-        # 1. Check Global Identity Conflicts
+        # 1. Check Global Identity Conflicts (case-insensitive)
         if email:
-            ident_result = await db.execute(select(Identity).where(Identity.email == email))
+            ident_result = await db.execute(select(Identity).where(func.lower(Identity.email) == email.lower()))
             if ident_result.scalar_one_or_none():
                 conflicts.append({
                     "type": "email",
@@ -114,9 +114,9 @@ class RegistrationService:
         """
         identity = None
 
-        # Match by email (primary ownership claim)
+        # Match by email (primary ownership claim, case-insensitive)
         if email:
-            res = await db.execute(select(Identity).where(Identity.email == email))
+            res = await db.execute(select(Identity).where(func.lower(Identity.email) == email.lower()))
             identity = res.scalar_one_or_none()
 
         # Match by phone (secondary ownership claim)
@@ -150,7 +150,7 @@ class RegistrationService:
         final_username = username
         if username:
             existing_res = await db.execute(
-                select(Identity).where(Identity.username == username)
+                select(Identity).where(func.lower(Identity.username) == username.lower())
             )
             if existing_res.scalar_one_or_none():
                 final_username = f"{username}_{uuid.uuid4().hex[:6]}"
@@ -160,10 +160,10 @@ class RegistrationService:
                     final_username,
                 )
 
-        # Create new identity
+        # Create new identity (normalize email to lowercase for consistency)
         normalized_phone = re.sub(r"[\s\-\+]", "", phone) if phone else None
         identity = Identity(
-            email=email,
+            email=email.lower() if email else None,
             phone=normalized_phone,
             username=final_username,
             password_hash=hash_password(password) if password else None,

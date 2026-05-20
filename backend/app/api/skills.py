@@ -1095,7 +1095,8 @@ async def browse_list(path: str = "", current_user: User = Depends(get_current_u
             else:
                 # Direct child file
                 file_path = f"{folder}/{f.path}"
-                items.append({"name": remainder, "path": file_path, "is_dir": False, "size": len(f.content.encode())})
+                raw, _ = _decode_if_binary(f.content)
+                items.append({"name": remainder, "path": file_path, "is_dir": False, "size": len(raw)})
 
         return items
 
@@ -1120,13 +1121,18 @@ async def browse_read(path: str, current_user: User = Depends(get_current_user))
             raise HTTPException(404, "Skill not found")
         for f in skill.files:
             if f.path == file_path:
-                return {"content": f.content}
+                raw, is_bin = _decode_if_binary(f.content)
+                if is_bin:
+                    import binascii
+                    return {"content": binascii.b2a_base64(raw).decode("ascii").strip(), "is_binary": True}
+                return {"content": f.content, "is_binary": False}
         raise HTTPException(404, "File not found")
 
 
 class BrowseWriteIn(BaseModel):
     path: str
     content: str
+    is_binary: bool = False
 
 
 @router.put("/browse/write")
@@ -1160,6 +1166,7 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
             _ensure_skill_write_access(skill, current_user)
 
         # Upsert file
+        stored_content = (BINARY_MARKER + body.content) if body.is_binary else body.content
         existing = None
         if not created_new_skill:
             for f in skill.files:
@@ -1167,9 +1174,9 @@ async def browse_write(body: BrowseWriteIn, current_user: User = Depends(get_cur
                     existing = f
                     break
         if existing:
-            existing.content = body.content
+            existing.content = stored_content
         else:
-            db.add(SkillFile(skill_id=skill.id, path=file_path, content=body.content))
+            db.add(SkillFile(skill_id=skill.id, path=file_path, content=stored_content))
         await db.commit()
         return {"ok": True}
 

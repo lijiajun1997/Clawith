@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import create_access_token, hash_password
@@ -234,7 +234,7 @@ class BaseAuthProvider(ABC):
         query = (
             select(User)
             .join(User.identity)
-            .where(Identity.username == username)
+            .where(func.lower(Identity.username) == username.lower())
         )
         if tenant_id:
             query = query.where(User.tenant_id == tenant_id)

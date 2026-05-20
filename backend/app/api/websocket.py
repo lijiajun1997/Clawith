@@ -111,6 +111,32 @@ async def get_online_users(current_user: User = Depends(get_current_user)):
     }
 
 
+@router.get("/api/chat/{agent_id}/bg-status")
+async def get_bg_llm_status(
+    agent_id: uuid.UUID,
+    session_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Check background LLM task status for a session (used by frontend BgPoll)."""
+    from app.core.events import get_redis
+
+    agent_id_str = str(agent_id)
+    try:
+        r = await get_redis()
+        bg_key = f"bg_llm:{agent_id_str}:{session_id}"
+        inflight_key = f"inflight:{agent_id_str}:{session_id}"
+        bg_data = await r.get(bg_key)
+        inflight_data = await r.get(inflight_key)
+        result = {"bg_status": None, "inflight": False}
+        if bg_data:
+            result["bg_status"] = json.loads(bg_data)
+        if inflight_data:
+            result["inflight"] = True
+        return result
+    except Exception:
+        return {"bg_status": None, "inflight": False}
+
+
 @router.get("/api/chat/{agent_id}/history")
 async def get_chat_history(
     agent_id: uuid.UUID,
@@ -781,6 +807,23 @@ async def _complete_llm_background(
 
     except Exception as e:
         logger.error(f"[BG] Background LLM task failed: {e}")
+        # Save error message to DB so frontend BgPoll can detect it
+        partial_text = "".join(partial_chunks).strip()
+        try:
+            async with async_session() as db:
+                error_content = (partial_text + "\n\n" if partial_text else "") + \
+                    f"*[Background task failed: {type(e).__name__}: {str(e)[:200]}]*"
+                asst_msg = ChatMessage(
+                    agent_id=agent_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=error_content,
+                    conversation_id=conv_id,
+                )
+                db.add(asst_msg)
+                await db.commit()
+        except Exception as db_err:
+            logger.error(f"[BG] Failed to save error message to DB: {db_err}")
         try:
             r = await get_redis()
             await r.set(redis_bg_key, json.dumps({

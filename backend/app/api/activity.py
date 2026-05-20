@@ -2,8 +2,11 @@
 
 import asyncio
 import json
+import os
+import re as _re
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, text
@@ -24,6 +27,179 @@ router = APIRouter(tags=["activity"])
 
 _VALID_CHANNELS = {"feishu", "web", "dingtalk", "wecom", "wechat"}
 _CACHE_TTL = 30  # seconds
+
+# Regex to extract skill name from read_file args path like skills/my-skill/SKILL.md
+_SKILL_PATH_RE = _re.compile(r"skills/([^/]+)/.*skill\.md", _re.IGNORECASE)
+
+
+async def _backfill_skill_calls_core() -> int:
+    """Scan conversation JSON files and insert skill_call records into DB."""
+    from app.config import get_settings
+    from app.database import async_session
+    from app.models.activity_log import AgentActivityLog
+    from app.models.agent import Agent as AgentModel
+
+    data_dir = Path(get_settings().AGENT_DATA_DIR)
+
+    async with async_session() as db:
+        result = await db.execute(select(AgentModel.id, AgentModel.tenant_id))
+        agents = result.all()
+        if not agents:
+            return 0
+
+    records: list[AgentActivityLog] = []
+
+    for agent_id, _tenant_id in agents:
+        conv_dir = data_dir / str(agent_id) / "conversations"
+        if not conv_dir.exists():
+            continue
+        try:
+            files = list(conv_dir.glob("*.json"))
+        except OSError:
+            continue
+        for f in files:
+            try:
+                raw = f.read_text(encoding="utf-8", errors="replace")
+                entries = json.loads(raw)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if entry.get("tool_name") != "read_file":
+                    continue
+                args_raw = entry.get("args_summary", "")
+                if "skill" not in args_raw.lower():
+                    continue
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                path = args.get("path", "")
+                if not path:
+                    continue
+                path_lower = path.lower().replace("\\", "/")
+                if not (path_lower.endswith("skill.md") or _SKILL_PATH_RE.search(path_lower)):
+                    continue
+                m = _SKILL_PATH_RE.search(path.replace("\\", "/"))
+                skill_name = m.group(1) if m else Path(path).stem
+                ts_str = entry.get("timestamp", "")
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    ts = datetime.now(timezone.utc)
+                records.append(AgentActivityLog(
+                    agent_id=agent_id,
+                    action_type="skill_call",
+                    summary=f"Read skill: {skill_name}",
+                    detail_json={"skill_name": skill_name, "path": path, "source": "backfill"},
+                    created_at=ts,
+                ))
+
+    if not records:
+        return 0
+
+    async with async_session() as db:
+        db.add_all(records)
+        await db.commit()
+
+    return len(records)
+
+
+def _sync_scan_conversation_files() -> list[tuple]:
+    """Synchronous file scanning (runs in thread pool). Returns raw (agent_id, entries) pairs."""
+    from app.config import get_settings
+    data_dir = Path(get_settings().AGENT_DATA_DIR)
+    results = []
+    if not data_dir.exists():
+        return results
+    for agent_dir in data_dir.iterdir():
+        if not agent_dir.is_dir():
+            continue
+        conv_dir = agent_dir / "conversations"
+        if not conv_dir.exists():
+            continue
+        try:
+            files = list(conv_dir.glob("*.json"))
+        except OSError:
+            continue
+        for f in files:
+            try:
+                raw = f.read_text(encoding="utf-8", errors="replace")
+                entries = json.loads(raw)
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(entries, list):
+                results.append((uuid.UUID(agent_dir.name), entries))
+    return results
+
+
+async def backfill_skill_calls_once() -> None:
+    """Run skill_call backfill if not already done (Redis-gated).
+
+    Runs the synchronous file I/O in a thread pool, then performs async DB
+    operations on the main event loop — avoiding nested event loops.
+    """
+    try:
+        r = await get_redis()
+        flag = "skill_call_backfill_done"
+        if await r.get(flag):
+            return
+        from loguru import logger
+        logger.info("[SkillBackfill] Starting one-time backfill of skill_call records from conversation files...")
+
+        # Step 1: synchronous file scanning in thread pool
+        scanned = await asyncio.to_thread(_sync_scan_conversation_files)
+
+        # Step 2: async DB operations on the main event loop
+        from app.database import async_session
+        from app.models.activity_log import AgentActivityLog
+
+        records: list[AgentActivityLog] = []
+        for agent_id, entries in scanned:
+            for entry in entries:
+                if entry.get("tool_name") != "read_file":
+                    continue
+                args_raw = entry.get("args_summary", "")
+                if "skill" not in args_raw.lower():
+                    continue
+                try:
+                    args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                path = args.get("path", "")
+                if not path:
+                    continue
+                path_lower = path.lower().replace("\\", "/")
+                if not (path_lower.endswith("skill.md") or _SKILL_PATH_RE.search(path_lower)):
+                    continue
+                m = _SKILL_PATH_RE.search(path.replace("\\", "/"))
+                skill_name = m.group(1) if m else Path(path).stem
+                ts_str = entry.get("timestamp", "")
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    ts = datetime.now(timezone.utc)
+                records.append(AgentActivityLog(
+                    agent_id=agent_id,
+                    action_type="skill_call",
+                    summary=f"Read skill: {skill_name}",
+                    detail_json={"skill_name": skill_name, "path": path, "source": "backfill"},
+                    created_at=ts,
+                ))
+
+        count = 0
+        if records:
+            async with async_session() as db:
+                db.add_all(records)
+                await db.commit()
+            count = len(records)
+
+        await r.set(flag, "1", ex=86400 * 365)  # 1 year TTL
+        logger.info(f"[SkillBackfill] Done. Inserted {count} skill_call records.")
+    except Exception as e:
+        from loguru import logger
+        logger.warning(f"[SkillBackfill] Skipped: {e}")
 
 
 async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days: int = 90) -> dict:
@@ -79,15 +255,27 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             HAVING COUNT(al.id) > 0
             ORDER BY count_week DESC
         """)
-    rows_tool = await _q_safe("""  -- Q5: tool call stats
+    rows_tool = await _q_safe("""  -- Q5: tool call stats (day/week/month/total)
             SELECT COALESCE(al.detail_json->>'tool', 'unknown') AS tool,
-                   COUNT(*) AS calls,
-                   COUNT(*) FILTER (WHERE al.detail_json->>'result' IS NULL
-                                    OR LEFT(al.detail_json->>'result', 1) NOT IN (chr(10060), chr(9940))) AS success
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '1 day') AS calls_day,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '7 days') AS calls_week,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '30 days') AS calls_month,
+                   COUNT(*) AS calls_total,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '1 day'
+                                    AND (safe_json_text(al.detail_json, 'result') IS NULL
+                                         OR LEFT(safe_json_text(al.detail_json, 'result'), 1) NOT IN (chr(10060), chr(9940)))) AS success_day,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '7 days'
+                                    AND (safe_json_text(al.detail_json, 'result') IS NULL
+                                         OR LEFT(safe_json_text(al.detail_json, 'result'), 1) NOT IN (chr(10060), chr(9940)))) AS success_week,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '30 days'
+                                    AND (safe_json_text(al.detail_json, 'result') IS NULL
+                                         OR LEFT(safe_json_text(al.detail_json, 'result'), 1) NOT IN (chr(10060), chr(9940)))) AS success_month,
+                   COUNT(*) FILTER (WHERE safe_json_text(al.detail_json, 'result') IS NULL
+                                    OR LEFT(safe_json_text(al.detail_json, 'result'), 1) NOT IN (chr(10060), chr(9940))) AS success_total
             FROM agent_activity_logs al
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid AND al.action_type = 'tool_call' AND al.created_at >= :since
-            GROUP BY tool ORDER BY calls DESC LIMIT 10
+            GROUP BY tool ORDER BY calls_total DESC LIMIT 15
         """)
     rows_error = await _q("""  -- Q6: error trend (14d)
             SELECT DATE(al.created_at) AS day, COUNT(*) AS errors
@@ -103,6 +291,14 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
             JOIN agents a ON a.id = al.agent_id
             WHERE a.tenant_id = :tid
             ORDER BY al.created_at DESC LIMIT 50
+        """)
+    rows_per_agent_latest = await _q_safe("""  -- Q7b: latest activity per agent
+            SELECT DISTINCT ON (al.agent_id)
+                al.id, al.agent_id, al.action_type, al.summary, al.created_at
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid
+            ORDER BY al.agent_id, al.created_at DESC
         """)
     rows_daily = await _q_safe("""  -- Q8: daily stats
             SELECT DATE(al.created_at) AS day, al.action_type,
@@ -136,6 +332,17 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
                 WHERE a.tenant_id = :tid AND t.status IN ('pending', 'doing')
             ) sub WHERE rn <= 3
         """)
+    rows_skill = await _q_safe("""  -- Q11: skill invocation stats from DB (day/week/month)
+            SELECT COALESCE(al.detail_json->>'skill_name', 'unknown') AS skill_name,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '1 day') AS calls_day,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '7 days') AS calls_week,
+                   COUNT(*) FILTER (WHERE al.created_at >= NOW() - INTERVAL '30 days') AS calls_month,
+                   COUNT(*) AS calls_total
+            FROM agent_activity_logs al
+            JOIN agents a ON a.id = al.agent_id
+            WHERE a.tenant_id = :tid AND al.action_type = 'skill_call' AND al.created_at >= :since
+            GROUP BY skill_name ORDER BY calls_total DESC LIMIT 15
+        """)
 
     # --- Build response ---
     activity_type_counts = [{"action_type": r.action_type, "count": r.count} for r in rows_type_counts]
@@ -157,7 +364,18 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
         for r in rows_rank
     ]
 
-    tool_call_stats = [{"tool": r.tool, "calls": r.calls, "success": r.success} for r in rows_tool]
+    tool_call_stats = [
+        {"tool": r.tool,
+         "calls_day": r.calls_day, "calls_week": r.calls_week, "calls_month": r.calls_month, "calls_total": r.calls_total,
+         "success_day": r.success_day, "success_week": r.success_week, "success_month": r.success_month, "success_total": r.success_total}
+        for r in rows_tool
+    ]
+
+    skill_call_stats = [
+        {"skill_name": r.skill_name,
+         "calls_day": r.calls_day, "calls_week": r.calls_week, "calls_month": r.calls_month, "calls_total": r.calls_total}
+        for r in rows_skill
+    ]
 
     error_trend = [{"date": str(r.day), "errors": r.errors} for r in rows_error]
 
@@ -166,6 +384,12 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
          "summary": r.summary, "created_at": r.created_at.isoformat() if r.created_at else None}
         for r in rows_recent
     ]
+
+    per_agent_latest = {
+        str(r.agent_id): {"id": str(r.id), "agent_id": str(r.agent_id), "action_type": r.action_type,
+                          "summary": r.summary, "created_at": r.created_at.isoformat() if r.created_at else None}
+        for r in rows_per_agent_latest
+    }
 
     daily_stats = [
         {"date": str(r.day), "action_type": r.action_type,
@@ -208,17 +432,19 @@ async def _build_dashboard_summary(tenant_id: uuid.UUID, db: AsyncSession, days:
         "conversation_channel_daily": conversation_channel_daily,
         "agent_activity_rank": agent_activity_rank,
         "tool_call_stats": tool_call_stats,
+        "skill_call_stats": skill_call_stats,
         "error_trend": error_trend,
         "daily_stats": daily_stats,
         "recent_activities": recent_activities,
+        "per_agent_latest": per_agent_latest,
         "task_summary": task_summary,
     }
 
 
 _EMPTY_SUMMARY = {
     "activity_type_counts": [], "hourly_trend": [], "conversation_channel_daily": [],
-    "agent_activity_rank": [], "tool_call_stats": [], "error_trend": [],
-    "daily_stats": [], "recent_activities": [],
+    "agent_activity_rank": [], "tool_call_stats": [], "skill_call_stats": [], "error_trend": [],
+    "daily_stats": [], "recent_activities": [], "per_agent_latest": {},
     "task_summary": {"by_status": {"pending": 0, "doing": 0, "done": 0}, "completed_today": 0, "agent_tasks": []},
 }
 

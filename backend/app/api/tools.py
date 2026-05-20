@@ -877,12 +877,12 @@ async def update_category_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Update or create shared configuration for a tool category."""
-    from app.core.permissions import check_agent_access, is_agent_creator
+    from app.core.permissions import check_agent_access
     from app.models.channel_config import ChannelConfig
 
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can configure category")
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access required")
 
     # Encrypt sensitive fields
     encrypted_config = _encrypt_sensitive_fields(data.config)
@@ -934,12 +934,12 @@ async def delete_category_config(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove shared configuration for a tool category."""
-    from app.core.permissions import check_agent_access, is_agent_creator
+    from app.core.permissions import check_agent_access
     from app.models.channel_config import ChannelConfig
 
-    agent, _ = await check_agent_access(db, current_user, agent_id)
-    if not is_agent_creator(current_user, agent):
-        raise HTTPException(status_code=403, detail="Only creator can remove config")
+    agent, access_level = await check_agent_access(db, current_user, agent_id)
+    if access_level != "manage":
+        raise HTTPException(status_code=403, detail="Manage access required")
 
     await db.execute(
         delete(ChannelConfig).where(

@@ -268,9 +268,9 @@ class FeishuWSManager:
                 try:
                     if _no_proxy_ctx:
                         async with _no_proxy_ctx():
-                            await client._connect()
+                            await asyncio.wait_for(client._connect(), timeout=30)
                     else:
-                        await client._connect()
+                        await asyncio.wait_for(client._connect(), timeout=30)
                     self._status[agent_id] = "connected"
                     reconnect_delay = 5  # reset on success
                     logger.info(f"[Feishu WS] Connected for agent {agent_id}")
@@ -326,7 +326,7 @@ class FeishuWSManager:
                 logger.error(f"[Feishu WS] Error disconnecting client for {agent_id}: {e}")
 
     # Stagger delay between consecutive agent WS connections (seconds)
-    _STAGGER_DELAY = 0.5
+    _STAGGER_DELAY = 3.0
 
     async def start_all(self):
         """Start WS clients for all configured Feishu agents."""

@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_admin, get_current_user
@@ -67,7 +67,7 @@ async def admin_update_user(
             select(User)
             .join(Identity, User.identity_id == Identity.id)
             .where(
-                Identity.email == update_data["email"],
+                func.lower(Identity.email) == update_data["email"].lower(),
                 User.tenant_id == user.tenant_id,
                 User.id != user.id,
             )

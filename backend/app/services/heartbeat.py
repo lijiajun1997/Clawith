@@ -338,6 +338,9 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     "web_search", "jina_search", "jina_read",
                 }
 
+                # Detect truncated tool calls caused by max_tokens limit
+                _output_truncated = response.finish_reason == "length"
+
                 for tc in response.tool_calls:
                     fn = tc["function"]
                     tool_name = fn["name"]
@@ -348,6 +351,16 @@ async def _execute_heartbeat(agent_id: uuid.UUID):
                     except json.JSONDecodeError as je:
                         logger.warning(f"[Heartbeat] JSON parse failed for {tool_name}: {je}. Raw: {repr(raw_args[:200])}")
                         args = {}
+
+                    # Guard: output was truncated by max_tokens — tool call arguments may be incomplete
+                    if _output_truncated:
+                        logger.warning(f"[Heartbeat] finish_reason=length, skipping potentially truncated tool call: {tool_name}")
+                        llm_messages.append(LLMMessage(
+                            role="tool",
+                            tool_call_id=tc["id"],
+                            content="Error: Your previous response was truncated due to token limits. The tool call was NOT executed. Please retry with more concise content. Keep comments short (1-2 sentences).",
+                        ))
+                        continue
 
                     # Guard: if a tool that requires arguments received empty args,
                     # return an error to LLM instead of executing

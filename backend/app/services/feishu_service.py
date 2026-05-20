@@ -14,7 +14,7 @@ try:
 except ImportError:
     lark = None  # type: ignore
     _HAS_LARK = False
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -274,7 +274,7 @@ class FeishuService:
 
         # 3. Fallback: find by email matching (exact match)
         if not user and fs_email:
-            query = select(User).join(User.identity).where(Identity.email == fs_email)
+            query = select(User).join(User.identity).where(func.lower(Identity.email) == fs_email.lower())
             if tenant_id:
                 query = query.where(User.tenant_id == tenant_id)
             result = await db.execute(query)
@@ -300,15 +300,15 @@ class FeishuService:
             username = fs_email.split("@")[0] if fs_email else f"feishu_{open_id[:8]}"
             email = fs_email or f"{username}@feishu.local"
 
-            # Ensure unique username within tenant
+            # Ensure unique username within tenant (case-insensitive)
             query = (
                 select(User)
                 .join(User.identity)
-                .where(Identity.username == username)
+                .where(func.lower(Identity.username) == username.lower())
             )
             if tenant_id:
                 query = query.where(User.tenant_id == tenant_id)
-            
+
             existing = await db.execute(query)
             if existing.scalar_one_or_none():
                 import uuid

@@ -465,8 +465,8 @@ _event_dedup_lock = asyncio.Lock()
 _processed_events: collections.deque[str] = collections.deque(maxlen=_EVENT_DEDUP_MAX)
 
 # Streaming card timing
-_FLUSH_INTERVAL_CARDKIT = 0.5   # seconds between CardKit stream flushes
-_FLUSH_INTERVAL_PATCH = 1.0     # seconds between message patch flushes
+_FLUSH_INTERVAL_CARDKIT = 0.2   # seconds between CardKit stream flushes
+_FLUSH_INTERVAL_PATCH = 0.3     # seconds between message patch flushes
 _CARDKIT_STREAM_TIMEOUT = 10.0  # timeout for CardKit stream update
 _CARDKIT_FINAL_TIMEOUT = 15.0   # timeout for final card update
 
@@ -624,6 +624,7 @@ def _inject_recent_file_hint(agent_id: uuid.UUID, user_text: str) -> tuple[str, 
 async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession):
     """Core logic to process feishu events from both webhook and WS client."""
     import json as _json
+    from app.models.audit import ChatMessage
     logger.info(f"[Feishu] Event processing for {agent_id}: event_type={body.get('header', {}).get('event_type', 'N/A')}")
 
     # Deduplicate — Feishu retries on slow responses
@@ -631,14 +632,15 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
     if await _is_event_processed(event_id):
         return {"code": 0, "msg": "already processed"}
 
-    # Get channel config — filter by feishu since an agent can have multiple channels
-    result = await db.execute(
-        select(ChannelConfig).where(
-            ChannelConfig.agent_id == agent_id,
-            ChannelConfig.channel_type == "feishu",
-        )
-    )
-    config = result.scalar_one_or_none()
+    # Load: channel config + agent info (sequential — async session does not support concurrent queries)
+    from app.models.agent import Agent as AgentModel
+    _cfg_r = await db.execute(select(ChannelConfig).where(
+        ChannelConfig.agent_id == agent_id,
+        ChannelConfig.channel_type == "feishu",
+    ))
+    _agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
+    config = _cfg_r.scalar_one_or_none()
+    agent_obj = _agent_r.scalar_one_or_none()
     if not config:
         return {"code": 1, "msg": "Channel not found"}
 
@@ -742,10 +744,7 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             _is_group = (chat_type == "group")
 
-            # Load agent info early (needed for group session user_id and context settings)
-            from app.models.agent import Agent as AgentModel
-            agent_r = await db.execute(select(AgentModel).where(AgentModel.id == agent_id))
-            agent_obj = agent_r.scalar_one_or_none()
+            # agent_obj already loaded in parallel at top of function
             creator_id = agent_obj.creator_id if agent_obj else agent_id
 
             # For group chats: ALWAYS create/resolve session first to preserve conversation history.
@@ -825,56 +824,60 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             # For P2P chats: session_conv_id will be set later (after user resolution)
             # Group chat session was already created above (before mention check)
+            from app.models.chat_session import ChatSession
+            from app.models.audit import ChatMessage as _ChatMsg
+            from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
+            from app.services.channel_user_service import channel_user_service
+
+            ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
+
             if _is_group:
                 _session_for_history = session_conv_id
-            else:
-                # For P2P chats, pre-resolve existing session to get the correct conversation_id for history lookup
-                # ChatMessage.conversation_id stores the ChatSession UUID, not the external_conv_id
-                from app.models.chat_session import ChatSession
-                _pre_sess_r = await db.execute(
+
+            # Parallel: P2P session lookup + sender resolution + history query
+            async def _resolve_p2p_session():
+                if _is_group:
+                    return session_conv_id
+                _r = await db.execute(
                     select(ChatSession).where(
                         ChatSession.agent_id == agent_id,
                         ChatSession.external_conv_id == conv_id,
                     )
                 )
-                _pre_sess = _pre_sess_r.scalar_one_or_none()
-                _session_for_history = str(_pre_sess.id) if _pre_sess else conv_id
+                _s = _r.scalar_one_or_none()
+                return str(_s.id) if _s else conv_id
 
-            # Load chat history for context
-            from app.models.audit import ChatMessage
-            from app.models.agent import DEFAULT_CONTEXT_WINDOW_SIZE
-            ctx_size = (agent_obj.context_window_size or DEFAULT_CONTEXT_WINDOW_SIZE) if agent_obj else DEFAULT_CONTEXT_WINDOW_SIZE
-            history_result = await db.execute(
-                select(ChatMessage)
-                .where(ChatMessage.agent_id == agent_id, ChatMessage.conversation_id == _session_for_history)
-                .order_by(ChatMessage.created_at.desc())
-                .limit(ctx_size)
-            )
-            history_msgs = history_result.scalars().all()
-            # Filter out tool_call messages — they are UI-only records and not
-            # valid roles for the OpenAI Chat Completions API.
+            async def _load_history(sid: str):
+                _r = await db.execute(
+                    select(_ChatMsg)
+                    .where(_ChatMsg.agent_id == agent_id, _ChatMsg.conversation_id == sid)
+                    .order_by(_ChatMsg.created_at.desc())
+                    .limit(ctx_size)
+                )
+                return _r.scalars().all()
+
+            async def _resolve_sender():
+                name, uid, info = await _resolve_feishu_sender(
+                    agent_id, config, sender_open_id, sender_user_id_from_event,
+                )
+                user = await channel_user_service.resolve_channel_user(
+                    db=db, agent=agent_obj, channel_type="feishu",
+                    external_user_id=sender_open_id, extra_info=info,
+                )
+                return name, uid, user
+
+            # Sequential — async session does not support concurrent queries
+            _session_for_history = await _resolve_p2p_session()
+            sender_name, sender_user_id_feishu, platform_user = await _resolve_sender()
+            history_msgs = await _load_history(_session_for_history)
+            platform_user_id = platform_user.id
+
             _LLM_VALID_ROLES = {"system", "user", "assistant", "tool"}
             history = [
                 {"role": m.role, "content": m.content}
                 for m in reversed(history_msgs)
                 if m.role in _LLM_VALID_ROLES
             ]
-
-            # --- Resolve Feishu sender identity & find/create platform user ---
-            sender_name, sender_user_id_feishu, extra_info = await _resolve_feishu_sender(
-                agent_id, config, sender_open_id, sender_user_id_from_event,
-            )
-
-            # Resolve channel user via unified service (uses OrgMember + SSO patterns)
-            from app.services.channel_user_service import channel_user_service
-            platform_user = await channel_user_service.resolve_channel_user(
-                db=db,
-                agent=agent_obj,
-                channel_type="feishu",
-                external_user_id=sender_open_id,
-                extra_info=extra_info,
-            )
-            platform_user_id = platform_user.id
 
             # ── Find-or-create a ChatSession via external_conv_id (DB-based, no cache needed) ──
             from datetime import datetime as _dt, timezone as _tz
@@ -987,11 +990,13 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
             _cfs_token = _cfs.set(_feishu_file_sender)
 
             # Set up streaming response via CardKit (primary) or IM patch (fallback)
+            # Init card in background to avoid blocking LLM startup
             import json as _json_card
 
             cardkit_card_id: str | None = None
             cardkit_sequence: int = 0
             msg_id_for_patch: str | None = None
+            _card_init_done = asyncio.Event()
 
             _reply_target = chat_id if chat_type == "group" and chat_id else sender_open_id
             _rid_type = "chat_id" if chat_type == "group" and chat_id else "open_id"
@@ -1011,32 +1016,39 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
                 },
             }
 
-            try:
-                cardkit_card_id = await feishu_service.create_card_entity(
-                    config.app_id, config.app_secret, init_card
-                )
-                cardkit_sequence = 1
-                await feishu_service.send_card_by_card_id(
-                    config.app_id, config.app_secret, _reply_target, cardkit_card_id,
-                    receive_id_type=_rid_type,
-                )
-                logger.info(f"[Feishu] CardKit card created and sent: card_id={cardkit_card_id}")
-            except Exception as e:
-                logger.warning(f"[Feishu] CardKit flow failed, falling back to IM patch: {e}")
-                cardkit_card_id = None
-                init_card_fallback = {
-                    "config": {"update_multi": True},
-                    "header": {"template": "blue", "title": {"content": "思考中...", "tag": "plain_text"}},
-                    "elements": [{"tag": "markdown", "content": "..."}],
-                }
+            async def _init_card_background():
+                """Create and send the streaming card in background."""
+                nonlocal cardkit_card_id, cardkit_sequence, msg_id_for_patch
                 try:
-                    init_resp = await feishu_service.send_message(
-                        config.app_id, config.app_secret, _reply_target, "interactive",
-                        _json_card.dumps(init_card_fallback), receive_id_type=_rid_type, stage="stream_init_card",
+                    cardkit_card_id = await feishu_service.create_card_entity(
+                        config.app_id, config.app_secret, init_card
                     )
-                    msg_id_for_patch = init_resp.get("data", {}).get("message_id")
-                except Exception as e2:
-                    logger.error(f"[Feishu] Fallback init card also failed: {e2}")
+                    cardkit_sequence = 1
+                    await feishu_service.send_card_by_card_id(
+                        config.app_id, config.app_secret, _reply_target, cardkit_card_id,
+                        receive_id_type=_rid_type,
+                    )
+                    logger.info(f"[Feishu] CardKit card created and sent: card_id={cardkit_card_id}")
+                except Exception as e:
+                    logger.warning(f"[Feishu] CardKit flow failed, falling back to IM patch: {e}")
+                    cardkit_card_id = None
+                    init_card_fallback = {
+                        "config": {"update_multi": True},
+                        "header": {"template": "blue", "title": {"content": "思考中...", "tag": "plain_text"}},
+                        "elements": [{"tag": "markdown", "content": "..."}],
+                    }
+                    try:
+                        init_resp = await feishu_service.send_message(
+                            config.app_id, config.app_secret, _reply_target, "interactive",
+                            _json_card.dumps(init_card_fallback), receive_id_type=_rid_type, stage="stream_init_card",
+                        )
+                        msg_id_for_patch = init_resp.get("data", {}).get("message_id")
+                    except Exception as e2:
+                        logger.error(f"[Feishu] Fallback init card also failed: {e2}")
+                finally:
+                    _card_init_done.set()
+
+            _card_init_task = asyncio.create_task(_init_card_background())
 
             _stream_buffer = []
             _thinking_buffer = []
@@ -1167,6 +1179,9 @@ async def process_feishu_event(agent_id: uuid.UUID, body: dict, db: AsyncSession
 
             async def _flush_stream(reason: str, force: bool = False):
                 nonlocal _last_flush_time, _last_flushed_hash, cardkit_sequence, _last_flushed_text, _cardkit_degraded, _cardkit_consecutive_failures
+                # Wait for card init to complete before first flush
+                if not _card_init_done.is_set():
+                    await _card_init_done.wait()
                 if not cardkit_card_id and not msg_id_for_patch:
                     return
                 if _cardkit_degraded and not msg_id_for_patch:
@@ -1900,7 +1915,7 @@ async def _call_agent_llm(
     from app.models.llm import LLMModel
     from app.api.websocket import call_llm
 
-    # Load agent and model
+    # Load agent and model in parallel
     agent_result = await db.execute(select(Agent).where(Agent.id == agent_id))
     agent = agent_result.scalar_one_or_none()
     if not agent:
@@ -1909,23 +1924,18 @@ async def _call_agent_llm(
     if is_agent_expired(agent):
         return "This Agent has expired and is off duty. Please contact your admin to extend its service."
 
-    # Load primary model (skip if disabled by admin)
-    model = None
-    if agent.primary_model_id:
-        model_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.primary_model_id))
-        model = model_result.scalar_one_or_none()
-        if model and not model.enabled:
-            logger.info(f"[Channel] Primary model {model.model} is disabled, skipping")
-            model = None
+    # Sequential load primary + fallback models — async session does not support concurrent queries
+    async def _load_model(mid):
+        if not mid:
+            return None
+        r = await db.execute(select(LLMModel).where(LLMModel.id == mid))
+        m = r.scalar_one_or_none()
+        if m and not m.enabled:
+            return None
+        return m
 
-    # Load fallback model (skip if disabled by admin)
-    fallback_model = None
-    if agent.fallback_model_id:
-        fb_result = await db.execute(select(LLMModel).where(LLMModel.id == agent.fallback_model_id))
-        fallback_model = fb_result.scalar_one_or_none()
-        if fallback_model and not fallback_model.enabled:
-            logger.info(f"[Channel] Fallback model {fallback_model.model} is disabled, skipping")
-            fallback_model = None
+    model = await _load_model(agent.primary_model_id)
+    fallback_model = await _load_model(agent.fallback_model_id)
 
     # Config-level fallback: primary missing -> use fallback
     if not model and fallback_model:

@@ -231,11 +231,51 @@ async def process_dingtalk_message(
         sess.last_message_at = datetime.now(timezone.utc)
         await db.commit()
 
+        # Set channel_file_sender so agent can send files back via DingTalk
+        from app.services.agent_tools import channel_file_sender as _cfs
+
+        async def _dingtalk_file_sender(file_path, msg: str = ""):
+            from pathlib import Path as _P
+            from app.config import get_settings as _gs_dt
+            _ds = _gs_dt()
+            _base_url = (getattr(_ds, 'PUBLIC_BASE_URL', '') or getattr(_ds, 'BASE_URL', '')).rstrip('/')
+            _fp = _P(file_path)
+            _ws_root = _P(_ds.AGENT_DATA_DIR)
+            try:
+                _rel = str(_fp.relative_to(_ws_root / str(agent_id)))
+            except ValueError:
+                _rel = _fp.name
+            _parts = []
+            if msg:
+                _parts.append(msg)
+            if _base_url:
+                from app.core.security import sign_download_url
+                _signed = sign_download_url(str(agent_id), _rel)
+                _dl_url = f"{_base_url}/api/agents/{agent_id}/files/download?path={_rel}&{_signed}"
+                _parts.append(f"📎 {_fp.name}\n[点击下载]({_dl_url})")
+            else:
+                _parts.append(f"📎 文件已生成: {_fp.name}（请联系管理员配置 BASE_URL 以启用文件下载）")
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(session_webhook, json={
+                    "msgtype": "markdown",
+                    "markdown": {
+                        "title": _fp.name,
+                        "text": "\n\n".join(_parts),
+                    },
+                })
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"DingTalk send failed: {resp.status_code} {resp.text[:200]}")
+
+        _cfs_token = _cfs.set(_dingtalk_file_sender)
+
         # Call LLM
-        reply_text = await _call_agent_llm(
-            db, agent_id, user_text,
-            history=history, user_id=platform_user_id,
-        )
+        try:
+            reply_text = await _call_agent_llm(
+                db, agent_id, user_text,
+                history=history, user_id=platform_user_id,
+            )
+        finally:
+            _cfs_token.var.reset(_cfs_token)
         logger.info(f"[DingTalk] LLM reply: {reply_text[:100]}")
 
         # Reply via session webhook (markdown)
