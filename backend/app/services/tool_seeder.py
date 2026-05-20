@@ -1728,7 +1728,7 @@ BUILTIN_TOOLS = [
     {
         "name": "excel_advanced",
         "display_name": "Excel: Advanced Toolkit",
-        "description": "Unified Excel manipulation toolkit. Create, read, write, format, and manage Excel workbooks with a single tool. Supports 12 operations: create workbook, list/add/delete/rename sheets, read/write cells and ranges, set formulas, read comments (both legacy notes and threaded comments). Use read_comments action to extract all annotations with cell references, authors, and text content.",
+        "description": "⚠️ 首次使用前必须 read_file('skills/excel-advanced/SKILL.md') 读取完整参数说明！Excel 操作工具，支持创建/读写/Sheet管理/公式/批注。遇到参数错误时也请先读 SKILL.md。如需条件格式/图表/样式/合并单元格等高级功能，请改用 run_code 执行 openpyxl 代码。",
         "category": "file",
         "icon": "📊",
         "is_default": True,
@@ -1738,17 +1738,17 @@ BUILTIN_TOOLS = [
                 "action": {
                     "type": "string",
                     "enum": ["create", "list_sheets", "add_sheet", "read_cell", "write_cell", "read_range", "write_range", "set_formula", "delete_sheet", "rename_sheet", "read_comments"],
-                    "description": "Operation to perform. Call without action to see full usage guide with examples."
+                    "description": "操作类型。参数详情请 read_file('skills/excel-advanced/SKILL.md')"
                 },
-                "file_path": {"type": "string", "description": "Excel file path relative to workspace (e.g., 'reports/data.xlsx')"},
-                "sheet_name": {"type": "string", "description": "Sheet name (for most operations)"},
-                "cell": {"type": "string", "description": "Cell address for read_cell/write_cell/set_formula (e.g., 'A1', 'B5')"},
-                "range": {"type": "string", "description": "Cell range for read_range/write_range (e.g., 'A1:C10')"},
-                "value": {"description": "Value to write (for write_cell): number, text, or boolean"},
-                "data": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "2D array for write_range (e.g., [['A', 'B'], [1, 2]])"},
-                "formula": {"type": "string", "description": "Formula for set_formula (e.g., 'SUM(A1:A10)')"},
-                "old_name": {"type": "string", "description": "Current sheet name for rename_sheet"},
-                "new_name": {"type": "string", "description": "New sheet name for rename_sheet"},
+                "file_path": {"type": "string", "description": "Excel 文件路径"},
+                "sheet_name": {"type": "string", "description": "Sheet 名称"},
+                "cell": {"type": "string", "description": "单元格地址 (e.g. 'A1')"},
+                "range": {"type": "string", "description": "范围 (e.g. 'A1:C10')"},
+                "value": {"description": "写入值"},
+                "data": {"type": "array", "description": "二维数组"},
+                "formula": {"type": "string", "description": "公式"},
+                "old_name": {"type": "string", "description": "旧 Sheet 名"},
+                "new_name": {"type": "string", "description": "新 Sheet 名"},
             },
             "required": ["action"],
         },
@@ -1759,7 +1759,7 @@ BUILTIN_TOOLS = [
     {
         "name": "word_advanced",
         "display_name": "Word: Advanced Toolkit",
-        "description": "Unified Word document manipulation toolkit. Create, read, edit, format, and manage Word documents with a single tool. Supports 50+ operations: document management, content editing, formatting, tables, footnotes, comments, and more. Comment operations: get_all_comments (extract all comments with authors and dates), get_comments_by_author (filter by author), get_comments_for_paragraph (comments on a specific paragraph). Call without parameters to see usage guide.",
+        "description": "⚠️ 首次使用前必须 read_file('skills/word-advanced/SKILL.md') 读取完整参数说明！Word 文档工具，支持50+操作：创建/内容/格式/表格/脚注/批注/修订模式。遇到参数错误时也请先读 SKILL.md。如需页眉页脚/分栏/水印/书签/邮件合并等高级功能，请改用 run_code 执行 python-docx 代码。",
         "category": "file",
         "icon": "📝",
         "is_default": True,
@@ -1768,118 +1768,21 @@ BUILTIN_TOOLS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": [
-                        # Document operations
-                        "create_document", "copy_document", "get_document_info", "get_document_text",
-                        "get_document_outline", "list_documents", "get_document_xml",
-                        # Content operations
-                        "insert_header_near_text", "insert_paragraph_near_text", "insert_list_near_text",
-                        "add_paragraph", "add_heading", "add_picture", "add_table", "add_page_break",
-                        "delete_paragraph", "search_and_replace",
-                        # Formatting operations
-                        "create_custom_style", "format_text", "format_table", "set_cell_shading",
-                        "apply_alternating_rows", "highlight_header", "merge_cells",
-                        "merge_cells_horizontal", "merge_cells_vertical", "set_cell_alignment",
-                        "set_table_alignment", "set_column_width", "set_column_widths",
-                        "set_table_width", "auto_fit_columns", "format_cell_text", "set_cell_padding",
-                        # Protection operations
-                        "protect_document", "unprotect_document",
-                        # Footnote operations
-                        "add_footnote", "add_footnote_after_text", "add_footnote_before_text",
-                        "add_footnote_enhanced", "add_endnote", "customize_footnote_style",
-                        "delete_footnote", "add_footnote_robust", "validate_footnotes",
-                        # Extended operations
-                        "get_paragraph_text", "find_text", "convert_to_pdf",
-                        "get_all_comments", "get_comments_by_author", "get_comments_for_paragraph"
-                    ],
-                    "description": "Operation to perform. Call without action to see full usage guide with examples."
+                    "description": "操作类型。完整列表和参数说明请 read_file('skills/word-advanced/SKILL.md')",
                 },
-                # Common parameters
-                "filename": {"type": "string", "description": "Word document file path (e.g., 'report.docx')"},
-                "output_filename": {"type": "string", "description": "Output filename for copy operations"},
-                # Document operations
-                "title": {"type": "string", "description": "Document title (for create_document)"},
-                "author": {"type": "string", "description": "Document author (for create_document)"},
-                "directory": {"type": "string", "description": "Directory path (for list_documents, default: '.')"},
-                # Content operations
-                "target_text": {"type": "string", "description": "Target text to find (for insert_*, delete_footnote, etc.)"},
-                "paragraph_index": {"type": "integer", "description": "Paragraph index (for many operations)"},
-                "target_paragraph_index": {"type": "integer", "description": "Target paragraph index (for insert_*)"},
-                "position": {"type": "string", "enum": ["before", "after"], "description": "Position for insert operations"},
-                "header_title": {"type": "string", "description": "Header title (for insert_header_near_text)"},
-                "header_style": {"type": "string", "description": "Header style (default: 'Heading 1')"},
-                "line_text": {"type": "string", "description": "Line text (for insert_paragraph_near_text)"},
-                "line_style": {"type": "string", "description": "Line style (for insert_paragraph_near_text)"},
-                "list_items": {"type": "array", "items": {"type": "string"}, "description": "List items (for insert_list_near_text)"},
-                "bullet_type": {"type": "string", "enum": ["bullet", "number"], "description": "Bullet type (default: 'bullet')"},
-                # Paragraph/heading operations
-                "text": {"type": "string", "description": "Text content (for add_paragraph, add_heading, search_and_replace)"},
-                "style": {"type": "string", "description": "Paragraph style"},
-                "level": {"type": "integer", "description": "Heading level (1-9)"},
-                "font_name": {"type": "string", "description": "Font family name"},
-                "font_size": {"type": "integer", "description": "Font size in points"},
-                "bold": {"type": "boolean", "description": "Make text bold"},
-                "italic": {"type": "boolean", "description": "Make text italic"},
-                "underline": {"type": "boolean", "description": "Make text underlined"},
-                "color": {"type": "string", "description": "Text color as hex RGB (e.g., '000000')"},
-                "border_bottom": {"type": "boolean", "description": "Add bottom border (for add_heading)"},
-                "find_text": {"type": "string", "description": "Text to find (for search_and_replace, find_text, etc.)"},
-                "replace_text": {"type": "string", "description": "Replacement text"},
-                "match_case": {"type": "boolean", "description": "Match case when searching"},
-                "whole_word": {"type": "boolean", "description": "Match whole words only"},
-                # Picture operations
-                "image_path": {"type": "string", "description": "Image file path (for add_picture)"},
-                "width": {"type": "number", "description": "Image/table width"},
-                # Table operations
-                "rows": {"type": "integer", "description": "Number of rows (for add_table)"},
-                "cols": {"type": "integer", "description": "Number of columns (for add_table)"},
-                "data": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "Table data (2D array)"},
-                "table_index": {"type": "integer", "description": "Table index"},
-                "has_header_row": {"type": "boolean", "description": "Table has header row"},
-                "border_style": {"type": "string", "description": "Table border style"},
-                "shading": {"type": "array", "items": {"type": "string"}, "description": "Table shading colors"},
-                "row_index": {"type": "integer", "description": "Row index"},
-                "col_index": {"type": "integer", "description": "Column index"},
-                "start_row": {"type": "integer", "description": "Start row index"},
-                "start_col": {"type": "integer", "description": "Start column index"},
-                "end_row": {"type": "integer", "description": "End row index"},
-                "end_col": {"type": "integer", "description": "End column index"},
-                "fill_color": {"type": "string", "description": "Cell fill color (hex)"},
-                "pattern": {"type": "string", "description": "Fill pattern (default: 'clear')"},
-                "color1": {"type": "string", "description": "First alternating color"},
-                "color2": {"type": "string", "description": "Second alternating color"},
-                "header_color": {"type": "string", "description": "Header cell color"},
-                "text_color": {"type": "string", "description": "Header text color"},
-                "horizontal": {"type": "string", "description": "Horizontal alignment (left/center/right)"},
-                "vertical": {"type": "string", "description": "Vertical alignment (top/middle/bottom)"},
-                "width_type": {"type": "string", "enum": ["points", "percentage", "auto"], "description": "Width unit type"},
-                "column_width": {"type": "number", "description": "Column width value"},
-                "widths": {"type": "array", "items": {"type": "number"}, "description": "Multiple column widths"},
-                "table_width": {"type": "number", "description": "Table width"},
-                "text_content": {"type": "string", "description": "Cell text content"},
-                "top": {"type": "number", "description": "Top padding"},
-                "bottom": {"type": "number", "description": "Bottom padding"},
-                "left": {"type": "number", "description": "Left padding"},
-                "right": {"type": "number", "description": "Right padding"},
-                "unit": {"type": "string", "description": "Padding unit"},
-                # Protection operations
-                "password": {"type": "string", "description": "Document password"},
-                # Footnote operations
-                "footnote_text": {"type": "string", "description": "Footnote text content"},
-                "endnote_text": {"type": "string", "description": "Endnote text content"},
-                "numbering_format": {"type": "string", "description": "Footnote numbering format"},
-                "start_number": {"type": "integer", "description": "Footnote start number"},
-                "footnote_id": {"type": "integer", "description": "Footnote ID"},
-                "validate_location": {"type": "boolean", "description": "Validate footnote location"},
-                "auto_repair": {"type": "boolean", "description": "Auto-repair footnotes"},
-                "clean_orphans": {"type": "boolean", "description": "Clean orphaned footnotes"},
-                # Style operations
-                "style_name": {"type": "string", "description": "Custom style name"},
-                "base_style": {"type": "string", "description": "Base style for custom style"},
-                "start_pos": {"type": "integer", "description": "Start position in text"},
-                "end_pos": {"type": "integer", "description": "End position in text"},
-                # Comment operations
-                "author": {"type": "string", "description": "Comment author name"},
+                "filename": {"type": "string", "description": "Word 文档路径"},
+                "text": {"type": "string", "description": "文本内容"},
+                "paragraph_index": {"type": "integer", "description": "段落索引"},
+                "table_index": {"type": "integer", "description": "表格索引"},
+                "search_text": {"type": "string", "description": "查找文本"},
+                "replace_text": {"type": "string", "description": "替换文本"},
+                "target_text": {"type": "string", "description": "定位文本"},
+                "position": {"type": "string", "description": "before/after"},
+                "level": {"type": "integer", "description": "标题级别 1-9"},
+                "style": {"type": "string", "description": "段落样式"},
+                "data": {"type": "array", "description": "表格数据(二维数组)"},
+                "password": {"type": "string", "description": "文档密码"},
+                "footnote_text": {"type": "string", "description": "脚注内容"},
             },
             "required": ["action"],
         },
@@ -2480,12 +2383,10 @@ AGENTBAY_TOOLS = [
         "name": "call_model",
         "display_name": "调用自定义模型",
         "description": (
-            "调用自定义配置的大模型。支持两种模式：\n"
-            "1. 单次模式(single/默认)：一次调用一个模型，支持多模态识图、上下文会话、文件引用、自动保存MD。\n"
-            "2. 并发模式(concurrent)：将公共参数(model_name/prompt/images)与变量数组calls分离，并行执行多个调用。"
-            "支持三大场景：多模型对比同一任务、同一模型分析多个目标文件/公司、单公司并发搜索多维度信息。"
-            "并发结果返回摘要(前500字符)+MD文件路径，用read_file读取完整内容。"
-            "支持OpenAI原生多模态格式，文本文件引用:{{file:/path/to/file.md}}，图片支持本地路径/URL/base64。"
+            "⚠️ 首次使用前必须 read_file('skills/web-research/SKILL.md') 读取完整参数说明！"
+            "调用自定义AI模型，支持单次和并发模式（传入calls数组即并发）。"
+            "支持文件引用 {{file:/path/to/file.md}}（MD文本格式），推荐将分析内容先保存为MD文件再引用，避免prompt过长。"
+            "并发三大场景：多模型对比/多目标分析/多维度搜索。遇到参数错误时也请先读 SKILL.md。"
         ),
         "category": "media",
         "icon": "🤖",
@@ -2493,67 +2394,26 @@ AGENTBAY_TOOLS = [
         "parameters_schema": {
             "type": "object",
             "properties": {
-                "mode": {
-                    "type": "string",
-                    "enum": ["single", "concurrent"],
-                    "description": "调用模式。single=单次调用(默认)，concurrent=并发批量调用，支持多模型对比/多目标分析/多维度搜索",
-                },
                 "model_name": {
                     "type": "string",
-                    "description": "要调用的模型名称。concurrent模式下作为默认模型，可在calls中覆盖",
+                    "description": "模型名称（从工具配置的 models 列表中选）",
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "用户输入的问题/指令，支持文件引用:{{file:/path/to/file.md}}。single模式必填；concurrent模式下作为共享prompt，可被calls继承",
+                    "description": "问题/指令，支持文件引用 {{file:/path/to/file.md}}（推荐将分析内容保存为MD文件后引用）",
                 },
                 "images": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "公共图片列表，支持本地路径/URL/base64。concurrent模式下作为默认图片，可在calls中覆盖",
+                    "description": "图片列表（本地路径/URL/base64）",
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "可选会话ID(仅single模式有效)，传入则拼接历史上下文继续对话",
-                },
-                "timeout": {
-                    "type": "number",
-                    "description": "并发模式总超时(秒)，默认300。超时后未完成任务自动取消(仅concurrent模式)",
+                    "description": "会话ID，传入则继续上下文对话",
                 },
                 "calls": {
                     "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "label": {
-                                "type": "string",
-                                "description": "调用标签，用于标识结果(如'translate'、'apple'、'risk')",
-                            },
-                            "prompt": {
-                                "type": "string",
-                                "description": "本次调用的prompt。若顶层有prompt则可省略，否则必填",
-                            },
-                            "model_name": {
-                                "type": "string",
-                                "description": "覆盖顶层model_name(可选)",
-                            },
-                            "images": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "本次调用的图片列表，覆盖顶层images(可选)",
-                            },
-                            "temperature": {
-                                "type": "number",
-                                "description": "温度参数，默认0.7(可选)",
-                            },
-                        },
-                    },
-                    "description": (
-                        "并发调用数组(仅concurrent模式)。每项定义一次独立调用，未指定的字段从顶层继承。"
-                        "场景1-多模型对比：顶层写prompt，每项指定不同model_name。"
-                        "场景2-多目标分析：每项指定不同prompt(含文件引用)。"
-                        "场景3-多维度搜索：顶层写目标，每项指定不同分析维度的prompt。"
-                        "最多20项。"
-                    ),
+                    "description": "并发调用数组（传入即并发模式）。详情请 read_file('skills/web-research/SKILL.md')",
                 },
             },
             "required": ["model_name"],

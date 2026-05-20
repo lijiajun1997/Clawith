@@ -149,6 +149,26 @@ description: Professional meeting minutes expert for audit/consulting firms — 
         "is_default": True,
         "files": [],  # populated at runtime from skill_creator_files/officecli__SKILL.md
     },
+    # ─── Excel Advanced Skill ──────────────────────────────
+    {
+        "name": "Excel Advanced",
+        "description": "Excel 操作完整指南 — 参数、示例、边界处理与 Python fallback。使用 excel_advanced 工具前必读。",
+        "category": "productivity",
+        "icon": "📊",
+        "folder_name": "excel-advanced",
+        "is_default": True,
+        "files": [],  # populated at runtime
+    },
+    # ─── Word Advanced Skill ───────────────────────────────
+    {
+        "name": "Word Advanced",
+        "description": "Word 文档操作完整指南 — 50+ 操作参数、修订模式、示例与 Python fallback。使用 word_advanced 工具前必读。",
+        "category": "productivity",
+        "icon": "📝",
+        "folder_name": "word-advanced",
+        "is_default": True,
+        "files": [],  # populated at runtime
+    },
 ]
 
 
@@ -170,6 +190,14 @@ async def seed_skills():
                 s["files"] = [{"path": "SKILL.md", "content": officecli_file.read_text(encoding="utf-8", newline="")}]
             else:
                 logger.warning("[SkillSeeder] officecli__SKILL.md not found in skill_creator_files/")
+        elif s["folder_name"] == "excel-advanced" and not s["files"]:
+            sf = _files_dir / "excel_advanced__SKILL.md"
+            if sf.exists():
+                s["files"] = [{"path": "SKILL.md", "content": sf.read_text(encoding="utf-8", newline="")}]
+        elif s["folder_name"] == "word-advanced" and not s["files"]:
+            sf = _files_dir / "word_advanced__SKILL.md"
+            if sf.exists():
+                s["files"] = [{"path": "SKILL.md", "content": sf.read_text(encoding="utf-8", newline="")}]
 
     async with async_session() as db:
         for skill_data in BUILTIN_SKILLS:
