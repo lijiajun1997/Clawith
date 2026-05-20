@@ -2,12 +2,128 @@
 Document utility functions for Word Document Server.
 """
 import json
+import random
 from typing import Dict, List, Any
 from docx import Document
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+
+
+# ── Track Changes (Revision) Utilities ──
+
+def generate_rsid() -> str:
+    """Generate a random 8-char hex revision save ID."""
+    return f"{random.randint(0, 0xFFFFFFFF):08X}"
+
+
+def ensure_revision_settings(doc) -> str:
+    """Enable Track Changes in document settings, return the rsid for this session."""
+    rsid = generate_rsid()
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+    # Ensure settings part exists
+    settings_part = doc.part.package.part_related_by(RT.OFFICE_DOCUMENT)
+    settings = doc.settings.element
+
+    # Add w:trackChanges if not present
+    tc = settings.find(qn('w:trackChanges'))
+    if tc is None:
+        tc = OxmlElement('w:trackChanges')
+        settings.append(tc)
+
+    return rsid
+
+
+def mark_run_as_insertion(run, rsid: str, author: str = "AI Assistant"):
+    """Wrap a run's XML with w:ins (insertion) revision marker."""
+    rPr = run._element.get_or_add_rPr()
+    ins_mark = OxmlElement('w:ins')
+    ins_mark.set(qn('w:id'), str(random.randint(1, 999999)))
+    ins_mark.set(qn('w:author'), author)
+    ins_mark.set(qn('w:date'), _utc_now_str())
+    rPr.append(ins_mark)
+
+
+def mark_paragraph_as_insertion(para, rsid: str, author: str = "AI Assistant"):
+    """Mark an entire paragraph as an insertion (track changes)."""
+    pPr = para._element.get_or_add_pPr()
+    # w:rPr/w:ins inside pPr
+    rPr = pPr.find(qn('w:rPr'))
+    if rPr is None:
+        rPr = OxmlElement('w:rPr')
+        pPr.append(rPr)
+    ins_mark = OxmlElement('w:ins')
+    ins_mark.set(qn('w:id'), str(random.randint(1, 999999)))
+    ins_mark.set(qn('w:author'), author)
+    ins_mark.set(qn('w:date'), _utc_now_str())
+    rPr.append(ins_mark)
+    # Also mark all runs in the paragraph
+    for run in para.runs:
+        mark_run_as_insertion(run, rsid, author)
+
+
+def mark_paragraph_as_deletion(para, rsid: str, author: str = "AI Assistant"):
+    """Mark a paragraph element as deleted (track changes) — wraps content in w:del."""
+    pPr = para._element.get_or_add_pPr()
+    rPr = pPr.find(qn('w:rPr'))
+    if rPr is None:
+        rPr = OxmlElement('w:rPr')
+        pPr.append(rPr)
+    del_mark = OxmlElement('w:del')
+    del_mark.set(qn('w:id'), str(random.randint(1, 999999)))
+    del_mark.set(qn('w:author'), author)
+    del_mark.set(qn('w:date'), _utc_now_str())
+    rPr.append(del_mark)
+    # Mark runs as deleted
+    for run in para.runs:
+        run_rPr = run._element.get_or_add_rPr()
+        del_text = OxmlElement('w:del')
+        del_text.set(qn('w:id'), str(random.randint(1, 999999)))
+        del_text.set(qn('w:author'), author)
+        del_text.set(qn('w:date'), _utc_now_str())
+        run_rPr.append(del_text)
+
+
+def mark_run_as_deletion(run, rsid: str, author: str = "AI Assistant"):
+    """Mark a run as deleted text."""
+    rPr = run._element.get_or_add_rPr()
+    del_mark = OxmlElement('w:del')
+    del_mark.set(qn('w:id'), str(random.randint(1, 999999)))
+    del_mark.set(qn('w:author'), author)
+    del_mark.set(qn('w:date'), _utc_now_str())
+    rPr.append(del_mark)
+
+
+def enable_track_changes(doc, author: str = "AI Assistant"):
+    """Enable Track Changes at document level and add rsid to body."""
+    ensure_revision_settings(doc)
+    # Add w:rsid to body for this editing session
+    body = doc.element.body
+    existing = body.find(qn('w:rsid'))
+    if existing is None:
+        rsid_elem = OxmlElement('w:rsid')
+        body.insert(0, rsid_elem)
+
+
+def post_process_track_changes(filename: str, author: str = "AI Assistant"):
+    """Open a saved document and ensure Track Changes settings are enabled.
+    This is called after any editing operation to guarantee the document
+    has revision tracking enabled, even if the underlying tool didn't set it."""
+    from docx import Document
+    try:
+        doc = Document(filename)
+        enable_track_changes(doc, author)
+        doc.save(filename)
+        return True
+    except Exception:
+        return False
+
+
+def _utc_now_str() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def get_document_properties(doc_path: str) -> Dict[str, Any]:
@@ -135,45 +251,65 @@ def find_paragraph_by_text(doc, text, partial_match=False):
     return matching_paragraphs
 
 
-def find_and_replace_text(doc, old_text, new_text):
+def find_and_replace_text(doc, old_text, new_text, track_changes=False, author="AI Assistant"):
     """
     Find and replace text throughout the document, skipping Table of Contents (TOC) paragraphs.
-    
+
     Args:
         doc: Document object
         old_text: Text to find
         new_text: Text to replace with
-        
+        track_changes: If True, mark replacements as tracked insertions
+        author: Author name for revision marks
+
     Returns:
         Number of replacements made
     """
+    rsid = generate_rsid() if track_changes else None
+    if track_changes:
+        ensure_revision_settings(doc)
     count = 0
-    
-    # Search in paragraphs
-    for para in doc.paragraphs:
-        # Skip TOC paragraphs
-        if para.style and para.style.name.startswith("TOC"):
-            continue
+
+    def _replace_in_paragraph(para):
+        nonlocal count
         if old_text in para.text:
             for run in para.runs:
                 if old_text in run.text:
-                    run.text = run.text.replace(old_text, new_text)
+                    if track_changes and rsid:
+                        mark_run_as_deletion(run, rsid, author)
+                        # Create a new run with the replacement text
+                        new_run = OxmlElement('w:r')
+                        new_rPr = OxmlElement('w:rPr')
+                        ins = OxmlElement('w:ins')
+                        ins.set(qn('w:id'), str(random.randint(1, 999999)))
+                        ins.set(qn('w:author'), author)
+                        ins.set(qn('w:date'), _utc_now_str())
+                        new_rPr.append(ins)
+                        new_run.append(new_rPr)
+                        new_t = OxmlElement('w:t')
+                        new_t.text = run.text.replace(old_text, new_text)
+                        new_t.set(qn('xml:space'), 'preserve')
+                        new_run.append(new_t)
+                        run._element.addnext(new_run)
+                    else:
+                        run.text = run.text.replace(old_text, new_text)
                     count += 1
-    
+
+    # Search in paragraphs
+    for para in doc.paragraphs:
+        if para.style and para.style.name.startswith("TOC"):
+            continue
+        _replace_in_paragraph(para)
+
     # Search in tables
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    # Skip TOC paragraphs in tables
                     if para.style and para.style.name.startswith("TOC"):
                         continue
-                    if old_text in para.text:
-                        for run in para.runs:
-                            if old_text in run.text:
-                                run.text = run.text.replace(old_text, new_text)
-                                count += 1
-    
+                    _replace_in_paragraph(para)
+
     return count
 
 
