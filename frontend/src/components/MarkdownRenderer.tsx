@@ -33,12 +33,16 @@ function injectToken(url: string): string {
 
 function getFileIcon(fileName: string): string {
     const ext = (fileName.split('.').pop() || '').toLowerCase();
-    if (ext === 'pdf') return '📄';
-    if (['csv', 'xlsx', 'xls'].includes(ext)) return '📊';
-    if (['docx', 'doc'].includes(ext)) return '📝';
-    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) return '🖼️';
-    if (['zip', 'tar', 'gz', 'rar'].includes(ext)) return '📦';
-    return '📎';
+    const s = 'width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"';
+    if (ext === 'pdf') return `<svg ${s}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+    if (['csv', 'xlsx', 'xls'].includes(ext)) return `<svg ${s}><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="3" y1="16" x2="21" y2="16"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/></svg>`;
+    if (['docx', 'doc'].includes(ext)) return `<svg ${s}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) return `<svg ${s}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+    if (['zip', 'tar', 'gz', 'rar'].includes(ext)) return `<svg ${s}><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>`;
+    if (['ppt', 'pptx'].includes(ext)) return `<svg ${s}><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`;
+    if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return `<svg ${s}><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
+    if (['mp4', 'avi', 'mov', 'mkv', 'webm'].includes(ext)) return `<svg ${s}><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>`;
+    return `<svg ${s}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
 }
 
 function renderFileReadyBlock(line: string): string | null {
@@ -54,7 +58,7 @@ function renderFileReadyBlock(line: string): string | null {
     if (isImage) {
         html += `<img src="${url}" alt="${safeName}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid var(--border-subtle)" loading="lazy"/>`;
     } else {
-        html += `<span style="font-size:22px;flex-shrink:0">${icon}</span>`;
+        html += `<span style="display:flex;align-items:center;justify-content:center;width:48px;height:48px;flex-shrink:0;color:var(--accent-primary);background:color-mix(in srgb, var(--accent-primary) 12%, transparent);border-radius:10px">${icon}</span>`;
     }
     html += `<div style="flex:1;min-width:0">`;
     html += `<div style="font-weight:500;color:var(--text-primary);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px" title="${safeName}">${safeName}</div>`;
@@ -297,6 +301,16 @@ function renderInline(text: string): string {
         .replace(/`([^`]+)`/g, '<code style="background:var(--bg-secondary);padding:1px 4px;border-radius:3px;font-family:monospace;font-size:0.9em">$1</code>')
         // Strikethrough
         .replace(/~~(.*?)~~/g, '<del>$1</del>');
+
+    // Step 2b: auto-link bare URLs (http/https) not already inside a tag or placeholder
+    step2 = step2.replace(
+        /(?<![="'\w\/])https?:\/\/[^\s<>"')\]\x00，。；：！？、）】」』]+/g,
+        (url) => {
+            const display = escapeHtml(url.replace(/^https?:\/\//, '').replace(/\/$/, ''));
+            const href = sanitizeUrl(url);
+            return `<a href="${href}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;text-underline-offset:2px">${display}</a>`;
+        }
+    );
 
     // Step 3: restore protected link/image HTML
     for (let i = 0; i < protectedSegments.length; i++) {
