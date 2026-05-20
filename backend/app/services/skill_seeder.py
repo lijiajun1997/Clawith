@@ -187,17 +187,17 @@ async def seed_skills():
         elif s["folder_name"] == "officecli" and not s["files"]:
             officecli_file = _files_dir / "officecli__SKILL.md"
             if officecli_file.exists():
-                s["files"] = [{"path": "SKILL.md", "content": officecli_file.read_text(encoding="utf-8", newline="")}]
+                s["files"] = [{"path": "SKILL.md", "content": officecli_file.read_text(encoding="utf-8")}]
             else:
                 logger.warning("[SkillSeeder] officecli__SKILL.md not found in skill_creator_files/")
         elif s["folder_name"] == "excel-advanced" and not s["files"]:
             sf = _files_dir / "excel_advanced__SKILL.md"
             if sf.exists():
-                s["files"] = [{"path": "SKILL.md", "content": sf.read_text(encoding="utf-8", newline="")}]
+                s["files"] = [{"path": "SKILL.md", "content": sf.read_text(encoding="utf-8")}]
         elif s["folder_name"] == "word-advanced" and not s["files"]:
             sf = _files_dir / "word_advanced__SKILL.md"
             if sf.exists():
-                s["files"] = [{"path": "SKILL.md", "content": sf.read_text(encoding="utf-8", newline="")}]
+                s["files"] = [{"path": "SKILL.md", "content": sf.read_text(encoding="utf-8")}]
 
     async with async_session() as db:
         for skill_data in BUILTIN_SKILLS:
@@ -288,13 +288,13 @@ async def push_default_skills_to_existing_agents():
                     fp = (skill_folder / sf.path).resolve()
                     fp.parent.mkdir(parents=True, exist_ok=True)
                     if fp.exists():
-                        existing_content = fp.read_text(encoding="utf-8", newline="")
+                        existing_content = fp.read_text(encoding="utf-8")
                         if existing_content == sf.content:
                             continue  # already up-to-date
-                        fp.write_text(sf.content, encoding="utf-8", newline="")
+                        fp.write_text(sf.content, encoding="utf-8")
                         updated += 1
                     else:
-                        fp.write_text(sf.content, encoding="utf-8", newline="")
+                        fp.write_text(sf.content, encoding="utf-8")
                         pushed += 1
                         logger.info(f"[SkillSeeder] Pushed '{skill.name}' to agent {agent.id}")
 
