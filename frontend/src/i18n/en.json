@@ -158,6 +158,11 @@
       "activeTasks": "Active Tasks",
       "completedToday": "{{count}} completed today",
       "todayTokens": "Today's Tokens",
+      "monthTokens": "This Month",
+      "heartbeat": "Heartbeat",
+      "enabled": "enabled",
+      "onlineUsers": "Online Users",
+      "activeAgents": "agents active",
       "allAgentsTotal": "All agents total",
       "recentlyActive": "Recently Active",
       "lastHour": "Last hour"
@@ -261,7 +266,9 @@
       "enterprise": "Enterprise",
       "monthTokens": "Month",
       "enabled": "enabled",
-      "heartbeat": "Heartbeat"
+      "heartbeat": "Heartbeat",
+      "onlineUsers": "Online Users",
+      "activeAgents": "agents active"
     }
   },
   "agent": {
@@ -348,7 +355,15 @@
       "peer": "Peer",
       "assistant": "Assistant",
       "direct_leader": "Direct Leader",
-      "other": "Other"
+      "other": "Other",
+      "batchReport": "Batch Set Relationships",
+      "batchReportDesc": "Batch select Agents and set their relationships with this agent (bidirectional sync)",
+      "selectAll": "Select All",
+      "deselectAll": "Deselect All",
+      "selectedCount": "{{count}} selected",
+      "batchAdding": "Batch adding...",
+      "batchAddSuccess": "Successfully added relationships for {{count}} Agents",
+      "batchAddConfirm": "Confirm Batch Add"
     },
     "tasks": {
       "todo": "Todo",
@@ -492,6 +507,8 @@
       "disconnected": "Disconnected",
       "startConversation": "Start a conversation with {{name}}",
       "fileSupport": "Supports PDF, Word, Excel, TXT files",
+      "preview": "Preview",
+      "download": "Download",
       "attachment": "Attachment",
       "uploadFailed": "Upload failed",
       "askAboutFile": "Ask about {{name}}...",
@@ -499,6 +516,10 @@
       "collapseSessions": "Collapse sessions",
       "showSessions": "Show chat sessions",
       "toolCallChain": "Tools Used",
+      "thoughtAndTools": "Thinking · {{count}} tools",
+      "thoughtProcess": "Thinking",
+      "ranTools": "Ran {{count}} tools",
+      "viewDetails": "View details",
       "analysing": "Analysing",
       "doubleClickToRename": "Double-click to rename"
     },
@@ -984,8 +1005,39 @@
   "chat": {
     "placeholder": "Type a message...",
     "send": "Send",
+    "connectionRestored": "Connection restored",
+    "restoringTask": "Restoring task...",
+    "bgTaskFailed": "Background task failed",
     "deleteSession": "Delete session",
-    "deleteConfirm": "Delete this session and all its messages? This cannot be undone."
+    "deleteConfirm": "Delete this session and all its messages? This cannot be undone.",
+    "running": {
+      "thinking": "Thinking...",
+      "processing": "Processing..."
+    },
+    "mode": {
+      "auto": {
+        "label": "Auto",
+        "title": "Auto mode: no extra prompt injection"
+      },
+      "light": {
+        "label": "Light",
+        "title": "Light consultation: answer directly or after simple lookup, no analysis report needed"
+      },
+      "medium": {
+        "label": "Medium",
+        "title": "Medium analysis: gather info thoroughly, deliver via text/HTML/Word/Excel"
+      },
+      "heavy": {
+        "label": "Heavy",
+        "title": "Heavy task: plan based on difficulty, leverage tools and skills fully"
+      }
+    },
+    "skill": {
+      "label": "Skill",
+      "search": "Search skills...",
+      "loading": "Loading...",
+      "empty": "No matching skills"
+    }
   },
   "messages": {
     "title": "Messages",
@@ -1010,7 +1062,20 @@
       "quotas": "Quotas",
       "users": "Users",
       "invites": "Invitation Codes",
-      "identity": "OA Management"
+      "identity": "OA Management",
+      "pages": "Published Sites"
+    },
+    "pages": {
+      "title": "Title",
+      "publisher": "Publisher",
+      "agent": "Agent",
+      "views": "Views",
+      "publishedAt": "Published At",
+      "actions": "Actions",
+      "unpublish": "Unpublish",
+      "unpublishConfirm": "Are you sure you want to unpublish \"{title}\"? The page will become inaccessible.",
+      "noPages": "No published pages",
+      "openInNewTab": "Open in new tab"
     },
     "skillDeployment": {
       "registry": "Skill Registry",
@@ -1052,6 +1117,50 @@
       "statusIdle": "Idle",
       "statusStopped": "Stopped",
       "statusError": "Error"
+    },
+    "skillManagement": {
+      "editSkill": "Edit Skill",
+      "icon": "Icon",
+      "selectIcon": "Select Icon",
+      "iconPicker": {
+        "title": "Select Icon",
+        "tabler": "Icon Library",
+        "emoji": "Emoji",
+        "search": "Search icons..."
+      },
+      "name": "Name",
+      "description": "Description",
+      "category": "Category",
+      "author": "Author",
+      "version": "Version",
+      "updatedAt": "Updated",
+      "filterAll": "All",
+      "filterCategory": "Category",
+      "categories": {
+        "office": "Office",
+        "audit": "Audit",
+        "consulting": "Consulting",
+        "other": "Other"
+      },
+      "save": "Save",
+      "saving": "Saving...",
+      "cancel": "Cancel",
+      "noDescription": "No description",
+      "installed": "Installed",
+      "install": "Install",
+      "installSkill": "Install Skill",
+      "remove": "Remove",
+      "edit": "Edit",
+      "editFiles": "Edit Files",
+      "skillFiles": "Skill Files",
+      "overview": "Skill Overview",
+      "fileCount": "{{count}} file(s)",
+      "justNow": "Just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago",
+      "monthsAgo": "{{count}}mo ago",
+      "yearsAgo": "{{count}}y ago"
     },
     "a2aAsync": {
       "title": "Agent-to-Agent Async Communication",
@@ -1156,6 +1265,8 @@
       "cancel": "Cancel",
       "supportsVision": "👁 Supports Vision (Multimodal)",
       "supportsVisionDesc": "— Enable for models that can analyze images (GPT-4o, Claude, Qwen-VL, etc.)",
+      "setDefault": "Set as Default",
+      "defaultModel": "Default",
       "test": "Test",
       "testing": "Testing...",
       "testSuccess": "OK ({{latency}}ms)",

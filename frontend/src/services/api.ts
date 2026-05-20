@@ -11,6 +11,9 @@ export interface AgentSkillItem {
     is_global: boolean;
     file_count: number;
     skill_md_content: string;
+    author?: string;
+    version?: string;
+    updated_at?: string;
 }
 
 const API_BASE = '/api';
@@ -174,7 +177,7 @@ export function uploadFileWithProgress(
     file: File,
     onProgress?: (percent: number) => void,
     extraFields?: Record<string, string>,
-    timeoutMs: number = 120_000,
+    timeoutMs: number = 300_000,
 ): { promise: Promise<any>; abort: () => void } {
     const xhr = new XMLHttpRequest();
     const promise = new Promise<any>((resolve, reject) => {
@@ -615,7 +618,11 @@ export const scheduleApi = {
 
 // ─── Skills ───────────────────────────────────────────
 export const skillApi = {
-    list: () => request<any[]>('/skills/'),
+    list: (params?: { category?: string }) => {
+        const query = params?.category ? `?category=${encodeURIComponent(params.category)}` : '';
+        return request<any[]>(`/skills/${query}`);
+    },
+    categories: () => request<{ name: string; count: number }[]>('/skills/categories'),
     get: (id: string) => request<any>(`/skills/${id}`),
     create: (data: any) =>
         request<any>('/skills/', { method: 'POST', body: JSON.stringify(data) }),
@@ -626,9 +633,9 @@ export const skillApi = {
     // Path-based browse for FileBrowser
     browse: {
         list: (path: string) => request<any[]>(`/skills/browse/list?path=${encodeURIComponent(path)}`),
-        read: (path: string) => request<{ content: string }>(`/skills/browse/read?path=${encodeURIComponent(path)}`),
-        write: (path: string, content: string) =>
-            request<any>('/skills/browse/write', { method: 'PUT', body: JSON.stringify({ path, content }) }),
+        read: (path: string) => request<{ content: string; is_binary: boolean }>(`/skills/browse/read?path=${encodeURIComponent(path)}`),
+        write: (path: string, content: string, is_binary?: boolean) =>
+            request<any>('/skills/browse/write', { method: 'PUT', body: JSON.stringify({ path, content, is_binary: !!is_binary }) }),
         delete: (path: string) =>
             request<any>(`/skills/browse/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
     },
@@ -668,7 +675,9 @@ export const skillApi = {
         status: () => request<{
             skills: Array<{
                 id: string; name: string; folder_name: string; icon: string;
-                category: string; is_default: boolean;
+                icon_type: string; category: string; is_default: boolean;
+                author: string | null; version: string;
+                created_at: string; updated_at: string;
                 agent_deployments: Array<{
                     agent_id: string; agent_name: string;
                     deployed: boolean; is_latest: boolean | null;

@@ -49,21 +49,27 @@ const ALLOWED_EXTENSIONS = new Set([
     'pdf',
     'ppt', 'pptx',
     'xls', 'xlsx',
-    // 文本文件
-    'md', 'markdown',
-    'txt',
-    'csv',
+    // 文本/代码
+    'md', 'markdown', 'txt', 'csv',
+    'json', 'xml', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+    'py', 'js', 'ts', 'jsx', 'tsx', 'mjs', 'cjs',
+    'css', 'scss', 'sass', 'less',
+    'sh', 'bash', 'zsh', 'bat', 'ps1',
+    'sql', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'rb', 'php',
+    'html', 'htm', 'vue', 'svelte', 'astro',
+    'env', 'gitignore', 'dockerignore', 'editorconfig',
 ]);
 
 // 文件类型过滤选项
-type FilterType = 'all' | 'word' | 'pdf' | 'ppt' | 'excel' | 'text';
+type FilterType = 'all' | 'word' | 'pdf' | 'ppt' | 'excel' | 'text' | 'code';
 const FILTER_OPTIONS: { type: FilterType; label: string; extensions: string[]; icon: any }[] = [
     { type: 'all', label: '全部', extensions: [], icon: IconFile },
     { type: 'word', label: 'Word', extensions: ['doc', 'docx'], icon: IconFileDescription },
     { type: 'pdf', label: 'PDF', extensions: ['pdf'], icon: IconFileTypePdf },
     { type: 'ppt', label: 'PPT', extensions: ['ppt', 'pptx'], icon: IconPresentation },
     { type: 'excel', label: 'Excel', extensions: ['xls', 'xlsx'], icon: IconFileSpreadsheet },
-    { type: 'text', label: '文本', extensions: ['md', 'markdown', 'txt', 'csv'], icon: IconFileText },
+    { type: 'text', label: '文本', extensions: ['md', 'markdown', 'txt', 'csv', 'json', 'xml', 'yaml', 'yml', 'toml', 'html', 'htm', 'log'], icon: IconFileText },
+    { type: 'code', label: '代码', extensions: ['py', 'js', 'ts', 'jsx', 'tsx', 'css', 'scss', 'sh', 'bash', 'sql', 'java', 'c', 'cpp', 'h', 'go', 'rs', 'rb', 'php', 'vue', 'svelte', 'bat', 'ps1'], icon: IconFileText },
 ];
 
 function calcInitialWidth(): number {
@@ -350,7 +356,7 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
     }
 
     // ── Expanded ──
-    const isMd = activeFile && getFileType(activeFile.name) === 'markdown';
+    const isTextFile = activeFile && (getFileType(activeFile.name) === 'markdown' || getFileType(activeFile.name) === 'text');
 
     return (
         <div style={{
@@ -495,7 +501,7 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
                         <div style={{ fontSize: 13 }}>{t('fileCanvas.generationFailed', '文件生成失败')}</div>
                     </div>
                  ) : displayContent ? (
-                    editing && isMd ? (
+                    editing && isTextFile ? (
                         <textarea value={editContent} onChange={e => setEditContent(e.target.value)} style={{
                             width: '100%', height: '100%', border: 'none', outline: 'none', resize: 'none',
                             padding: '16px', fontFamily: "'JetBrains Mono',monospace", fontSize: '13px', lineHeight: 1.7,
@@ -533,7 +539,7 @@ export default function FileCanvasPanel({ files, visible, onToggle, agentId }: F
                 <div style={{ flex: 1 }} />
 
                 {/* Edit / Save for MD */}
-                {isMd && !editing && activeFile?.path && (
+                {isTextFile && !editing && activeFile?.path && (
                     <button onClick={startEdit} style={footerBtnStyle}>
                         <IconEdit size={13} /> {t('fileCanvas.edit', '编辑')}
                     </button>

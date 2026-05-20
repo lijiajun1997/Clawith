@@ -1,9 +1,35 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fileApi, type AgentSkillItem } from '../services/api';
+import { fileApi, skillApi, type AgentSkillItem } from '../services/api';
 import { SkillDetailDrawer } from './SkillDetailDrawer';
+import SkillIcon from './SkillIcon';
 import FileBrowser from './FileBrowser';
 import type { FileBrowserApi } from './FileBrowser';
+
+// 预定义分类
+const SKILL_CATEGORIES = ['全部', '办公', '审计', '咨询', '其他'];
+
+// 相对时间格式化
+function formatRelativeTime(dateStr: string | undefined | null): string {
+    if (!dateStr) return '';
+    try {
+        const date = new Date(dateStr);
+        const now = new Date();
+        const diffMs = now.getTime() - date.getTime();
+        const diffMin = Math.floor(diffMs / 60000);
+        if (diffMin < 1) return '刚刚';
+        if (diffMin < 60) return `${diffMin}分钟前`;
+        const diffHour = Math.floor(diffMin / 60);
+        if (diffHour < 24) return `${diffHour}小时前`;
+        const diffDay = Math.floor(diffHour / 24);
+        if (diffDay < 30) return `${diffDay}天前`;
+        const diffMonth = Math.floor(diffDay / 30);
+        if (diffMonth < 12) return `${diffMonth}个月前`;
+        return `${Math.floor(diffMonth / 12)}年前`;
+    } catch {
+        return '';
+    }
+}
 
 interface SkillCardGridProps {
     agentId: string;
@@ -29,6 +55,7 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
 }) => {
     const queryClient = useQueryClient();
     const [search, setSearch] = useState('');
+    const [categoryFilter, setCategoryFilter] = useState('全部');
     const [showAdvanced, setShowAdvanced] = useState(false);
     const [selectedSkill, setSelectedSkill] = useState<AgentSkillItem | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
@@ -40,14 +67,20 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
     });
 
     const filtered = useMemo(() => {
-        if (!search.trim()) return skills;
-        const q = search.toLowerCase();
-        return skills.filter(s =>
-            s.name.toLowerCase().includes(q) ||
-            s.description.toLowerCase().includes(q) ||
-            s.folder_name.toLowerCase().includes(q)
-        );
-    }, [skills, search]);
+        let result = skills;
+        if (categoryFilter !== '全部') {
+            result = result.filter(s => s.category === categoryFilter);
+        }
+        if (search.trim()) {
+            const q = search.toLowerCase();
+            result = result.filter(s =>
+                s.name.toLowerCase().includes(q) ||
+                s.description.toLowerCase().includes(q) ||
+                s.folder_name.toLowerCase().includes(q)
+            );
+        }
+        return result;
+    }, [skills, search, categoryFilter]);
 
     const openDetail = useCallback((skill: AgentSkillItem) => {
         setSelectedSkill(skill);
@@ -59,7 +92,7 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
     }, []);
 
     const handleDelete = useCallback(async (folderName: string) => {
-        if (!confirm(`Remove skill "${folderName}"? This will delete all files in the skill folder.`)) return;
+        if (!confirm(`确定移除技能 "${folderName}"？将删除该技能文件夹下的所有文件。`)) return;
         setDeletingFolder(folderName);
         try {
             await fileBrowserApi.delete(`skills/${folderName}`);
@@ -69,15 +102,14 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
                 setDrawerOpen(false);
             }
         } catch (err: any) {
-            alert(`Failed to remove: ${err?.message || err}`);
+            alert(`移除失败: ${err?.message || err}`);
         } finally {
             setDeletingFolder(null);
         }
     }, [agentId, fileBrowserApi, queryClient, selectedSkill]);
 
-    const handleEditFiles = useCallback((folderName: string) => {
+    const handleEditFiles = useCallback((_folderName: string) => {
         setShowAdvanced(true);
-        // FileBrowser will open at skills/ path; user can navigate into the folder
     }, []);
 
     const invalidateSkills = useCallback(() => {
@@ -109,7 +141,7 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                     <input
                         className="input"
-                        placeholder="Search skills..."
+                        placeholder="搜索技能..."
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         style={{ fontSize: '12px', width: '180px' }}
@@ -131,6 +163,24 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
                 </div>
             </div>
 
+            {/* Category filter */}
+            <div style={{ display: 'flex', gap: '4px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                {SKILL_CATEGORIES.map(cat => (
+                    <button
+                        key={cat}
+                        onClick={() => setCategoryFilter(cat)}
+                        style={{
+                            padding: '3px 10px', borderRadius: '14px', fontSize: '11px', border: 'none', cursor: 'pointer',
+                            background: categoryFilter === cat ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                            color: categoryFilter === cat ? '#fff' : 'var(--text-secondary)',
+                            transition: 'all 0.15s',
+                        }}
+                    >
+                        {cat}
+                    </button>
+                ))}
+            </div>
+
             {/* Advanced mode: FileBrowser */}
             {showAdvanced && (
                 <div style={{ marginBottom: '16px' }}>
@@ -149,7 +199,7 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
                 <>
                     {isLoading ? (
                         <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                            Loading skills...
+                            加载技能中...
                         </div>
                     ) : filtered.length === 0 ? (
                         <div style={{
@@ -157,15 +207,15 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
                             background: 'var(--bg-secondary)', borderRadius: '12px',
                             border: '1px dashed var(--border-subtle)',
                         }}>
-                            <div style={{ fontSize: '36px', marginBottom: '12px' }}>--</div>
+                            <SkillIcon icon="" size={48} style={{ margin: '0 auto 12px' }} />
                             <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
                                 {skills.length === 0
-                                    ? 'No skills installed yet. Click "Install Skill" to get started.'
-                                    : 'No skills match your search.'}
+                                    ? '暂无已安装的技能。点击"技能市场"开始安装。'
+                                    : '没有匹配的技能。'}
                             </div>
                             {skills.length === 0 && (
                                 <button className="btn btn-primary" style={{ fontSize: '13px' }} onClick={onOpenMarketplace}>
-                                    Install Skill
+                                    安装技能
                                 </button>
                             )}
                         </div>
@@ -201,7 +251,7 @@ export const SkillCardGrid: React.FC<SkillCardGridProps> = ({
                                 onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-subtle)'; e.currentTarget.style.background = 'var(--bg-secondary)'; }}
                             >
                                 <span style={{ fontSize: '24px', color: 'var(--text-tertiary)', marginBottom: '8px' }}>+</span>
-                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>Install Skill</span>
+                                <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>安装技能</span>
                             </div>
                         </div>
                     )}
@@ -259,7 +309,7 @@ const SkillCard: React.FC<SkillCardProps> = ({ skill, isDeleting, onView, onEdit
         >
             {/* Icon + Name */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '28px', lineHeight: 1, flexShrink: 0 }}>{skill.icon}</span>
+                <SkillIcon icon={skill.icon} size={32} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: '14px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {skill.name}
@@ -282,7 +332,7 @@ const SkillCard: React.FC<SkillCardProps> = ({ skill, isDeleting, onView, onEdit
                 display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
                 overflow: 'hidden', flex: 1,
             }}>
-                {skill.description || 'No description available.'}
+                {skill.description || '暂无描述'}
             </div>
 
             {/* Footer */}
@@ -290,24 +340,29 @@ const SkillCard: React.FC<SkillCardProps> = ({ skill, isDeleting, onView, onEdit
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 fontSize: '11px', color: 'var(--text-tertiary)',
             }}>
-                <span>{skill.file_count} file{skill.file_count !== 1 ? 's' : ''}</span>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <span>{skill.file_count} 个文件</span>
+                    {skill.updated_at && (
+                        <span>{formatRelativeTime(skill.updated_at)}</span>
+                    )}
+                </div>
                 <div style={{ display: 'flex', gap: '4px' }} onClick={e => e.stopPropagation()}>
                     <button
                         className="btn btn-ghost"
                         style={{ fontSize: '11px', padding: '2px 6px' }}
                         onClick={onEdit}
-                        title="Edit files"
+                        title="编辑文件"
                     >
-                        Edit
+                        编辑
                     </button>
                     <button
                         className="btn btn-ghost"
                         style={{ fontSize: '11px', padding: '2px 6px', color: 'var(--error, #ef4444)' }}
                         onClick={onDelete}
                         disabled={isDeleting}
-                        title="Remove skill"
+                        title="移除技能"
                     >
-                        {isDeleting ? '...' : 'Remove'}
+                        {isDeleting ? '...' : '移除'}
                     </button>
                 </div>
             </div>

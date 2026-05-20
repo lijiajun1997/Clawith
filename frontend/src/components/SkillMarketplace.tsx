@@ -2,6 +2,30 @@ import React, { useState, useMemo, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { skillApi, fileApi, type AgentSkillItem } from '../services/api';
 import { SkillDetailDrawer } from './SkillDetailDrawer';
+import SkillIcon from './SkillIcon';
+
+// 预定义分类
+const SKILL_CATEGORIES = ['全部', '办公', '审计', '咨询', '其他'];
+
+// 相对时间格式化
+function formatRelativeTime(dateStr: string | undefined | null): string {
+    if (!dateStr) return '';
+    try {
+        const date = new Date(dateStr);
+        const now = new Date();
+        const diffMs = now.getTime() - date.getTime();
+        const diffMin = Math.floor(diffMs / 60000);
+        if (diffMin < 1) return '刚刚';
+        if (diffMin < 60) return `${diffMin}分钟前`;
+        const diffHour = Math.floor(diffMin / 60);
+        if (diffHour < 24) return `${diffHour}小时前`;
+        const diffDay = Math.floor(diffHour / 24);
+        if (diffDay < 30) return `${diffDay}天前`;
+        return `${Math.floor(diffDay / 30)}个月前`;
+    } catch {
+        return '';
+    }
+}
 
 interface SkillMarketplaceProps {
     agentId: string;
@@ -20,6 +44,7 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
 }) => {
     const queryClient = useQueryClient();
     const [search, setSearch] = useState('');
+    const [categoryFilter, setCategoryFilter] = useState('全部');
     const [importingSkillId, setImportingSkillId] = useState<string | null>(null);
     const [previewSkill, setPreviewSkill] = useState<AgentSkillItem | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
@@ -31,14 +56,20 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
     });
 
     const filtered = useMemo(() => {
-        if (!search.trim()) return globalSkills;
-        const q = search.toLowerCase();
-        return globalSkills.filter((s: any) =>
-            s.name.toLowerCase().includes(q) ||
-            (s.description || '').toLowerCase().includes(q) ||
-            s.folder_name.toLowerCase().includes(q)
-        );
-    }, [globalSkills, search]);
+        let result = globalSkills;
+        if (categoryFilter !== '全部') {
+            result = result.filter((s: any) => s.category === categoryFilter);
+        }
+        if (search.trim()) {
+            const q = search.toLowerCase();
+            result = result.filter((s: any) =>
+                s.name.toLowerCase().includes(q) ||
+                (s.description || '').toLowerCase().includes(q) ||
+                s.folder_name.toLowerCase().includes(q)
+            );
+        }
+        return result;
+    }, [globalSkills, search, categoryFilter]);
 
     const handleInstall = useCallback(async (skill: any) => {
         setImportingSkillId(skill.id);
@@ -48,7 +79,7 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
             queryClient.invalidateQueries({ queryKey: ['files', agentId, 'skills'] });
             onImported();
         } catch (err: any) {
-            alert(`Install failed: ${err?.message || err}`);
+            alert(`安装失败: ${err?.message || err}`);
         } finally {
             setImportingSkillId(null);
         }
@@ -59,11 +90,14 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
             folder_name: skill.folder_name,
             name: skill.name,
             description: skill.description || '',
-            icon: skill.icon || '--',
-            category: skill.category || 'general',
+            icon: skill.icon || 'IconPackages',
+            category: skill.category || '其他',
             is_global: true,
             file_count: 0,
             skill_md_content: '',
+            author: skill.author,
+            version: skill.version,
+            updated_at: skill.updated_at,
         };
         setPreviewSkill(item);
         setDrawerOpen(true);
@@ -94,26 +128,43 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
                     {/* Header */}
                     <div style={{ padding: '20px 28px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                            <h3 style={{ margin: 0, fontSize: '18px' }}>Skill Marketplace</h3>
-                            <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>x</button>
+                            <h3 style={{ margin: 0, fontSize: '18px' }}>技能市场</h3>
+                            <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-secondary)', padding: '4px 8px' }}>✕</button>
                         </div>
                         <input
                             className="input"
-                            placeholder="Search skills..."
+                            placeholder="搜索技能..."
                             value={search}
                             onChange={e => setSearch(e.target.value)}
                             autoFocus
                             style={{ width: '100%', fontSize: '13px' }}
                         />
+                        {/* Category filter */}
+                        <div style={{ display: 'flex', gap: '4px', marginTop: '10px', flexWrap: 'wrap' }}>
+                            {SKILL_CATEGORIES.map(cat => (
+                                <button
+                                    key={cat}
+                                    onClick={() => setCategoryFilter(cat)}
+                                    style={{
+                                        padding: '3px 10px', borderRadius: '14px', fontSize: '11px', border: 'none', cursor: 'pointer',
+                                        background: categoryFilter === cat ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                        color: categoryFilter === cat ? '#fff' : 'var(--text-secondary)',
+                                        transition: 'all 0.15s',
+                                    }}
+                                >
+                                    {cat}
+                                </button>
+                            ))}
+                        </div>
                     </div>
 
                     {/* Grid */}
                     <div style={{ flex: 1, overflowY: 'auto', padding: '16px 28px' }}>
                         {isLoading ? (
-                            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>Loading...</div>
+                            <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>加载中...</div>
                         ) : filtered.length === 0 ? (
                             <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-tertiary)', fontSize: '13px' }}>
-                                {search ? 'No skills match your search.' : 'No skills available.'}
+                                {search || categoryFilter !== '全部' ? '没有匹配的技能。' : '暂无可用技能。'}
                             </div>
                         ) : (
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
@@ -136,9 +187,20 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
                                             onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-subtle)'; e.currentTarget.style.boxShadow = 'none'; }}
                                         >
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                                                <span style={{ fontSize: '22px', lineHeight: 1, flexShrink: 0 }}>{skill.icon || '--'}</span>
-                                                <div style={{ fontWeight: 600, fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-                                                    {skill.name}
+                                                <SkillIcon icon={skill.icon || 'IconPackages'} size={28} />
+                                                <div style={{ flex: 1, minWidth: 0 }}>
+                                                    <div style={{ fontWeight: 600, fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {skill.name}
+                                                    </div>
+                                                    {skill.category && (
+                                                        <span style={{
+                                                            fontSize: '10px', padding: '1px 5px', borderRadius: '3px',
+                                                            background: 'var(--accent-subtle)', color: 'var(--accent-text)',
+                                                            display: 'inline-block', marginTop: '1px',
+                                                        }}>
+                                                            {skill.category}
+                                                        </span>
+                                                    )}
                                                 </div>
                                             </div>
                                             <div style={{
@@ -146,11 +208,17 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
                                                 display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
                                                 overflow: 'hidden', flex: 1, wordBreak: 'break-word',
                                             }}>
-                                                {skill.description || 'No description.'}
+                                                {skill.description || '暂无描述'}
                                             </div>
-                                            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                {skill.updated_at && (
+                                                    <span style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                                                        {formatRelativeTime(skill.updated_at)}
+                                                    </span>
+                                                )}
+                                                {!skill.updated_at && <span />}
                                                 {installed ? (
-                                                    <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: 'rgba(16,185,129,0.1)', color: '#10b981', fontWeight: 600 }}>Installed</span>
+                                                    <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: 'rgba(16,185,129,0.1)', color: '#10b981', fontWeight: 600 }}>已安装</span>
                                                 ) : (
                                                     <button
                                                         className="btn btn-secondary"
@@ -158,7 +226,7 @@ export const SkillMarketplace: React.FC<SkillMarketplaceProps> = ({
                                                         disabled={importingSkillId === skill.id}
                                                         onClick={e => { e.stopPropagation(); handleInstall(skill); }}
                                                     >
-                                                        {importingSkillId === skill.id ? '...' : 'Install'}
+                                                        {importingSkillId === skill.id ? '...' : '安装'}
                                                     </button>
                                                 )}
                                             </div>

@@ -42,7 +42,7 @@ export default function RecentFilesPanel({ agentId, onPreviewFile }: RecentFiles
         queryKey: ['recent-files', agentId, page, pageSize],
         queryFn: () => fetchRecentFiles(agentId!, page * pageSize, pageSize),
         enabled: !!agentId,
-        refetchInterval: visible ? 5000 : false,
+        refetchInterval: visible ? 30000 : false,
     });
 
     const files = recentFilesData?.files || [];
@@ -65,7 +65,11 @@ export default function RecentFilesPanel({ agentId, onPreviewFile }: RecentFiles
     };
 
     const formatTime = (timestamp: string) => {
-        const date = new Date(parseFloat(timestamp) * 1000);
+        // Support both ISO 8601 (new API) and Unix epoch seconds (legacy fallback)
+        const date = timestamp.includes('T') || timestamp.includes('-')
+            ? new Date(timestamp)
+            : new Date(parseFloat(timestamp) * 1000);
+        if (isNaN(date.getTime())) return '';
         const now = new Date();
         const diffMs = now.getTime() - date.getTime();
         const diffMins = Math.floor(diffMs / 60000);

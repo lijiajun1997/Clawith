@@ -47,6 +47,7 @@ interface Props {
     liveDraft?: WorkspaceLiveDraft | null;
     locked?: boolean;
     canManageEnterpriseInfo?: boolean;
+    readOnly?: boolean;
     onSelectPath: (path: string) => void;
     onToggleLock?: () => void;
     onEditingChange?: (editing: boolean) => void;
@@ -66,9 +67,24 @@ function isEnterprisePath(path?: string | null): boolean {
 }
 const DEFAULT_UPLOAD_DIR = 'workspace/uploads';
 type TreeScope = 'recent' | 'workspace' | 'all';
-const EDITABLE_EXTS = new Set(['.md', '.markdown', '.csv']);
+const EDITABLE_EXTS = new Set([
+    '.md', '.markdown', '.csv',
+    '.txt', '.log', '.json', '.xml', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf',
+    '.py', '.js', '.ts', '.jsx', '.tsx', '.mjs', '.cjs',
+    '.css', '.scss', '.sass', '.less',
+    '.sh', '.bash', '.zsh', '.bat', '.ps1',
+    '.sql',
+    '.java', '.c', '.cpp', '.h', '.go', '.rs', '.rb', '.php',
+    '.html', '.htm', '.vue', '.svelte', '.astro',
+    '.env', '.gitignore', '.dockerignore', '.editorconfig',
+]);
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
-const PREVIEW_EXTS = new Set(['.md', '.markdown', '.csv', '.html', '.htm', '.pdf', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt', '.txt', '.log', '.json', ...IMAGE_EXTS]);
+const PREVIEW_EXTS = new Set([
+    '.md', '.markdown', '.csv', '.html', '.htm',
+    '.pdf', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt',
+    ...EDITABLE_EXTS,
+    ...IMAGE_EXTS,
+]);
 const JIT_DOC_EXTS = new Set(['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.ofd']);
 const MIN_SAVING_VISIBLE_MS = 650;
 const SAVED_VISIBLE_MS = 1600;
@@ -426,6 +442,7 @@ export default function WorkspaceOperationPanel({
     liveDraft,
     locked = false,
     canManageEnterpriseInfo = false,
+    readOnly = false,
     onSelectPath,
     onToggleLock,
     onEditingChange,
@@ -464,7 +481,7 @@ export default function WorkspaceOperationPanel({
     const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
     const ext = activePath ? extOf(activePath) : '';
-    const canEdit = !!activePath && EDITABLE_EXTS.has(ext);
+    const canEdit = !readOnly && !!activePath && EDITABLE_EXTS.has(ext);
     const isHtml = ext === '.html' || ext === '.htm';
     const isImage = IMAGE_EXTS.has(ext);
     const treeTargetDir = normalizeWritableDir(selectedDirPath || directoryOf(activePath));
@@ -1195,7 +1212,7 @@ export default function WorkspaceOperationPanel({
                             </button>
                         </a>
                     )}
-                    {activePath && onInsertToChat && (
+                    {activePath && onInsertToChat && !readOnly && (
                         <button
                             className="workspace-op-icon-btn"
                             title="Insert to chat"
@@ -1220,7 +1237,7 @@ export default function WorkspaceOperationPanel({
                 <button className={`workspace-op-tree-edge-toggle ${treeOpen && !activityOpen ? 'active' : ''}`} onClick={() => {
                     setActivityOpen(false);
                     setTreeOpen((open) => !open);
-                }} title={treeOpen && !activityOpen ? 'Hide files' : 'Show files'} aria-label={treeOpen && !activityOpen ? 'Hide files' : 'Show files'}>
+                }} title={treeOpen && !activityOpen ? 'Hide files' : 'Show files'} aria-label={treeOpen && !activityOpen ? 'Hide files' : 'Show files'} style={readOnly ? { display: 'none' } : undefined}>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <rect x="4" y="5" width="16" height="14" rx="2" stroke="currentColor" strokeWidth="1.9" />
                         <path d="M14 5v14" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
@@ -1236,7 +1253,7 @@ export default function WorkspaceOperationPanel({
                 <div className="workspace-op-main">
                     {renderPreview()}
                 </div>
-                {(treeOpen || activityOpen) && <div className="workspace-op-side-resize" onMouseDown={startResize} />}
+                {(treeOpen || activityOpen) && !readOnly && <div className="workspace-op-side-resize" onMouseDown={startResize} />}
                 {activityOpen ? (
                     <aside className="workspace-op-side">
                         <div className="workspace-op-side-title">Version history</div>
@@ -1264,7 +1281,7 @@ export default function WorkspaceOperationPanel({
                     })}
                         </div>
                     </aside>
-                ) : treeOpen ? (
+                ) : treeOpen && !readOnly ? (
                     <aside className="workspace-op-tree">
                         <div className="workspace-op-side-title">
                             <div className="workspace-op-tree-tools workspace-op-tree-tools-full">

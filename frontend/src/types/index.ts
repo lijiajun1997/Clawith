@@ -106,7 +106,8 @@ export interface DashboardSummary {
         agent_id: string; agent_name: string;
         count_day: number; count_week: number; count_month: number;
     }[];
-    tool_call_stats: { tool: string; calls: number; success: number }[];
+    tool_call_stats: { tool: string; calls_day: number; calls_week: number; calls_month: number; calls_total: number; success_day: number; success_week: number; success_month: number; success_total: number }[];
+    skill_call_stats: { skill_name: string; calls_day: number; calls_week: number; calls_month: number; calls_total: number }[];
     error_trend: { date: string; errors: number }[];
     daily_stats: {
         date: string; action_type: string; detail_tool: string | null; count: number;
@@ -115,6 +116,7 @@ export interface DashboardSummary {
         id: string; agent_id: string; action_type: string;
         summary: string; created_at: string | null;
     }[];
+    per_agent_latest?: Record<string, { id: string; agent_id: string; action_type: string; summary: string; created_at: string | null }>;
     task_summary: {
         by_status: { pending: number; doing: number; done: number };
         completed_today: number;
